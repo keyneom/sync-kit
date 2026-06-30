@@ -4,6 +4,18 @@ Captured on 2026-06-29. Re-check every path and revision before extraction.
 These repositories remain the compatibility sources; this document is not a
 substitute for fixture-backed verification.
 
+Re-checked on 2026-06-29 before implementation:
+
+- EasyBC remained clean at the captured revision.
+- Family Chores remained at its captured base revision with the sync
+  implementation and tests still uncommitted.
+- Keynote remained at the captured revision, with its branch 12 commits ahead
+  of origin and no local worktree changes.
+- EasyBC web sync tests, EasyBC Android `SyncCryptoTest`, and Family Chores sync
+  crypto/merge tests passed as unchanged baseline checks after extraction.
+- No package tarball was installed and no source file was changed in any
+  consumer repository.
+
 ## EasyBC
 
 - Repository: `/Users/micaelsanchez/repos/easy-bc`

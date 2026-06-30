@@ -1,10 +1,76 @@
 {
   "name": "sync-kit",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "fixtures",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./crypto": {
+      "types": "./dist/crypto/index.d.ts",
+      "import": "./dist/crypto/index.js"
+    },
+    "./snapshot": {
+      "types": "./dist/snapshot/index.d.ts",
+      "import": "./dist/snapshot/index.js"
+    },
+    "./snapshot/lifecycle": {
+      "types": "./dist/snapshot/lifecycle.d.ts",
+      "import": "./dist/snapshot/lifecycle.js"
+    },
+    "./keys/web-passkey": {
+      "types": "./dist/keys/web-passkey/index.d.ts",
+      "import": "./dist/keys/web-passkey/index.js"
+    },
+    "./auth/google-web": {
+      "types": "./dist/auth/google-web/index.d.ts",
+      "import": "./dist/auth/google-web/index.js"
+    },
+    "./stores/google-drive": {
+      "types": "./dist/stores/google-drive/index.d.ts",
+      "import": "./dist/stores/google-drive/index.js"
+    },
+    "./fixtures/*": "./fixtures/*"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "npm run fixtures:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "fixtures": "node scripts/generate-v1-fixtures.mjs",
+    "fixtures:check": "node scripts/check-v1-fixtures.mjs",
+    "lint": "eslint .",
+    "pack:check": "node scripts/check-package.mjs",
+    "prepack": "npm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.30.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.35.0",
+    "vitest": "^4.0.0"
   }
 }

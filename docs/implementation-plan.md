@@ -31,9 +31,11 @@ Other reasonable candidates:
 - `sync-core` — provider-neutral, but sounds like only the low-level
   layer rather than the adapters and convenience API.
 
-The repository is scaffolded locally at `/Users/micaelsanchez/repos/sync-kit`.
-It remains private and unpublished until npm name availability, licensing, and
-release ownership are explicitly decided.
+The repository is implemented locally at `/Users/micaelsanchez/repos/sync-kit`.
+On 2026-06-29 the publication direction was made explicit: use the public,
+unscoped MIT-licensed package name `sync-kit`. It remains unpublished until
+name ownership, repository URL, release provenance, and the installed-consumer
+matrix are confirmed.
 
 ## Package structure
 

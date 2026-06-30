@@ -1,82 +1,161 @@
 # sync-kit
 
-`sync-kit` is the planned standalone TypeScript package for reusable encrypted
-application-data synchronization. It will provide provider-neutral crypto and
-sync orchestration plus opt-in browser adapters for WebAuthn PRF, Google
-Identity Services, and Google Drive `appDataFolder`.
+Compatibility-preserving encrypted application-data synchronization for web,
+desktop, JavaScript-native, and native protocol consumers.
 
-Status: **planning scaffold only**. No runtime implementation has been extracted
-yet. The package is intentionally marked private until its public npm name,
-license, and release ownership are decided.
+The package extracts the behavior already implemented by EasyBC and Family
+Chores. It does not own application schemas, merge policy, persistence, UI, or
+lifecycle policy.
 
-## Why this repository exists
+## Status
 
-EasyBC and Family Chores independently implement the same core encrypted-sync
-model. This repository will extract that proven behavior into one package
-without changing either application's persisted v1 format. Keynote is a future
-desktop consumer and is the reason the core must not depend on browser globals.
+Version `0.1.0` is implemented and configured as a public MIT-licensed package.
+It has not been published.
 
-The name `sync-kit` is deliberately capability-oriented. `private-sync` would
-overstate what the library can guarantee: applications and provider
-configuration still determine metadata exposure, account isolation, conflict
-behavior, and lifecycle policy.
+The tests in this repository cover frozen compatibility vectors, mocked
+browser providers, package orchestration, and installation/imports from the
+packed tarball. They do not install this package into EasyBC, Family Chores, or
+Keynote.
 
-## Planned package surface
+As separate baseline checks, the existing sync-related tests in EasyBC and
+Family Chores were run unchanged from those repositories. No consumer
+repository was modified. Consumer migrations and their post-migration test
+runs remain separate release gates.
 
-```text
-sync-kit
-├── /core
-├── /crypto
-├── /snapshot
-├── /keys/web-passkey
-├── /auth/google-web
-└── /stores/google-drive
+An npm registry lookup for the unscoped `sync-kit` name returned `404` on
+2026-06-30. Publication rights still need to be confirmed at release time.
+
+## Install
+
+```sh
+npm install sync-kit
 ```
 
-This remains one package with subpath exports. Root and provider-neutral imports
-must have no browser globals or import-time side effects.
+The package has no runtime dependencies and is ESM-only.
 
-## Non-negotiable compatibility rules
+## Subpath exports
 
-- Preserve EasyBC and Family Chores v1 filenames, envelope fields, AAD, HKDF
-  labels, passkey inputs, salts, RP-ID validation, and compression behavior.
-- Freeze deterministic, user-data-free fixtures before extracting code.
-- Keep EasyBC writing v1 until both web and Android can read any replacement
-  version.
-- Keep schema validation, merge policy, tombstones, local persistence, UI, and
-  lifecycle policy in each application.
-- Never store raw PRF output, derived keys, or OAuth tokens in persistent
-  browser storage.
-- Never let EasyBC select, decrypt, overwrite, or delete Family Chores data,
-  or vice versa.
+```ts
+import {
+  easyBcV1Profile,
+  familyChoresV1Profile,
+} from "sync-kit/crypto";
+import { createSnapshotSync } from "sync-kit/snapshot";
+import { createWebPasskeyProvider } from "sync-kit/keys/web-passkey";
+import { GoogleWebAuthorizationProvider } from "sync-kit/auth/google-web";
+import {
+  GoogleDriveAppDataStore,
+  GoogleDriveSnapshotStore,
+} from "sync-kit/stores/google-drive";
+```
 
-## Start here in the next session
+Available exports:
 
-1. Read [the implementation plan](docs/implementation-plan.md).
-2. Verify [the source inventory](docs/source-inventory.md) against the live
-   consumer repositories; Family Chores sync code is currently uncommitted.
-3. Complete Phase 0 in [the execution checklist](docs/execution-checklist.md):
-   freeze fixtures and record exact format constants before creating runtime
-   modules.
-4. Scaffold TypeScript build/test tooling and the documented subpath exports.
-5. Extract provider-neutral primitives first; do not begin by porting consumer
-   UI or merge logic.
+- `/core` — provider contracts and standardized errors
+- `/crypto` — v1 envelopes, profiles, AES-GCM/HKDF backends, base64url,
+  optional gzip, and canonical JSON/AAD helpers
+- `/snapshot` — serialized snapshot synchronization
+- `/snapshot/lifecycle` — opt-in browser lifecycle binding
+- `/keys/web-passkey` — WebAuthn PRF keys with exact credential selection,
+  unlock coalescing, raw-secret zeroing, and explicit cache clearing
+- `/auth/google-web` — Google Identity Services with memory-only token reuse,
+  expiry skew, request coalescing, and explicit invalidation
+- `/stores/google-drive` — low-level `appDataFolder` objects plus a typed
+  snapshot wrapper
 
-## Documentation
+The root, `/core`, `/crypto`, and `/snapshot` expose no browser adapter.
+Browser globals and script loading are used only after an explicit browser
+subpath method is called.
 
-- [Implementation plan](docs/implementation-plan.md): architecture,
-  responsibilities, compatibility contract, required tests, and full sequence.
-- [Execution checklist](docs/execution-checklist.md): phase gates and concrete
-  deliverables.
-- [Source inventory](docs/source-inventory.md): current source repositories,
-  revisions, and extraction inputs.
+## Snapshot integration
 
-## Publishing
+Applications provide their own codec and state callbacks:
 
-Do not remove `"private": true` from `package.json` until all of these are
-explicitly resolved:
+```ts
+const controller = createSnapshotSync({
+  appId: "family-chores",
+  codec: {
+    serialize: (value) => value,
+    parse: parseFamilyChoresPayload,
+    merge: mergeFamilyChoresPayloads,
+    fingerprint: stableFamilyChoresFingerprint,
+    updatedAt: (value) => value.exportedAt,
+  },
+  envelopeCrypto,
+  keyProvider,
+  authorizationProvider,
+  cloudStore,
+  readLocal,
+  applyMerged,
+  envelopeUpdatedAt: (envelope) => envelope.updatedAt,
+});
 
-- npm name availability and whether the package will be public;
-- repository license;
-- release ownership and provenance;
-- the consumer compatibility matrix passing from installed tarballs.
+await controller.setup();
+await controller.sync("change");
+controller.lock();
+```
+
+The controller serializes cloud operations, queues at most one real local
+change behind active work, ignores foreground feedback during OAuth/passkey
+operations, and avoids encryption/upload when the merged stable fingerprint
+matches the remote value.
+
+## Native applications
+
+The wire protocol is the native compatibility boundary; the browser adapter is
+not.
+
+- EasyBC Android's Kotlin implementation reads the same v1 AES-GCM/HKDF/gzip
+  fixtures as this package.
+- React Native and other JavaScript-native runtimes can inject a
+  `CryptoBackend<K>` backed by platform crypto.
+- Kotlin and Swift applications implement the small key, authorization, store,
+  and crypto contracts natively while consuming the shared fixtures.
+- Tauri applications can use `/core`, `/crypto`, and the low-level Google Drive
+  object store, but should perform OAuth in the system browser through
+  Authorization Code + PKCE.
+
+See [native consumer guidance](docs/native-consumers.md) and the exact
+[v1 compatibility contract](docs/compatibility-v1.md).
+
+## Compatibility and isolation
+
+The explicit profiles preserve both applications' v1 filenames, AAD, HKDF
+labels, compression behavior, and passkey names. V1 readers remain separate
+because their cryptographic contexts are intentionally incompatible.
+
+The Drive snapshot wrapper rejects the wrong `appId` before making a request.
+WebAuthn unlock requests include only the envelope's exact credential ID and
+reject the wrong RP ID before opening passkey UI.
+
+Do not change EasyBC's writer to v2 until Android can read v2. V2 envelopes and
+desktop-specific authorization/key adapters remain deferred.
+
+## Security boundary
+
+The package:
+
+- keeps OAuth tokens and derived keys in memory only;
+- makes AES-GCM keys non-extractable in the WebCrypto backend;
+- zeroes raw PRF output after derivation;
+- clears key and authorization caches on explicit lock/delete;
+- authenticates each v1 ciphertext with its application-specific AAD.
+
+Applications still control provider configuration, metadata exposure, merge
+correctness, local persistence, lifecycle timing, and access to the JavaScript
+runtime. The package does not make a compromised application private.
+
+## Development
+
+```sh
+npm install
+npm run check
+```
+
+`npm run check` verifies deterministic fixtures, lint, types, tests, build
+output, packed contents, npm installation, pnpm installation, and every
+documented subpath import from the installed tarball.
+
+The extraction plan and phase gates are in
+[docs/implementation-plan.md](docs/implementation-plan.md) and
+[docs/execution-checklist.md](docs/execution-checklist.md).

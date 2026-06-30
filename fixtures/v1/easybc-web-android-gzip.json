@@ -1,0 +1,41 @@
+{
+  "provenance": "Shared by live EasyBC web crypto.test.ts and Android SyncCryptoTest.decryptsSharedGzipCryptoVector",
+  "secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "payload": {
+    "schemaVersion": 1,
+    "exportedAt": "2026-06-22T12:00:00Z",
+    "planner": {
+      "value": {
+        "ageYears": 38
+      },
+      "updatedAt": "2026-06-22T12:00:00Z"
+    },
+    "periodRecords": [],
+    "deletedPeriodStarts": {},
+    "calendarDayLogs": {
+      "2026-06-22": {
+        "notes": "cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector cross-platform gzip vector ",
+        "updatedAt": "2026-06-22T12:00:00Z"
+      }
+    },
+    "voluntaryAbstinenceDates": {},
+    "voluntaryAbstinenceUpdatedAt": {},
+    "deletedVoluntaryAbstinenceDates": {},
+    "ecJournal": {
+      "value": false,
+      "updatedAt": "2026-06-22T12:00:00Z"
+    }
+  },
+  "envelope": {
+    "schemaVersion": 1,
+    "algorithm": "AES-256-GCM+HKDF-SHA-256",
+    "compression": "gzip",
+    "credentialId": "credential",
+    "rpId": "keyneom.github.io",
+    "prfInput": "AA",
+    "kdfSalt": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "nonce": "QEFCQ0RFRkdISUpL",
+    "ciphertext": "LMBOEaK5ATYQxI26eKGwIdJ_ELsBJ8rf76MIXyxVsT3kN1K3qY42h07AZHOYkztpJYdhERCZmbG2j_Pd1zhqKRMIMdrj_-pBd6DljWZU0uD7d5rHWCbyAqudt_psdPSHm47MuQauJTsCjVmEkPNKCZZNOZkYnceNyC9MZQM_tY15jJLsHEdOnQS43zyNhv180UmM9POJcsaWBAG6yIfDRDpd2b1IpPuxmIAV3GLMYLiNHbJ4yDUX6PRYFhzI-Hh18rggXBENhWfq9kZ3hBpPKGkms-j4MHFIGhg_o3GY_rZTHCzq3phTdD3Mo4iSWf7D6FXezQP6H_jwyhDE0ydJyTjNfIPPyCESZtc",
+    "updatedAt": "2026-06-22T12:00:00Z"
+  }
+}

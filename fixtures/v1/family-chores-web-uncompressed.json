@@ -1,0 +1,73 @@
+{
+  "provenance": "Generated from the uncommitted live Family Chores sync implementation",
+  "secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "payload": {
+    "schemaVersion": 1,
+    "exportedAt": "2026-06-21T00:00:00.000Z",
+    "state": {
+      "children": [],
+      "tasks": [],
+      "taskInstances": [],
+      "completedTasks": {},
+      "timers": {},
+      "timedCompletions": [],
+      "actionLog": [],
+      "parentSettings": {
+        "approvals": {
+          "task": false,
+          "reward": false
+        },
+        "timedAutoApproveDefault": false,
+        "pins": [],
+        "childDisplayOrder": [],
+        "onboardingCompleted": false,
+        "voiceAnnouncements": false
+      }
+    },
+    "metadata": {
+      "schemaVersion": 1,
+      "collections": {
+        "children": {
+          "updatedAt": {},
+          "deletedAt": {}
+        },
+        "tasks": {
+          "updatedAt": {},
+          "deletedAt": {}
+        },
+        "taskInstances": {
+          "updatedAt": {},
+          "deletedAt": {}
+        },
+        "completedTasks": {
+          "updatedAt": {},
+          "deletedAt": {}
+        },
+        "timers": {
+          "updatedAt": {},
+          "deletedAt": {}
+        },
+        "timedCompletions": {
+          "updatedAt": {},
+          "deletedAt": {}
+        },
+        "actionLog": {
+          "updatedAt": {},
+          "deletedAt": {}
+        }
+      },
+      "parentSettingsUpdatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "envelope": {
+    "schemaVersion": 1,
+    "algorithm": "AES-256-GCM+HKDF-SHA-256",
+    "credentialId": "fixture-credential",
+    "rpId": "keyneom.github.io",
+    "prfInput": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8",
+    "kdfSalt": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "nonce": "QEFCQ0RFRkdISUpL",
+    "ciphertext": "BQrSErMr1-99BpL6zSlFWuWBX2E95QI0FzCgOPe1hVzCEAX6AC94BwSXtF8WaFzt-p-NXyqtMCAtSejFY3VpS76Tk5QkOYaWb30zKkIydzJaxPyxsgsRyTVyc02BlSiV4qLxKy8PevEJ9_ZhrZEup93xuZ29GTgwaNPFilZYTBkGrkwxoQKKJ-Dus3QjRPqbD93o_yyi1sU6Gg3TmnoxX5wO9mQyXiPi856uGnCETa-9SHq3HPP4ZiNXoTzC8nUYPRxDtFfT7xd15T1QsK2ej3sdQz9djURZB9t8hX0Yc0TqbRjuqZZvvhGsodPI8vOw8b-UqSJJ3ZyXzV7yWjCVJ4TjpXAshfhDDbsK2ajZqoKEDEe_c9EH2ZsJwoQaOLmRlB-7v4vbhHrFb_soFf31ANGwXK8stBLyPbjYNducqss0L4F5JDAU_j8FcGMhKX9kFy0n7odbalAZtzN41WVm21LRh1ZBvkak9ycDZNHMHueyccjDcwxl_y0vgjfLD_bQycBLFM_GAy3aVM-H2I0JOJPePdxjqAwOpOSP6VjKZzR--4Glnm1nRj64DO09PFQQttMt8yGK5WsSqNHAP0ViAqW_2QgVH_ClFKfFfwGqb6DMfn1QgQ50m0Xf9ICxKhzFiAvaax82mDoUQju21ZnNQ1hKxvy8NUccCJ-hiT0Vl9RZMO5mXMbagtFMzb8nYYJpJ56M0e0SkHOk8XKYnOgDIUOFybfQLAIG1xYA7GjgxIG0CTUau-1PRCuH5SHntDn7dID2EPllxW3wyQRZpMWw98DodPYfXGo4n2gonLqn2VIF-h9cXGCMkjnnZOFTTFzt1i5zmSyF1prXBFHOQRGTfRZsZd5Iox5tsieiFvEzm5C5bU67G2Gn-wBjSJVmASMlSVxY622eHwkT9HlMnNyZq2fCAcrC-DwQjDx_wGdi_qxRirNIUM5qvoD655R66r7jFbhn6y9LrPrTgrwR1i2c51s5JdtC_JwhFA3nCz816sfK7oGpLq5BLmeVvrPWhiyjDFGByY79_uT63hOekL59uDl7Me_-xauWwbLv",
+    "updatedAt": "2026-06-21T00:00:00.000Z"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "provenance": "EasyBC Android SyncCryptoTest.decryptsWebCryptoVector and live web crypto.ts",
+  "secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "payload": {
+    "schemaVersion": 1,
+    "exportedAt": "2026-06-21T12:00:00Z",
+    "planner": {
+      "value": {
+        "ageYears": 37
+      },
+      "updatedAt": "2026-06-21T12:00:00Z"
+    },
+    "periodRecords": [],
+    "deletedPeriodStarts": {},
+    "calendarDayLogs": {},
+    "voluntaryAbstinenceDates": {},
+    "voluntaryAbstinenceUpdatedAt": {},
+    "deletedVoluntaryAbstinenceDates": {},
+    "ecJournal": {
+      "value": false,
+      "updatedAt": "1970-01-01T00:00:00.000Z"
+    }
+  },
+  "envelope": {
+    "schemaVersion": 1,
+    "algorithm": "AES-256-GCM+HKDF-SHA-256",
+    "credentialId": "credential",
+    "rpId": "keyneom.github.io",
+    "prfInput": "AA",
+    "kdfSalt": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "nonce": "QEFCQ0RFRkdISUpL",
+    "ciphertext": "SGk1csrcbFdGshJaXqUdM-SLg9O0ZjtkHuUREJkV5R89VrpDkTmr12IlZ5W6d4Qk4pQ0kVT9XO7F_r4OHtoWNGbjzrdv49y2LhT-uDLjzNu38r-xVoQXGU3HTJdvr6VFk18TbaKAN08gD3wluMP9JH_IKwpGHeAgZyoajp3agwg4bGV-VSw9URAFlHrXtgJKymwNPz_4E4UHbmjcnCK94JngZgqYXnhBueTwX4fTayIrzqXl_JEcGDm6aEcae_FoqhZ1dVUVx5KynVj_JRgPMKOtviGe-LLk7aXbCoRLxSjZDU4nlPQOV2dFkbrwpV6afwsu1IQWwZ-xvnDovfN8eHzVuvdb7JgSIShs62Yy5N-wgCm-BUWxHp5oq0LUFkGB2njyTQjkmSYBiM4eVOYvhBTIRNQZqFMXSEI32-NyCEaLvv63y43OkQ9-kpWKZ7-yDpM-Mcs5ckNk3IKTHTGhl_0DMpZxA5QONtGvDCW4SHr8dKEQ6aDQ",
+    "updatedAt": "2026-06-21T12:00:00Z"
+  }
+}
