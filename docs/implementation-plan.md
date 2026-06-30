@@ -12,13 +12,14 @@ formats during extraction.
 
 ## Package name and scope
 
-Working package and repository name: **`sync-kit`**.
+Working repository name: **`sync-kit`**. Published npm package name:
+**`@keyneom/sync-kit`**.
 
-This is preferable to `private-sync` or a username-scoped name because the
-package will
-coordinate encryption, synchronization, key providers, authorization, and
-storage providers. It also leaves room for providers other than Google Drive
-and WebAuthn PRF without overstating a broad "secure" or "private" guarantee.
+The capability-oriented `sync-kit` name is preferable to `private-sync`
+because the package coordinates encryption, synchronization, key providers,
+authorization, and storage providers. It also leaves room for providers other
+than Google Drive and WebAuthn PRF without overstating a broad "secure" or
+"private" guarantee.
 
 Other reasonable candidates:
 
@@ -32,10 +33,10 @@ Other reasonable candidates:
   layer rather than the adapters and convenience API.
 
 The repository is implemented locally at `/Users/micaelsanchez/repos/sync-kit`.
-On 2026-06-29 the publication direction was made explicit: use the public,
-unscoped MIT-licensed package name `sync-kit`. It remains unpublished until
-name ownership, repository URL, release provenance, and the installed-consumer
-matrix are confirmed.
+The public MIT-licensed package uses `@keyneom/sync-kit`. npm rejected the
+unscoped `sync-kit` name because it is too similar to the existing `synckit`
+package, so the owner scope is required by the registry. The scope does not
+change the single-package architecture or subpath API.
 
 ## Package structure
 

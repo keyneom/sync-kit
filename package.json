@@ -1,5 +1,5 @@
 {
-  "name": "sync-kit",
+  "name": "@keyneom/sync-kit",
   "version": "0.1.0",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",

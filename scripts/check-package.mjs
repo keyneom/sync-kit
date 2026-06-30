@@ -54,14 +54,14 @@ try {
 async function verifyInstalledPackage(packageManager, tarball) {
   const consumer = join(temporaryDirectory, `${packageManager}-consumer`);
   const source = `
-    await import("sync-kit");
-    await import("sync-kit/core");
-    await import("sync-kit/crypto");
-    await import("sync-kit/snapshot");
-    await import("sync-kit/snapshot/lifecycle");
-    await import("sync-kit/keys/web-passkey");
-    await import("sync-kit/auth/google-web");
-    await import("sync-kit/stores/google-drive");
+    await import("@keyneom/sync-kit");
+    await import("@keyneom/sync-kit/core");
+    await import("@keyneom/sync-kit/crypto");
+    await import("@keyneom/sync-kit/snapshot");
+    await import("@keyneom/sync-kit/snapshot/lifecycle");
+    await import("@keyneom/sync-kit/keys/web-passkey");
+    await import("@keyneom/sync-kit/auth/google-web");
+    await import("@keyneom/sync-kit/stores/google-drive");
   `;
   await mkdir(consumer, { recursive: true });
   await writeFile(

@@ -1,4 +1,4 @@
-# sync-kit
+# @keyneom/sync-kit
 
 Compatibility-preserving encrypted application-data synchronization for web,
 desktop, JavaScript-native, and native protocol consumers.
@@ -10,7 +10,6 @@ lifecycle policy.
 ## Status
 
 Version `0.1.0` is implemented and configured as a public MIT-licensed package.
-It has not been published.
 
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the
@@ -22,13 +21,10 @@ Family Chores were run unchanged from those repositories. No consumer
 repository was modified. Consumer migrations and their post-migration test
 runs remain separate release gates.
 
-An npm registry lookup for the unscoped `sync-kit` name returned `404` on
-2026-06-30. Publication rights still need to be confirmed at release time.
-
 ## Install
 
 ```sh
-npm install sync-kit
+npm install @keyneom/sync-kit
 ```
 
 The package has no runtime dependencies and is ESM-only.
@@ -39,14 +35,14 @@ The package has no runtime dependencies and is ESM-only.
 import {
   easyBcV1Profile,
   familyChoresV1Profile,
-} from "sync-kit/crypto";
-import { createSnapshotSync } from "sync-kit/snapshot";
-import { createWebPasskeyProvider } from "sync-kit/keys/web-passkey";
-import { GoogleWebAuthorizationProvider } from "sync-kit/auth/google-web";
+} from "@keyneom/sync-kit/crypto";
+import { createSnapshotSync } from "@keyneom/sync-kit/snapshot";
+import { createWebPasskeyProvider } from "@keyneom/sync-kit/keys/web-passkey";
+import { GoogleWebAuthorizationProvider } from "@keyneom/sync-kit/auth/google-web";
 import {
   GoogleDriveAppDataStore,
   GoogleDriveSnapshotStore,
-} from "sync-kit/stores/google-drive";
+} from "@keyneom/sync-kit/stores/google-drive";
 ```
 
 Available exports:

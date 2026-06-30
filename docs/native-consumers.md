@@ -1,6 +1,6 @@
 # Native consumer guidance
 
-`sync-kit` is a TypeScript package, but its compatibility contract is
+`@keyneom/sync-kit` is a TypeScript package, but its compatibility contract is
 not browser-specific. Native applications use the same envelope and provider
 contracts with platform implementations.
 
