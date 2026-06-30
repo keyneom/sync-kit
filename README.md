@@ -10,6 +10,7 @@ lifecycle policy.
 ## Status
 
 Version `0.1.0` is implemented and configured as a public MIT-licensed package.
+It was published to npm as `@keyneom/sync-kit@0.1.0` on 2026-06-30.
 
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the

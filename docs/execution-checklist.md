@@ -88,7 +88,8 @@ compatibility checks pass.
       provenance.
 - [x] Remove `"private": true` only after the public-package decision is
       explicit.
-- [ ] Publish v0.1.0 and verify consumers against the published artifact.
+- [x] Publish v0.1.0.
+- [ ] Verify consumers against the published artifact.
 
 Exit gate: installed artifacts, not source-link shortcuts, pass the matrix.
 
@@ -99,6 +100,7 @@ Validated on 2026-06-30:
 - this repository: lint, strict typecheck, 22 unit/integration tests,
   declarations, and deterministic-fixture check;
 - packed-tarball npm and pnpm installs plus every documented subpath import;
+- npm publication of public `@keyneom/sync-kit@0.1.0` with the `latest` tag;
 - unchanged external baseline checks: EasyBC web's 15 existing sync
   crypto/session/token/key tests, EasyBC Android's existing `SyncCryptoTest`
   with OpenJDK 17, and Family Chores's 5 existing sync crypto/merge tests;
