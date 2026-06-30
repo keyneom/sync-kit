@@ -1,0 +1,10 @@
+{
+  "name": "sync-kit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}
