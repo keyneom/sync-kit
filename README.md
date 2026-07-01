@@ -9,8 +9,8 @@ lifecycle policy.
 
 ## Status
 
-Version `0.1.0` was published to npm on 2026-06-30. Current source version
-`0.1.1` removes application-specific runtime presets and keeps compatibility
+Version `0.1.1` was published to npm on 2026-06-30. It removes the
+application-specific runtime presets from `0.1.0` and keeps compatibility
 profiles consumer-owned.
 
 The tests in this repository cover frozen compatibility vectors, mocked

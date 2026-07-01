@@ -78,7 +78,7 @@ implementation plan pass.
 Exit gate: both web consumers use the package and all native/consumer
 compatibility checks pass.
 
-## Phase 5: packaging and v0.1.0
+## Phase 5: packaging and v0.1.x
 
 - [x] Test npm and pnpm installs from a packed tarball.
 - [ ] Build Vite, Next.js, and Tauri frontend fixtures through documented
@@ -90,6 +90,8 @@ compatibility checks pass.
 - [x] Remove `"private": true` only after the public-package decision is
       explicit.
 - [x] Publish v0.1.0.
+- [x] Publish v0.1.1 with consumer-owned profiles and no consumer fixtures in
+      the package artifact.
 - [ ] Verify consumers against the published artifact.
 
 Exit gate: installed artifacts, not source-link shortcuts, pass the matrix.
@@ -101,7 +103,7 @@ Validated on 2026-06-30:
 - this repository: lint, strict typecheck, 22 unit/integration tests,
   declarations, and deterministic-fixture check;
 - packed-tarball npm and pnpm installs plus every documented subpath import;
-- npm publication of public `@keyneom/sync-kit@0.1.0` with the `latest` tag;
+- npm publication of public `@keyneom/sync-kit@0.1.1` with the `latest` tag;
 - unchanged external baseline checks: EasyBC web's 15 existing sync
   crypto/session/token/key tests, EasyBC Android's existing `SyncCryptoTest`
   with OpenJDK 17, and Family Chores's 5 existing sync crypto/merge tests;
