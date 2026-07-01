@@ -9,8 +9,9 @@ lifecycle policy.
 
 ## Status
 
-Version `0.1.0` is implemented and configured as a public MIT-licensed package.
-It was published to npm as `@keyneom/sync-kit@0.1.0` on 2026-06-30.
+Version `0.1.0` was published to npm on 2026-06-30. Current source version
+`0.1.1` removes application-specific runtime presets and keeps compatibility
+profiles consumer-owned.
 
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the
@@ -34,8 +35,9 @@ The package has no runtime dependencies and is ESM-only.
 
 ```ts
 import {
-  easyBcV1Profile,
-  familyChoresV1Profile,
+  createV1EnvelopeCrypto,
+  createWebCryptoBackend,
+  defineV1CompatibilityProfile,
 } from "@keyneom/sync-kit/crypto";
 import { createSnapshotSync } from "@keyneom/sync-kit/snapshot";
 import { createWebPasskeyProvider } from "@keyneom/sync-kit/keys/web-passkey";
@@ -45,6 +47,38 @@ import {
   GoogleDriveSnapshotStore,
 } from "@keyneom/sync-kit/stores/google-drive";
 ```
+
+Applications define their own profile:
+
+```ts
+const profile = defineV1CompatibilityProfile({
+  appId: "my-notes",
+  filename: "my-notes-sync-v1.json",
+  aad: "my-notes-sync-envelope-v1",
+  hkdfInfo: "my-notes-content-key-v1",
+  compression: "gzip-if-smaller",
+  passkey: {
+    rpName: "My Notes",
+    userName: "encrypted-sync",
+    userDisplayName: "My Notes encrypted sync",
+    algorithm: -7,
+    residentKey: "required",
+    userVerification: "required",
+    timeoutMs: 60_000,
+  },
+});
+
+const envelopeCrypto = createV1EnvelopeCrypto(
+  profile,
+  appCodec,
+  createWebCryptoBackend(),
+);
+```
+
+The package does not export profiles for EasyBC, Family Chores, or any other
+consumer. Profile values are application configuration. Application data
+models, parsing, migration, merge, and fingerprints remain in `appCodec`, so a
+model change does not require a `sync-kit` release.
 
 Available exports:
 
@@ -117,8 +151,8 @@ See [native consumer guidance](docs/native-consumers.md) and the exact
 
 ## Compatibility and isolation
 
-The explicit profiles preserve both applications' v1 filenames, AAD, HKDF
-labels, compression behavior, and passkey names. V1 readers remain separate
+Each application owns the profile that preserves its filename, AAD, HKDF
+label, compression behavior, and passkey names. V1 readers remain separate
 because their cryptographic contexts are intentionally incompatible.
 
 The Drive snapshot wrapper rejects the wrong `appId` before making a request.

@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "type": "module",
@@ -8,7 +8,6 @@
   "sideEffects": false,
   "files": [
     "dist",
-    "fixtures",
     "README.md",
     "LICENSE"
   ],
@@ -44,8 +43,7 @@
     "./stores/google-drive": {
       "types": "./dist/stores/google-drive/index.d.ts",
       "import": "./dist/stores/google-drive/index.js"
-    },
-    "./fixtures/*": "./fixtures/*"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

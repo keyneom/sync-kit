@@ -36,12 +36,13 @@ try {
     "README.md",
     "dist/index.js",
     "dist/index.d.ts",
-    "fixtures/v1/easybc-web-android-gzip.json",
-    "fixtures/v1/family-chores-web-uncompressed.json",
   ]) {
     if (!paths.has(required)) {
       throw new Error(`Packed artifact is missing ${required}.`);
     }
+  }
+  if ([...paths].some((path) => path.startsWith("fixtures/"))) {
+    throw new Error("Consumer-specific fixtures must not be published.");
   }
 
   const tarball = join(temporaryDirectory, report.filename);

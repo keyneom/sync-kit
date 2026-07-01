@@ -31,7 +31,8 @@ the Family Chores consumer migration.
       without browser dependencies.
 - [x] Implement base64url, HKDF-SHA-256, AES-256-GCM, canonical AAD, envelope
       parsing, optional gzip, and standardized errors.
-- [x] Implement explicit EasyBC-v1 and Family-Chores-v1 profiles.
+- [x] Implement the consumer-defined v1 profile contract and keep EasyBC /
+      Family Chores definitions in compatibility tests only.
 - [x] Test compressed/uncompressed round trips and all frozen fixtures.
 - [x] Verify importing root/core in Node does not touch browser globals.
 

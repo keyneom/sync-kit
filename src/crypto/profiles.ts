@@ -28,50 +28,44 @@ export type V1CompatibilityProfile = {
   passkey: PasskeyProfile;
 };
 
-export const easyBcV1Profile = {
-  appId: "easy-bc",
-  filename: "easybc-sync-v1.json",
-  aad: "easy-bc-sync-envelope-v1",
-  hkdfInfo: "easy-bc-cloud-content-key-v1",
-  algorithm: V1_ALGORITHM,
-  readVersions: [1],
-  writeVersion: 1,
-  compression: "gzip-if-smaller",
-  nonceBytes: 12,
-  kdfSaltBytes: 32,
-  prfInputBytes: 32,
-  tagBits: 128,
-  passkey: {
-    rpName: "EasyBC",
-    userName: "encrypted-sync",
-    userDisplayName: "EasyBC encrypted sync",
-    algorithm: -7,
-    residentKey: "required",
-    userVerification: "required",
-    timeoutMs: 60_000,
-  },
-} as const satisfies V1CompatibilityProfile;
+export type V1CompatibilityProfileInput = Pick<
+  V1CompatibilityProfile,
+  "appId" | "filename" | "aad" | "hkdfInfo" | "compression" | "passkey"
+>;
 
-export const familyChoresV1Profile = {
-  appId: "family-chores",
-  filename: "family-chores-sync-v1.json",
-  aad: "family-chores-sync-envelope-v1",
-  hkdfInfo: "family-chores-cloud-content-key-v1",
-  algorithm: V1_ALGORITHM,
-  readVersions: [1],
-  writeVersion: 1,
-  compression: "none",
-  nonceBytes: 12,
-  kdfSaltBytes: 32,
-  prfInputBytes: 32,
-  tagBits: 128,
-  passkey: {
-    rpName: "Family Chores",
-    userName: "encrypted-sync",
-    userDisplayName: "Family Chores encrypted sync",
-    algorithm: -7,
-    residentKey: "required",
-    userVerification: "required",
-    timeoutMs: 60_000,
-  },
-} as const satisfies V1CompatibilityProfile;
+/**
+ * Creates a consumer-owned v1 profile while fixing protocol-level constants.
+ * Application profiles are configuration, not package presets.
+ */
+export function defineV1CompatibilityProfile(
+  input: V1CompatibilityProfileInput,
+): Readonly<V1CompatibilityProfile> {
+  for (const [name, value] of Object.entries({
+    appId: input.appId,
+    filename: input.filename,
+    aad: input.aad,
+    hkdfInfo: input.hkdfInfo,
+    rpName: input.passkey.rpName,
+    userName: input.passkey.userName,
+    userDisplayName: input.passkey.userDisplayName,
+  })) {
+    if (!value.trim()) throw new TypeError(`${name} must not be empty.`);
+  }
+  if (
+    !Number.isFinite(input.passkey.timeoutMs) ||
+    input.passkey.timeoutMs <= 0
+  ) {
+    throw new TypeError("passkey.timeoutMs must be positive.");
+  }
+  return Object.freeze({
+    ...input,
+    passkey: Object.freeze({ ...input.passkey }),
+    algorithm: V1_ALGORITHM,
+    readVersions: [1] as const,
+    writeVersion: 1,
+    nonceBytes: 12,
+    kdfSaltBytes: 32,
+    prfInputBytes: 32,
+    tagBits: 128,
+  });
+}

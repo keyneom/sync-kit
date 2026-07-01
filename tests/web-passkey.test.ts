@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { WebPasskeyProvider } from "../src/keys/web-passkey/index.js";
-import {
-  easyBcV1Profile,
-  type SyncEnvelopeV1,
-} from "../src/crypto/index.js";
+import { type SyncEnvelopeV1 } from "../src/crypto/index.js";
+import { easyBcTestProfile } from "./compatibility-profiles.js";
 
 describe("web passkey provider", () => {
   it("uses exact WebAuthn inputs and zeros raw PRF output after derivation", async () => {
@@ -11,7 +9,7 @@ describe("web passkey provider", () => {
     const credential = fakeCredential(Uint8Array.of(1, 2, 3), secret);
     const create = vi.fn().mockResolvedValue(credential);
     const deriveKey = vi.fn().mockResolvedValue("key");
-    const provider = new WebPasskeyProvider(easyBcV1Profile, {
+    const provider = new WebPasskeyProvider(easyBcTestProfile, {
       rpId: "keyneom.github.io",
       deriveKey,
       crypto: deterministicCrypto(),
@@ -50,7 +48,7 @@ describe("web passkey provider", () => {
       }),
     );
     const deriveKey = vi.fn().mockResolvedValue("key");
-    const provider = new WebPasskeyProvider(easyBcV1Profile, {
+    const provider = new WebPasskeyProvider(easyBcTestProfile, {
       rpId: "keyneom.github.io",
       deriveKey,
       crypto: deterministicCrypto(),
@@ -92,7 +90,7 @@ describe("web passkey provider", () => {
 
   it("rejects a snapshot for another RP ID before opening passkey UI", async () => {
     const get = vi.fn();
-    const provider = new WebPasskeyProvider(easyBcV1Profile, {
+    const provider = new WebPasskeyProvider(easyBcTestProfile, {
       rpId: "keyneom.github.io",
       deriveKey: async () => "key",
       crypto: deterministicCrypto(),

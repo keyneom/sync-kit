@@ -6,15 +6,18 @@ import {
   canonicalJson,
   createWebCryptoBackend,
   decryptSyncEnvelopeV1,
+  defineV1CompatibilityProfile,
   deriveContentKey,
-  easyBcV1Profile,
   encryptSyncEnvelopeV1,
-  familyChoresV1Profile,
   parseSyncEnvelopeV1,
   type SyncEnvelopeV1,
   type V1KeyMetadata,
 } from "../src/crypto/index.js";
 import { SyncKitError, type SyncCodec } from "../src/core/index.js";
+import {
+  easyBcTestProfile,
+  familyChoresTestProfile,
+} from "./compatibility-profiles.js";
 
 type Fixture = {
   secret: string;
@@ -41,7 +44,7 @@ describe("v1 compatibility crypto", () => {
     ]) {
       const fixture = await loadFixture(filename);
       const key = await deriveContentKey(
-        easyBcV1Profile,
+        easyBcTestProfile,
         base64UrlToBytes(fixture.secret),
         base64UrlToBytes(fixture.envelope.kdfSalt),
         backend,
@@ -50,7 +53,7 @@ describe("v1 compatibility crypto", () => {
         decryptSyncEnvelopeV1(
           fixture.envelope,
           key,
-          easyBcV1Profile,
+          easyBcTestProfile,
           codec,
           backend,
         ),
@@ -62,7 +65,7 @@ describe("v1 compatibility crypto", () => {
     const fixture = await loadFixture("easybc-web-uncompressed.json");
     const metadata = metadataFrom(fixture.envelope);
     const key = await deriveContentKey(
-      easyBcV1Profile,
+      easyBcTestProfile,
       base64UrlToBytes(fixture.secret),
       metadata.kdfSalt,
       backend,
@@ -71,7 +74,7 @@ describe("v1 compatibility crypto", () => {
       fixture.payload,
       key,
       metadata,
-      { ...easyBcV1Profile, compression: "none" },
+      { ...easyBcTestProfile, compression: "none" },
       codec,
       backend,
       { nonce: base64UrlToBytes(fixture.envelope.nonce) },
@@ -84,7 +87,7 @@ describe("v1 compatibility crypto", () => {
     const fixture = await loadFixture("family-chores-web-uncompressed.json");
     const metadata = metadataFrom(fixture.envelope);
     const key = await deriveContentKey(
-      familyChoresV1Profile,
+      familyChoresTestProfile,
       base64UrlToBytes(fixture.secret),
       metadata.kdfSalt,
       backend,
@@ -93,7 +96,7 @@ describe("v1 compatibility crypto", () => {
       fixture.payload,
       key,
       metadata,
-      familyChoresV1Profile,
+      familyChoresTestProfile,
       codec,
       backend,
       { nonce: base64UrlToBytes(fixture.envelope.nonce) },
@@ -104,7 +107,7 @@ describe("v1 compatibility crypto", () => {
       decryptSyncEnvelopeV1(
         encrypted,
         key,
-        familyChoresV1Profile,
+        familyChoresTestProfile,
         codec,
         backend,
       ),
@@ -115,7 +118,7 @@ describe("v1 compatibility crypto", () => {
     const fixture = await loadFixture("easybc-web-uncompressed.json");
     const metadata = metadataFrom(fixture.envelope);
     const key = await deriveContentKey(
-      easyBcV1Profile,
+      easyBcTestProfile,
       base64UrlToBytes(fixture.secret),
       metadata.kdfSalt,
       backend,
@@ -128,7 +131,7 @@ describe("v1 compatibility crypto", () => {
       payload,
       key,
       metadata,
-      easyBcV1Profile,
+      easyBcTestProfile,
       codec,
       backend,
     );
@@ -138,7 +141,7 @@ describe("v1 compatibility crypto", () => {
       decryptSyncEnvelopeV1(
         encrypted,
         key,
-        easyBcV1Profile,
+        easyBcTestProfile,
         codec,
         backend,
       ),
@@ -154,13 +157,13 @@ describe("v1 compatibility crypto", () => {
       malformedEnvelope: unknown;
     }>("failures.json");
     const correctKey = await deriveContentKey(
-      easyBcV1Profile,
+      easyBcTestProfile,
       base64UrlToBytes(fixture.secret),
       base64UrlToBytes(fixture.envelope.kdfSalt),
       backend,
     );
     const wrongKey = await deriveContentKey(
-      easyBcV1Profile,
+      easyBcTestProfile,
       base64UrlToBytes(failures.wrongSecret),
       base64UrlToBytes(fixture.envelope.kdfSalt),
       backend,
@@ -170,7 +173,7 @@ describe("v1 compatibility crypto", () => {
       decryptSyncEnvelopeV1(
         failures.tamperedEnvelope,
         correctKey,
-        easyBcV1Profile,
+        easyBcTestProfile,
         codec,
         backend,
       ),
@@ -179,7 +182,7 @@ describe("v1 compatibility crypto", () => {
       decryptSyncEnvelopeV1(
         fixture.envelope,
         wrongKey,
-        easyBcV1Profile,
+        easyBcTestProfile,
         codec,
         backend,
       ),
@@ -188,13 +191,13 @@ describe("v1 compatibility crypto", () => {
       decryptSyncEnvelopeV1(
         failures.wrongContextEnvelope,
         correctKey,
-        easyBcV1Profile,
+        easyBcTestProfile,
         codec,
         backend,
       ),
     ).rejects.toMatchObject({ code: "crypto" });
     expect(() =>
-      parseSyncEnvelopeV1(failures.malformedEnvelope, easyBcV1Profile),
+      parseSyncEnvelopeV1(failures.malformedEnvelope, easyBcTestProfile),
     ).toThrow(SyncKitError);
   });
 
@@ -204,7 +207,7 @@ describe("v1 compatibility crypto", () => {
       decompressionErrorEnvelope: SyncEnvelopeV1;
     }>("failures.json");
     const key = await deriveContentKey(
-      easyBcV1Profile,
+      easyBcTestProfile,
       base64UrlToBytes(fixture.secret),
       base64UrlToBytes(failures.decompressionErrorEnvelope.kdfSalt),
       backend,
@@ -213,7 +216,7 @@ describe("v1 compatibility crypto", () => {
       decryptSyncEnvelopeV1(
         failures.decompressionErrorEnvelope,
         key,
-        easyBcV1Profile,
+        easyBcTestProfile,
         codec,
         backend,
       ),
@@ -232,6 +235,45 @@ describe("portable encodings", () => {
     expect(canonicalJson({ z: 1, a: { y: 2, b: 3 } })).toBe(
       '{"a":{"b":3,"y":2},"z":1}',
     );
+  });
+});
+
+describe("consumer-owned profiles", () => {
+  it("fixes protocol constants without bundling an application preset", () => {
+    const profile = defineV1CompatibilityProfile({
+      appId: "fixture-app",
+      filename: "fixture-sync-v1.json",
+      aad: "fixture-envelope-v1",
+      hkdfInfo: "fixture-content-key-v1",
+      compression: "none",
+      passkey: {
+        rpName: "Fixture",
+        userName: "encrypted-sync",
+        userDisplayName: "Fixture encrypted sync",
+        algorithm: -7,
+        residentKey: "required",
+        userVerification: "required",
+        timeoutMs: 60_000,
+      },
+    });
+
+    expect(profile).toMatchObject({
+      appId: "fixture-app",
+      algorithm: "AES-256-GCM+HKDF-SHA-256",
+      readVersions: [1],
+      writeVersion: 1,
+      nonceBytes: 12,
+      tagBits: 128,
+    });
+  });
+
+  it("rejects incomplete consumer configuration", () => {
+    expect(() =>
+      defineV1CompatibilityProfile({
+        ...easyBcTestProfile,
+        appId: "",
+      }),
+    ).toThrow(/appId/u);
   });
 });
 
