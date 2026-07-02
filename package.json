@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.1.1",
+  "version": "0.2.0-rc.0",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "type": "module",
@@ -32,6 +32,26 @@
       "types": "./dist/snapshot/lifecycle.d.ts",
       "import": "./dist/snapshot/lifecycle.js"
     },
+    "./sharing": {
+      "types": "./dist/sharing/index.d.ts",
+      "import": "./dist/sharing/index.js"
+    },
+    "./sharing/web-crypto": {
+      "types": "./dist/sharing/web-crypto.d.ts",
+      "import": "./dist/sharing/web-crypto.js"
+    },
+    "./sharing/controller": {
+      "types": "./dist/sharing/controller.d.ts",
+      "import": "./dist/sharing/controller.js"
+    },
+    "./sharing/web-passkey": {
+      "types": "./dist/sharing/web-passkey.d.ts",
+      "import": "./dist/sharing/web-passkey.js"
+    },
+    "./sharing/account-binding": {
+      "types": "./dist/sharing/account-binding.d.ts",
+      "import": "./dist/sharing/account-binding.js"
+    },
     "./keys/web-passkey": {
       "types": "./dist/keys/web-passkey/index.d.ts",
       "import": "./dist/keys/web-passkey/index.js"
@@ -40,17 +60,31 @@
       "types": "./dist/auth/google-web/index.d.ts",
       "import": "./dist/auth/google-web/index.js"
     },
+    "./auth/google-web/identity": {
+      "types": "./dist/auth/google-web/identity.d.ts",
+      "import": "./dist/auth/google-web/identity.js"
+    },
     "./stores/google-drive": {
       "types": "./dist/stores/google-drive/index.d.ts",
       "import": "./dist/stores/google-drive/index.js"
+    },
+    "./stores/google-drive/sharing": {
+      "types": "./dist/stores/google-drive/sharing.d.ts",
+      "import": "./dist/stores/google-drive/sharing.js"
+    },
+    "./stores/google-drive/picker": {
+      "types": "./dist/stores/google-drive/picker.d.ts",
+      "import": "./dist/stores/google-drive/picker.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run fixtures:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run fixtures:check && npm run native:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "fixtures": "node scripts/generate-v1-fixtures.mjs",
     "fixtures:check": "node scripts/check-v1-fixtures.mjs",
+    "native:check": "sh scripts/check-native-sharing-fixture.sh",
     "lint": "eslint .",
+    "live:drive": "npm run build && node scripts/live-google-drive-sharing.mjs",
     "pack:check": "node scripts/check-package.mjs",
     "prepack": "npm run build",
     "test": "vitest run",

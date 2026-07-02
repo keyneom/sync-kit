@@ -337,3 +337,24 @@ Use the current implementations and their fixtures as compatibility sources.
 Avoid independent format refactors in either application while extraction is
 underway. Land adapter-based migrations one consumer at a time, keeping each
 step releasable and backward compatible.
+
+## Sharing extension
+
+Shared multi-user backups are a separate protocol and do not modify v1 private
+snapshots. Its architecture, security limits, and per-file Drive flow are in
+`docs/shared-backups.md`; phased implementation gates are in
+`docs/sharing-execution-plan.md`.
+
+Static-frontend operation without an application-owned trusted backend is a
+normative objective. The required path uses Google Identity Services, Google
+Drive, WebCrypto, and WebAuthn/passkeys from the client. Optional backend
+automation must not become a protocol trust root or interoperability
+requirement.
+
+Use `docs/sharing-implementation-handoff.md` as the authoritative continuation
+brief for the settled storage layout, permissions, exchange retention, security
+checks, and remaining release blockers.
+
+The first build adds `/sharing`, `/sharing/web-crypto`, and a normal-Drive
+`GoogleDriveFileStore`. Do not route existing private snapshots through these
+APIs or move them out of `appDataFolder`.

@@ -21,13 +21,20 @@ type PrfOutput = AuthenticationExtensionsClientOutputs & {
 
 type PublicKeyCredentialLike = {
   rawId: ArrayBuffer;
+  response?: AuthenticatorResponse;
   getClientExtensionResults(): AuthenticationExtensionsClientOutputs;
+};
+
+export type WebPasskeyKeyMetadata = V1KeyMetadata & {
+  credentialPublicKey?: JsonWebKey;
 };
 
 export type WebPasskeyProviderOptions<K> = {
   rpId: string;
   deriveKey: (secret: Uint8Array, salt: Uint8Array) => Promise<K>;
-  crypto?: Pick<Crypto, "getRandomValues">;
+  crypto?: Pick<Crypto, "getRandomValues"> & {
+    subtle?: SubtleCrypto;
+  };
   navigator?: Navigator;
   secureContext?: () => boolean;
 };
@@ -43,7 +50,7 @@ export class WebPasskeyProvider<K>
     private readonly options: WebPasskeyProviderOptions<K>,
   ) {}
 
-  async create(): Promise<{ metadata: V1KeyMetadata; key: K }> {
+  async create(): Promise<{ metadata: WebPasskeyKeyMetadata; key: K }> {
     this.assertSupported();
     const cryptoImplementation = this.crypto();
     const prfInput = randomBytes(
@@ -87,29 +94,43 @@ export class WebPasskeyProvider<K>
       returnedSecret ??
       (await this.evaluatePrf(credentialId, prfInput, this.options.rpId));
     const key = await this.deriveAndZero(secret, kdfSalt);
-    const metadata = {
+    const credentialPublicKey = await exportCredentialPublicKey(
+      credential,
+      cryptoImplementation.subtle,
+    );
+    const metadata: WebPasskeyKeyMetadata = {
       credentialId: bytesToBase64Url(credentialId),
       rpId: this.options.rpId,
       prfInput,
       kdfSalt,
+      ...(credentialPublicKey ? { credentialPublicKey } : {}),
     };
     this.cached = { identity: metadataIdentity(metadata), key };
     return { metadata, key };
   }
 
   async unlock(envelope: SyncEnvelopeV1): Promise<K> {
-    if (envelope.rpId !== this.options.rpId) {
+    return this.unlockMetadata({
+      credentialId: envelope.credentialId,
+      rpId: envelope.rpId,
+      prfInput: base64UrlToBytes(envelope.prfInput),
+      kdfSalt: base64UrlToBytes(envelope.kdfSalt),
+    });
+  }
+
+  async unlockMetadata(metadata: V1KeyMetadata): Promise<K> {
+    if (metadata.rpId !== this.options.rpId) {
       throw new SyncKitError(
         "compatibility",
-        `The snapshot belongs to ${envelope.rpId}, not ${this.options.rpId}.`,
+        `The protected key belongs to ${metadata.rpId}, not ${this.options.rpId}.`,
       );
     }
-    const identity = envelopeIdentity(envelope);
+    const identity = metadataIdentity(metadata);
     if (this.cached?.identity === identity) return this.cached.key;
     if (this.cached) this.clear();
     if (this.pending?.identity === identity) return this.pending.promise;
 
-    const promise = this.unlockNow(envelope, identity);
+    const promise = this.unlockNow(metadata, identity);
     this.pending = { identity, promise };
     try {
       return await promise;
@@ -133,18 +154,18 @@ export class WebPasskeyProvider<K>
   }
 
   private async unlockNow(
-    envelope: SyncEnvelopeV1,
+    metadata: V1KeyMetadata,
     identity: string,
   ): Promise<K> {
     this.assertSupported();
     const secret = await this.evaluatePrf(
-      base64UrlToBytes(envelope.credentialId),
-      base64UrlToBytes(envelope.prfInput),
-      envelope.rpId,
+      base64UrlToBytes(metadata.credentialId),
+      metadata.prfInput,
+      metadata.rpId,
     );
     const key = await this.deriveAndZero(
       secret,
-      base64UrlToBytes(envelope.kdfSalt),
+      metadata.kdfSalt,
     );
     this.cached = { identity, key };
     return key;
@@ -199,7 +220,9 @@ export class WebPasskeyProvider<K>
     }
   }
 
-  private crypto(): Pick<Crypto, "getRandomValues"> {
+  private crypto(): Pick<Crypto, "getRandomValues"> & {
+    subtle?: SubtleCrypto;
+  } {
     const implementation = this.options.crypto ?? globalThis.crypto;
     if (!implementation) {
       throw new SyncKitError("configuration", "Crypto randomness is unavailable.");
@@ -221,6 +244,34 @@ export class WebPasskeyProvider<K>
       (typeof navigator === "undefined" ? undefined : navigator)
     );
   }
+}
+
+async function exportCredentialPublicKey(
+  credential: PublicKeyCredentialLike,
+  subtle: SubtleCrypto | undefined,
+): Promise<JsonWebKey | undefined> {
+  if (!subtle || !credential.response) return undefined;
+  const response =
+    credential.response as AuthenticatorAttestationResponse & {
+      getPublicKey?(): ArrayBuffer | null;
+      getPublicKeyAlgorithm?(): number;
+    };
+  if (
+    response.getPublicKeyAlgorithm?.() !== -7 ||
+    typeof response.getPublicKey !== "function"
+  ) {
+    return undefined;
+  }
+  const spki = response.getPublicKey();
+  if (!spki) return undefined;
+  const key = await subtle.importKey(
+    "spki",
+    spki,
+    { name: "ECDSA", namedCurve: "P-256" },
+    true,
+    ["verify"],
+  );
+  return subtle.exportKey("jwk", key);
 }
 
 export function createWebPasskeyProvider(
@@ -274,10 +325,6 @@ function randomBytes(
   cryptoImplementation: Pick<Crypto, "getRandomValues">,
 ): Uint8Array {
   return cryptoImplementation.getRandomValues(new Uint8Array(length));
-}
-
-function envelopeIdentity(envelope: SyncEnvelopeV1): string {
-  return [envelope.rpId, envelope.credentialId, envelope.kdfSalt].join("\n");
 }
 
 function metadataIdentity(metadata: V1KeyMetadata): string {

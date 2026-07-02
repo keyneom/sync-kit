@@ -114,6 +114,19 @@ Validated on 2026-06-30:
 No package tarball was installed into EasyBC, Family Chores, or Keynote, and no
 consumer repository was changed. Phase 4 remains entirely unchecked.
 
+Validated on 2026-07-01 for the unpublished sharing extension:
+
+- deterministic fixtures, Java sharing-fixture verification, lint, strict
+  typecheck, 50 tests, declarations, and
+  build;
+- packed-tarball npm and pnpm installs plus every sharing subpath import;
+- mocked owner/invite/response/accept/recipient-write flow;
+- passkey-key-encrypted sharing identity round trip;
+- conditional Drive request headers and stale-write rejection.
+
+Live Google Picker, Drive ETag/permission behavior, Google/passkey account
+attestation, consumer integration, and native fixture consumption remain open.
+
 ## Deferred: v2 and desktop adapters
 
 - [ ] Add v2 readers with canonical authenticated headers and explicit `appId`.
@@ -122,3 +135,38 @@ consumer repository was changed. Phase 4 remains entirely unchecked.
 - [ ] Change writer versions only after every active consumer can read v2.
 - [ ] Design Keynote system-browser OAuth, desktop keys, and manifest/blob sync
       before implementing desktop provider adapters.
+
+## Extension: shared encrypted backups
+
+- [x] State static-frontend operation without an application-owned trusted
+      backend as a package objective and protocol requirement.
+- [x] Document the sharing protocol, per-file permission model, key exchange,
+      role semantics, and security limits.
+- [x] Add browser-independent sharing types and strict parsers.
+- [x] Add WebCrypto identities, signed invitations/key responses,
+      per-recipient content-key grants, signed revisions, and role enforcement.
+- [x] Add a normal-Drive `drive.file` store with explicit per-file sharing.
+- [x] Add an overrideable app-owned top-level folder default for new file-backed
+      snapshots while retaining explicit `appDataFolder` compatibility.
+- [x] Make shared metadata visibility the simple default and retain direct-file
+      or limited-folder isolation as an explicit developer option.
+- [x] Preserve all existing v1 private-snapshot fixtures and behavior.
+- [x] Freeze a synthetic sharing-v1 WebCrypto fixture.
+- [x] Add multi-dataset invitations and durable signed acceptance provenance.
+- [x] Add a headless sharing controller and managed Google Drive sharing
+      transport.
+- [x] Add passkey-encrypted sharing identity records and optional IndexedDB
+      ciphertext persistence.
+- [x] Add mocked conditional-write and stale-writer conflict coverage.
+- [x] Validate the sharing-v1 fixture with Java before claiming Java
+      compatibility.
+- [x] Add Picker/Open-with, Google/passkey account attestation, signed ancestry,
+      fork policy, and dual-proof key rotation.
+- [x] Execute sharing exchange/decryption from packed npm and pnpm artifacts.
+- [ ] Validate OAuth, Picker, conditional writes, permissions, and account
+      attestation against live Google services.
+- [ ] Integrate the complete flow into an external consumer from a packed
+      artifact.
+
+Detailed gates: `docs/sharing-execution-plan.md`.
+Continuation handoff: `docs/sharing-implementation-handoff.md`.

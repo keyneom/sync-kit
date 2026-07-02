@@ -4,6 +4,21 @@ Captured on 2026-06-29. Re-check every path and revision before extraction.
 These repositories remain the compatibility sources; this document is not a
 substitute for fixture-backed verification.
 
+Re-checked on 2026-07-01 before implementing shared backups:
+
+- EasyBC remained at `e6d3250af204f0e1a8b8fe25fd276b24a70f42b3`,
+  with the in-progress web migration to `@keyneom/sync-kit@0.1.1` still
+  uncommitted. Its consumer-owned profile retains the exact v1 filename, AAD,
+  HKDF info, compression policy, and passkey labels.
+- Family Chores remained at
+  `60ef3428b8613b756de42668d04b5fe88f0af157`, with its sync implementation
+  still uncommitted and now consuming the package through a local
+  consumer-owned profile.
+- The Android v1 implementation remains the EasyBC writer-compatibility
+  ceiling. Sharing was therefore added as a separate protocol and did not
+  change v1 readers, writers, profiles, or fixtures.
+- No consumer repository was modified during the shared-backup implementation.
+
 Re-checked on 2026-06-29 before implementation:
 
 - EasyBC remained clean at the captured revision.

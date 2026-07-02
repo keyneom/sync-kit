@@ -60,9 +60,67 @@ async function verifyInstalledPackage(packageManager, tarball) {
     await import("@keyneom/sync-kit/crypto");
     await import("@keyneom/sync-kit/snapshot");
     await import("@keyneom/sync-kit/snapshot/lifecycle");
+    await import("@keyneom/sync-kit/sharing");
+    await import("@keyneom/sync-kit/sharing/web-crypto");
+    await import("@keyneom/sync-kit/sharing/controller");
+    await import("@keyneom/sync-kit/sharing/web-passkey");
+    await import("@keyneom/sync-kit/sharing/account-binding");
     await import("@keyneom/sync-kit/keys/web-passkey");
     await import("@keyneom/sync-kit/auth/google-web");
+    await import("@keyneom/sync-kit/auth/google-web/identity");
     await import("@keyneom/sync-kit/stores/google-drive");
+    await import("@keyneom/sync-kit/stores/google-drive/sharing");
+    await import("@keyneom/sync-kit/stores/google-drive/picker");
+
+    const sharing = await import("@keyneom/sync-kit/sharing/web-crypto");
+    const owner = await sharing.createWebCryptoSharingIdentity();
+    const recipient = await sharing.createWebCryptoSharingIdentity();
+    const invitation = await sharing.createSharingInvitationV1(owner, {
+      appId: "packed-consumer",
+      appFolderId: "folder",
+      recipientDrivePermissionId: "permission",
+      requestedGrants: [{ datasetId: "profile", role: "writer" }],
+    });
+    const response = await sharing.createSharingPublicKeyResponseV1(recipient, {
+      appId: "packed-consumer",
+      exchangeId: invitation.exchangeId,
+    });
+    const accepted = await sharing.acceptSharingPublicKeyResponseV1(
+      invitation,
+      response,
+      {
+        acceptedByKeyId: owner.publicKey.keyId,
+        drivePermissionId: "permission",
+      },
+    );
+    if (accepted.length !== 1 || accepted[0].datasetId !== "profile") {
+      throw new Error("Packed sharing exchange failed.");
+    }
+    const codec = {
+      serialize: value => value,
+      parse: value => value,
+    };
+    const envelope = await sharing.createSharedBackupEnvelopeV1(
+      { packed: true },
+      codec,
+      owner,
+      {
+        appId: "packed-consumer",
+        backupId: "profile",
+        participants: [
+          { publicKey: owner.publicKey, role: "owner" },
+          accepted[0].participant,
+        ],
+      },
+    );
+    const decrypted = await sharing.decryptSharedBackupEnvelopeV1(
+      envelope,
+      codec,
+      recipient,
+    );
+    if (decrypted.packed !== true) {
+      throw new Error("Packed sharing decryption failed.");
+    }
   `;
   await mkdir(consumer, { recursive: true });
   await writeFile(

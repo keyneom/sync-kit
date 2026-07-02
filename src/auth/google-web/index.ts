@@ -6,6 +6,8 @@ import { SyncKitError } from "../../core/errors.js";
 
 export const GOOGLE_DRIVE_APPDATA_SCOPE =
   "https://www.googleapis.com/auth/drive.appdata";
+export const GOOGLE_DRIVE_FILE_SCOPE =
+  "https://www.googleapis.com/auth/drive.file";
 
 type TokenResponse = {
   access_token?: string;

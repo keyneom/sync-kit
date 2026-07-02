@@ -1,0 +1,355 @@
+import { describe, expect, it } from "vitest";
+import {
+  createSharedBackupController,
+  MemorySharedBackupRegistry,
+  type SharedBackupControllerCodec,
+} from "../src/sharing/controller.js";
+import type {
+  SharedBackupEnvelopeV1,
+  SharingInvitationV1,
+  SharingPublicKeyResponseV1,
+  SharingRole,
+} from "../src/sharing/index.js";
+import type {
+  SharedBackupStorage,
+  SharedBackupTransport,
+  SharedDatasetFile,
+  SharedDatasetPermission,
+  SharedExchangeFile,
+  SharedKeyResponseFile,
+  VersionedSharedDataset,
+} from "../src/sharing/transport.js";
+import {
+  createSharedBackupEnvelopeV1,
+  createWebCryptoSharingIdentity,
+  type WebCryptoSharingIdentity,
+} from "../src/sharing/web-crypto.js";
+
+type Payload = {
+  items: string[];
+};
+
+const codec: SharedBackupControllerCodec<Payload> = {
+  serialize: (value) => value,
+  parse: (value) => value as Payload,
+  merge: (local, remote) => ({
+    items: [...new Set([...remote.items, ...local.items])],
+  }),
+  fingerprint: (value) => JSON.stringify([...value.items].sort()),
+};
+
+describe("shared-backup controller", () => {
+  it("completes a backendless invite, response, acceptance, and read flow", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const recipientRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, ownerRegistry);
+    const recipientController = controller(
+      recipient,
+      transport,
+      recipientRegistry,
+    );
+
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+      expiresAt: "2026-07-08T12:00:00.000Z",
+    });
+    const submitted = await recipientController.submitKeyResponse(
+      invited.invitationFileId,
+    );
+    const accepted = await ownerController.acceptKeyResponse({
+      invitation: invited.invitation,
+      responseFileId: submitted.responseFileId,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    expect(accepted).toMatchObject([
+      {
+        datasetId: "tasks",
+        status: "accepted",
+        permissionId: "permission-recipient@example.com",
+      },
+    ]);
+    await expect(recipientController.loadDataset("tasks")).resolves.toMatchObject({
+      value: { items: ["owner"] },
+      outcome: "loaded",
+    });
+    await expect(
+      recipientController.syncDataset("tasks", {
+        items: ["owner", "recipient"],
+      }),
+    ).resolves.toMatchObject({
+      value: { items: ["owner", "recipient"] },
+      outcome: "updated",
+    });
+  });
+
+  it("rejects a stale conditional write instead of losing another writer", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const sharing = controller(owner, transport, registry);
+    await sharing.createDataset("profile", { items: ["one"] });
+
+    transport.conflictNextWrite = true;
+    await expect(
+      sharing.syncDataset("profile", { items: ["one", "two"] }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("rotates the local owner identity without changing ownership", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const replacement = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const original = controller(owner, transport, registry);
+    await original.createDataset("profile", { items: ["one"] });
+
+    await expect(
+      original.rotateLocalKey(replacement, ["profile"]),
+    ).resolves.toMatchObject([
+      { datasetId: "profile", status: "rotated" },
+    ]);
+    await expect(
+      controller(replacement, transport, registry).loadDataset("profile"),
+    ).resolves.toMatchObject({ value: { items: ["one"] } });
+  });
+
+  it("merges a divergent signed head only through the consumer fork policy", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const sharing = controller(owner, transport, registry, {
+      resolveFork: async () => "merge",
+    });
+    await sharing.createDataset("profile", { items: ["genesis"] });
+    const genesis = await transport.readDataset("dataset-profile");
+    await sharing.syncDataset("profile", {
+      items: ["genesis", "local-first"],
+    });
+    const branchEnvelope = await createSharedBackupEnvelopeV1(
+      { items: ["genesis", "remote-branch"] },
+      codec,
+      owner,
+      {
+        appId: "fixture-app",
+        backupId: "profile",
+        participants: [
+          { publicKey: owner.publicKey, role: "owner" },
+        ],
+        previous: genesis.envelope,
+        revisionId: "remote-branch",
+      },
+    );
+    const current = await transport.readDataset("dataset-profile");
+    transport.datasets.set("dataset-profile", {
+      ...current,
+      envelope: branchEnvelope,
+      version: '"fork"',
+    });
+
+    await expect(
+      sharing.syncDataset("profile", {
+        items: ["genesis", "local-first", "local-second"],
+      }),
+    ).resolves.toMatchObject({
+      value: {
+        items: [
+          "genesis",
+          "remote-branch",
+          "local-first",
+          "local-second",
+        ],
+      },
+      outcome: "updated",
+    });
+  });
+});
+
+function controller(
+  identity: WebCryptoSharingIdentity,
+  transport: SharedBackupTransport,
+  registry: MemorySharedBackupRegistry,
+  overrides: Partial<
+    Parameters<typeof createSharedBackupController<Payload>>[0]
+  > = {},
+) {
+  return createSharedBackupController({
+    appId: "fixture-app",
+    codec,
+    identity: async () => identity,
+    transport,
+    registry,
+    now: () => new Date("2026-07-01T12:00:00.000Z"),
+    randomUUID: incrementingUuid(),
+    ...overrides,
+  });
+}
+
+function incrementingUuid(): () => string {
+  return () => `generated-${++uuidCount}`;
+}
+
+let uuidCount = 0;
+
+class MemorySharingTransport implements SharedBackupTransport {
+  readonly storage: SharedBackupStorage = {
+    appFolderId: "app-folder",
+    exchangesFolderId: "exchanges-folder",
+  };
+  readonly datasets = new Map<string, VersionedSharedDataset>();
+  readonly invitations = new Map<string, SharingInvitationV1>();
+  readonly responses = new Map<string, SharingPublicKeyResponseV1>();
+  conflictNextWrite = false;
+  private counter = 0;
+
+  async ensureStorage(): Promise<SharedBackupStorage> {
+    return this.storage;
+  }
+
+  async listDatasets(): Promise<SharedDatasetFile[]> {
+    return [...this.datasets.values()].map(
+      ({ datasetId, fileId, name, canEdit }) => ({
+        datasetId,
+        fileId,
+        name,
+        ...(canEdit === undefined ? {} : { canEdit }),
+      }),
+    );
+  }
+
+  async readDataset(fileId: string): Promise<VersionedSharedDataset> {
+    const stored = this.datasets.get(fileId);
+    if (!stored) throw new Error(`Missing ${fileId}`);
+    return structuredClone(stored);
+  }
+
+  async createDataset(
+    datasetId: string,
+    envelope: SharedBackupEnvelopeV1,
+  ): Promise<VersionedSharedDataset> {
+    const fileId = `dataset-${datasetId}`;
+    const stored = {
+      datasetId,
+      fileId,
+      name: `${datasetId}.sync-kit.json`,
+      canEdit: true,
+      envelope: structuredClone(envelope),
+      version: `"${++this.counter}"`,
+    };
+    this.datasets.set(fileId, stored);
+    return structuredClone(stored);
+  }
+
+  async writeDataset(
+    current: VersionedSharedDataset,
+    envelope: SharedBackupEnvelopeV1,
+  ): Promise<VersionedSharedDataset> {
+    const actual = this.datasets.get(current.fileId);
+    if (
+      this.conflictNextWrite ||
+      actual?.version !== current.version
+    ) {
+      this.conflictNextWrite = false;
+      throw Object.assign(new Error("Conflict"), { code: "conflict" });
+    }
+    const updated = {
+      ...actual,
+      envelope: structuredClone(envelope),
+      version: `"${++this.counter}"`,
+    };
+    this.datasets.set(current.fileId, updated);
+    return structuredClone(updated);
+  }
+
+  async grantExchangeAccess(
+    emailAddress: string,
+  ): Promise<{ drivePermissionId: string; appFolderId: string }> {
+    return {
+      drivePermissionId: `permission-${emailAddress}`,
+      appFolderId: this.storage.appFolderId,
+    };
+  }
+
+  async createInvitation(invitation: SharingInvitationV1): Promise<string> {
+    const fileId = `invitation-${invitation.exchangeId}`;
+    this.invitations.set(fileId, structuredClone(invitation));
+    return fileId;
+  }
+
+  async createKeyResponse(
+    response: SharingPublicKeyResponseV1,
+  ): Promise<string> {
+    const fileId = `response-${response.exchangeId}`;
+    this.responses.set(fileId, structuredClone(response));
+    return fileId;
+  }
+
+  async listExchanges(): Promise<SharedExchangeFile[]> {
+    return [
+      ...[...this.invitations.entries()].map(([fileId, invitation]) => ({
+        fileId,
+        exchangeId: invitation.exchangeId,
+        kind: "invitation" as const,
+      })),
+      ...[...this.responses.entries()].map(([fileId, response]) => ({
+        fileId,
+        exchangeId: response.exchangeId,
+        kind: "key-response" as const,
+        keyId: response.keyId,
+      })),
+    ];
+  }
+
+  async readInvitation(fileId: string): Promise<SharingInvitationV1> {
+    const invitation = this.invitations.get(fileId);
+    if (!invitation) throw new Error(`Missing ${fileId}`);
+    return structuredClone(invitation);
+  }
+
+  async readKeyResponse(
+    fileId: string,
+    expectedDrivePermissionId: string,
+  ): Promise<SharedKeyResponseFile> {
+    const response = this.responses.get(fileId);
+    if (!response) throw new Error(`Missing ${fileId}`);
+    return {
+      fileId,
+      response: structuredClone(response),
+      ownerPermissionId: expectedDrivePermissionId,
+    };
+  }
+
+  async deleteExchange(fileId: string): Promise<void> {
+    this.invitations.delete(fileId);
+    this.responses.delete(fileId);
+  }
+
+  async setDatasetPermission(
+    _fileId: string,
+    emailAddress: string,
+    role: Exclude<SharingRole, "owner">,
+    options: {
+      existingDirectPermissionId?: string;
+      inheritedReaderPermissionId?: string;
+    } = {},
+  ): Promise<SharedDatasetPermission> {
+    if (role === "viewer" && options.inheritedReaderPermissionId) {
+      return { role: "reader" };
+    }
+    return {
+      permissionId:
+        options.existingDirectPermissionId ??
+        `permission-${emailAddress}`,
+      role: role === "viewer" ? "reader" : "writer",
+    };
+  }
+
+  removeDatasetPermission(): Promise<void> {
+    return Promise.resolve();
+  }
+}

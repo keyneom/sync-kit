@@ -2,6 +2,7 @@ export type SyncErrorCode =
   | "authorization"
   | "compatibility"
   | "configuration"
+  | "conflict"
   | "crypto"
   | "decompression"
   | "key"

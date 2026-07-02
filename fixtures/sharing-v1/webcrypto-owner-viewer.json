@@ -1,0 +1,132 @@
+{
+  "provenance": "Synthetic sharing-v1 WebCrypto conformance vector",
+  "payload": {
+    "profile": "synthetic-sharing-fixture",
+    "count": 1
+  },
+  "owner": {
+    "publicKey": {
+      "keyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+      "encryptionAlgorithm": "ECDH-P256",
+      "encryptionPublicKey": "BB7KmIruz_VUG7Jj8agszsVhTm6FyNqlyFPoGdg7JqPIMoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+      "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+      "signingPublicKey": "BIMdctPzlKUbVny2vgQfRKlXCM07BBbB3xN7Vgmj_muC5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg"
+    },
+    "privateKeys": {
+      "encryption": {
+        "key_ops": ["deriveBits"],
+        "ext": true,
+        "kty": "EC",
+        "x": "HsqYiu7P9VQbsmPxqCzOxWFOboXI2qXIU-gZ2Dsmo8g",
+        "y": "MoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+        "crv": "P-256",
+        "d": "FG2c3GrphYzsi9dwwa5lf0oCGBHruBLaGuKxwHI_cW0"
+      },
+      "signing": {
+        "key_ops": ["sign"],
+        "ext": true,
+        "kty": "EC",
+        "x": "gx1y0_OUpRtWfLa-BB9EqVcIzTsEFsHfE3tWCaP-a4I",
+        "y": "5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg",
+        "crv": "P-256",
+        "d": "-Jc7DUQo1z1koIbwPY4WCM3aW5dIkQl6sDryEi5oQA0"
+      }
+    }
+  },
+  "viewer": {
+    "publicKey": {
+      "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+      "encryptionAlgorithm": "ECDH-P256",
+      "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+      "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+      "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc"
+    },
+    "privateKeys": {
+      "encryption": {
+        "key_ops": ["deriveBits"],
+        "ext": true,
+        "kty": "EC",
+        "x": "XLYczGN8WaYVkoGEb4OZrfM8oUt7emsmsDM1BpnQNN8",
+        "y": "2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+        "crv": "P-256",
+        "d": "gAiXFh6sjVPlq75QlHlenh3hkwSQ9BOe3WbNCBn_jg8"
+      },
+      "signing": {
+        "key_ops": ["sign"],
+        "ext": true,
+        "kty": "EC",
+        "x": "bYxCGLVls_yTNj3McQQ9rdcayDhXf6S3g-A29avvYeY",
+        "y": "-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+        "crv": "P-256",
+        "d": "pF7Rti1cC_AE6s7UI_tqEbbUrNFuxbipgN2Z8EZwMVY"
+      }
+    }
+  },
+  "response": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-public-key",
+    "appId": "fixture-app",
+    "exchangeId": "fixture-exchange-1",
+    "createdAt": "2026-07-01T00:00:00.000Z",
+    "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+    "encryptionAlgorithm": "ECDH-P256",
+    "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+    "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+    "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+    "proof": "m-W9CJu4KQhEMZoslwet1EvVKZz3EppwEj3ek08_XiiGB-Cm88vMwaQxxiJXMpKuDwuQmvGfCXEdLtAa_iPeRQ"
+  },
+  "envelope": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-shared-backup",
+    "algorithm": "AES-256-GCM+ECDH-P256+HKDF-SHA256",
+    "appId": "fixture-app",
+    "backupId": "fixture-backup",
+    "revisionId": "fixture-revision-1",
+    "createdAt": "2026-07-01T00:00:00.000Z",
+    "authorKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+    "accessControl": [
+      {
+        "sequence": 0,
+        "authorKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+        "participants": [
+          {
+            "keyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BB7KmIruz_VUG7Jj8agszsVhTm6FyNqlyFPoGdg7JqPIMoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BIMdctPzlKUbVny2vgQfRKlXCM07BBbB3xN7Vgmj_muC5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg",
+            "role": "owner"
+          },
+          {
+            "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+            "role": "viewer"
+          }
+        ],
+        "signature": "03x6Z9hw2w0QpwnzaTuVZEhSnWkcNUIgxpMIHPYt4J78mBLYQawmoAbqsFa8JCfbZEi2h0to79va9cwYY0zudw"
+      }
+    ],
+    "keyGrants": [
+      {
+        "recipientKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+        "ephemeralPublicKey": "BKpO9H7L9fG6BTtGO54jpIwtA3L1aDjaDy7VS-XzrpFFXLYws_Ck6ybiPfhVZDKtEDGDA6uEZKBM1D5l01AuYu0",
+        "kdfSalt": "5wi3Y7n5zg4cH0G7ZYpwN9uYyLly9eFZNZ9P05SFAPs",
+        "nonce": "hc5nqOheY22yidz_",
+        "wrappedContentKey": "5nn1Ctrcdo78e9AMc_Xg_pgMwn0ZnTTyiMf0NTnibv7TdGWO8eAh2kpYV1wVOYE9"
+      },
+      {
+        "recipientKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+        "ephemeralPublicKey": "BPijod_lGE3CThVsWrm9qGR3D8_qfvFSe4N0D4kuVmJhYMbkkDIayagc3zjwTIAcDkYfyS-glXrxgY10ZFzApFE",
+        "kdfSalt": "0vtdf-4ZgU7RQh0SlMKOiCKZeYmzQOMmw92i5YPK4m0",
+        "nonce": "D8GoFh1k5WSwAPdj",
+        "wrappedContentKey": "UkZnmwfQKTsffq5vsD4SPRs12yw3r2w7MxSNEaoJg4EM693-0qBVWdtOMKcefNZT"
+      }
+    ],
+    "payloadNonce": "VeQ2qUOakTrOReOi",
+    "ciphertext": "QOTGxjElI0up6fE8Fx6eFn-Or6GJi66qzlsr7mDUxrbEPUEIG3o1tZ19WnoDPGwn1ZWwGM-hSXLDRKqI2RIy6r4",
+    "signature": "5khYqki7aXpjUYcaY8j9Lxc4uxv3E948_Nl2petzcpNOSc11R8pcPR0oykcCrjcoUkf2LbMh2ykJ9-JtuxTkNQ"
+  }
+}
