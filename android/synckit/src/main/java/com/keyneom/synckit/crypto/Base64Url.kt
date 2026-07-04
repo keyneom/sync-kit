@@ -8,8 +8,14 @@ object Base64Url {
     fun encode(bytes: ByteArray): String =
         Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 
-    fun decode(value: String): ByteArray =
-        try {
+    fun decode(value: String): ByteArray {
+        if (value.contains('=')) {
+            throw SyncKitError(
+                SyncKitErrorCode.COMPATIBILITY,
+                "The value is not valid unpadded base64url.",
+            )
+        }
+        return try {
             Base64.getUrlDecoder().decode(value)
         } catch (error: IllegalArgumentException) {
             throw SyncKitError(
@@ -18,4 +24,5 @@ object Base64Url {
                 error,
             )
         }
+    }
 }

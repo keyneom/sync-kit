@@ -16,8 +16,13 @@ import com.keyneom.synckit.crypto.V1CompatibilityProfile
 import com.keyneom.synckit.crypto.V1Compression
 import com.keyneom.synckit.crypto.V1EnvelopeCrypto
 import com.keyneom.synckit.crypto.V1KeyMetadata
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -121,6 +126,125 @@ class SnapshotSyncControllerTest {
         controller.delete()
         assertEquals("file", store.deletedFileId)
         assertTrue(keys.cleared)
+    }
+
+    @Test
+    fun serializesOperationsCoalescesForegroundAndDedupesChangeSyncs() = runBlocking {
+        val authorizeGate = CompletableDeferred<Unit>()
+        var authorizeCount = 0
+        val gatedAuth = object : AuthorizationProvider {
+            override suspend fun authorize(): Authorization {
+                authorizeCount += 1
+                if (authorizeCount == 1) authorizeGate.await()
+                return Authorization("token")
+            }
+        }
+        val gatedController = SnapshotSyncController(
+            SnapshotSyncOptions(
+                appId = profile.appId,
+                codec = codec,
+                envelopeCrypto = crypto,
+                keyProvider = keys,
+                authorizationProvider = gatedAuth,
+                cloudStore = store,
+                readLocal = { "local" },
+                applyMerged = { applied = it },
+                activity = { activity },
+            ),
+        )
+
+        val active = async { gatedController.sync(SyncReason.MANUAL) }
+        yield()
+        assertTrue(gatedController.operationInProgress())
+        val foreground = gatedController.sync(SyncReason.FOREGROUND)
+        assertEquals(SyncOutcome.COALESCED, foreground.outcome)
+
+        val firstChange = async { gatedController.sync(SyncReason.CHANGE) }
+        val secondChange = async { gatedController.sync(SyncReason.CHANGE) }
+        authorizeGate.complete(Unit)
+        awaitAll(active, firstChange, secondChange)
+
+        assertEquals(2, authorizeCount)
+        assertFalse(gatedController.operationInProgress())
+        assertEquals(firstChange.await().outcome, secondChange.await().outcome)
+    }
+
+    @Test
+    fun queuesAnotherChangeAfterQueuedSyncHasStartedReadingLocal() = runBlocking {
+        val firstReadStarted = CompletableDeferred<Unit>()
+        val firstReadGate = CompletableDeferred<Unit>()
+        val secondReadStarted = CompletableDeferred<Unit>()
+        val secondReadGate = CompletableDeferred<Unit>()
+        var readCount = 0
+        var local = "v1"
+        var writeCount = 0
+        val dynamicStore = object : CloudStore {
+            var snapshot = store.snapshot
+
+            override suspend fun find(appId: String, authorization: Authorization): StoredEnvelope? =
+                snapshot
+
+            override suspend fun write(
+                appId: String,
+                envelope: SyncEnvelopeV1,
+                authorization: Authorization,
+                existingId: String?,
+            ): String {
+                writeCount += 1
+                snapshot = StoredEnvelope(existingId ?: "file", envelope)
+                return existingId ?: "file"
+            }
+
+            override suspend fun delete(
+                appId: String,
+                fileId: String,
+                authorization: Authorization,
+            ) {
+                snapshot = null
+            }
+        }
+        val dynamicController = SnapshotSyncController(
+            SnapshotSyncOptions(
+                appId = profile.appId,
+                codec = codec,
+                envelopeCrypto = crypto,
+                keyProvider = keys,
+                authorizationProvider = FixedAuth(),
+                cloudStore = dynamicStore,
+                readLocal = {
+                    readCount += 1
+                    val captured = local
+                    when (readCount) {
+                        1 -> {
+                            firstReadStarted.complete(Unit)
+                            firstReadGate.await()
+                        }
+                        2 -> {
+                            secondReadStarted.complete(Unit)
+                            secondReadGate.await()
+                        }
+                    }
+                    captured
+                },
+                applyMerged = { applied = it },
+                activity = { activity },
+            ),
+        )
+
+        val active = async { dynamicController.sync(SyncReason.MANUAL) }
+        firstReadStarted.await()
+        val queued = async { dynamicController.sync(SyncReason.CHANGE) }
+        local = "v2"
+        firstReadGate.complete(Unit)
+        secondReadStarted.await()
+        local = "v3"
+        val followUp = async { dynamicController.sync(SyncReason.CHANGE) }
+        secondReadGate.complete(Unit)
+        awaitAll(active, queued, followUp)
+
+        assertEquals(3, readCount)
+        assertEquals(3, writeCount)
+        assertEquals("v3", applied)
     }
 
     private class FixedAuth : AuthorizationProvider {

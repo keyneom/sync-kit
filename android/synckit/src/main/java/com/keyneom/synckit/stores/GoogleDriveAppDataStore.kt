@@ -30,6 +30,7 @@ import java.util.UUID
 open class GoogleDriveAppDataStore<T>(
     private val profile: V1CompatibilityProfile,
     private val envelopeCrypto: V1EnvelopeCrypto<T>,
+    private val options: GoogleDriveAppDataStoreOptions = GoogleDriveAppDataStoreOptions(),
 ) : CloudStore {
     override suspend fun find(
         appId: String,
@@ -37,17 +38,17 @@ open class GoogleDriveAppDataStore<T>(
     ): StoredEnvelope? = withContext(Dispatchers.IO) {
         requireAppId(appId)
         val query = URLEncoder.encode(
-            "name = '${profile.filename}' and trashed = false",
+            "name = '${escapeDriveQuery(profile.filename)}' and trashed = false",
             Charsets.UTF_8.name(),
         )
-        val url = "https://www.googleapis.com/drive/v3/files" +
+        val url = "${options.apiOrigin}/drive/v3/files" +
             "?spaces=appDataFolder&q=$query&fields=files(id,name,modifiedTime)&pageSize=1"
         val listed = request(url, authorization.accessToken)
         val root = SyncKitJson.instance.parseToJsonElement(listed).jsonObject
         val fileId = root["files"]?.jsonArray?.firstOrNull()?.jsonObject
             ?.get("id")?.jsonPrimitive?.content ?: return@withContext null
         val body = request(
-            "https://www.googleapis.com/drive/v3/files/${encode(fileId)}?alt=media",
+            "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}?alt=media",
             authorization.accessToken,
         )
         StoredEnvelope(fileId, envelopeCrypto.parseEnvelope(body))
@@ -63,12 +64,15 @@ open class GoogleDriveAppDataStore<T>(
         envelopeCrypto.validateEnvelope(envelope)
         val content = envelopeCrypto.encodeEnvelope(envelope)
         if (existingId != null) {
+            // HttpURLConnection rejects PATCH; Drive accepts POST + override.
             request(
-                "https://www.googleapis.com/upload/drive/v3/files/${encode(existingId)}?uploadType=media&fields=id",
+                "${options.uploadOrigin}/upload/drive/v3/files/${encodePathSegment(existingId)}" +
+                    "?uploadType=media&fields=id",
                 authorization.accessToken,
-                method = "PATCH",
+                method = "POST",
                 contentType = "application/json",
                 body = content.toByteArray(Charsets.UTF_8),
+                extraHeaders = mapOf("X-HTTP-Method-Override" to "PATCH"),
             )
             return@withContext existingId
         }
@@ -91,7 +95,7 @@ open class GoogleDriveAppDataStore<T>(
             append("\r\n--$boundary--")
         }.toByteArray(Charsets.UTF_8)
         val response = request(
-            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+            "${options.uploadOrigin}/upload/drive/v3/files?uploadType=multipart&fields=id",
             authorization.accessToken,
             method = "POST",
             contentType = "multipart/related; boundary=$boundary",
@@ -111,7 +115,7 @@ open class GoogleDriveAppDataStore<T>(
     ) = withContext(Dispatchers.IO) {
         requireAppId(appId)
         request(
-            "https://www.googleapis.com/drive/v3/files/${encode(fileId)}",
+            "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}",
             authorization.accessToken,
             method = "DELETE",
         )
@@ -127,12 +131,13 @@ open class GoogleDriveAppDataStore<T>(
         }
     }
 
-    private fun request(
+    protected open fun request(
         url: String,
         accessToken: String,
         method: String = "GET",
         contentType: String? = null,
         body: ByteArray? = null,
+        extraHeaders: Map<String, String> = emptyMap(),
     ): String {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
@@ -140,7 +145,12 @@ open class GoogleDriveAppDataStore<T>(
             connection.setRequestProperty("Authorization", "Bearer $accessToken")
             connection.connectTimeout = 20_000
             connection.readTimeout = 30_000
-            if (contentType != null) connection.setRequestProperty("Content-Type", contentType)
+            if (contentType != null) {
+                connection.setRequestProperty("Content-Type", contentType)
+            }
+            for ((name, value) in extraHeaders) {
+                connection.setRequestProperty(name, value)
+            }
             if (body != null) {
                 connection.doOutput = true
                 connection.outputStream.use { it.write(body) }
@@ -149,8 +159,13 @@ open class GoogleDriveAppDataStore<T>(
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val response = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
             if (code !in 200..299) {
+                if (code == 401) options.onUnauthorized?.invoke()
                 throw SyncKitError(
-                    SyncKitErrorCode.NETWORK,
+                    when (code) {
+                        401 -> SyncKitErrorCode.AUTHORIZATION
+                        404 -> SyncKitErrorCode.NOT_FOUND
+                        else -> SyncKitErrorCode.NETWORK
+                    },
                     "Google Drive request failed ($code). ${response.take(400)}",
                 )
             }
@@ -160,5 +175,17 @@ open class GoogleDriveAppDataStore<T>(
         }
     }
 
-    private fun encode(value: String): String = URLEncoder.encode(value, Charsets.UTF_8.name())
+    private fun encodePathSegment(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
+
+    companion object {
+        internal fun escapeDriveQuery(value: String): String =
+            value.replace("\\", "\\\\").replace("'", "\\'")
+    }
 }
+
+data class GoogleDriveAppDataStoreOptions(
+    val apiOrigin: String = "https://www.googleapis.com",
+    val uploadOrigin: String = "https://www.googleapis.com",
+    val onUnauthorized: (() -> Unit)? = null,
+)

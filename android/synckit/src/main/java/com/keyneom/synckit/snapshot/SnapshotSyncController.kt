@@ -14,8 +14,10 @@ import com.keyneom.synckit.core.SyncOutcome
 import com.keyneom.synckit.core.SyncReason
 import com.keyneom.synckit.core.SyncResult
 import com.keyneom.synckit.crypto.V1EnvelopeCrypto
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicInteger
 
 data class SnapshotSyncOptions<T>(
     val appId: String,
@@ -29,43 +31,57 @@ data class SnapshotSyncOptions<T>(
     val activity: () -> Activity,
 )
 
+/**
+ * Serialized snapshot orchestration matching the npm `/snapshot` controller.
+ * Queues at most one change-sync while another operation is in flight.
+ */
 class SnapshotSyncController<T>(
     private val options: SnapshotSyncOptions<T>,
 ) {
     private val mutex = Mutex()
-    private var operationCount = 0
-
-    /** Set when a local change arrives during an in-flight operation. */
+    private val operationCount = AtomicInteger(0)
+    private val queuedChangeLock = Any()
     @Volatile
-    private var pendingChange = false
+    private var queuedChange: CompletableDeferred<SyncResult<T>>? = null
 
-    fun operationInProgress(): Boolean = operationCount > 0
+    fun operationInProgress(): Boolean = operationCount.get() > 0
 
     suspend fun setup(): SyncResult<T> = runExclusive { setupNow() }
 
     suspend fun enable(): SyncResult<T> = runExclusive { mergeNow(SnapshotOperation.ENABLE) }
 
     suspend fun sync(reason: SyncReason): SyncResult<T> {
-        if (operationInProgress() && reason != SyncReason.CHANGE) {
-            return SyncResult(
-                operation = SnapshotOperation.SYNC,
-                outcome = SyncOutcome.COALESCED,
-                fileId = null,
-                syncedAt = null,
-                value = null,
-            )
+        if (operationCount.get() > 0) {
+            if (reason != SyncReason.CHANGE) {
+                return coalescedResult()
+            }
+            val (deferred, isLeader) = synchronized(queuedChangeLock) {
+                val existing = queuedChange
+                if (existing != null) {
+                    return@synchronized Pair(existing, false)
+                }
+                val created = CompletableDeferred<SyncResult<T>>()
+                queuedChange = created
+                Pair(created, true)
+            }
+            if (!isLeader) {
+                return deferred.await()
+            }
+            try {
+                val result = runExclusive {
+                    synchronized(queuedChangeLock) {
+                        if (queuedChange === deferred) queuedChange = null
+                    }
+                    mergeNow(SnapshotOperation.SYNC)
+                }
+                deferred.complete(result)
+                return result
+            } catch (error: Throwable) {
+                deferred.completeExceptionally(error)
+                throw error
+            }
         }
-        if (operationInProgress() && reason == SyncReason.CHANGE) {
-            pendingChange = true
-        }
-        return runExclusive {
-            var result: SyncResult<T>
-            do {
-                pendingChange = false
-                result = mergeNow(SnapshotOperation.SYNC)
-            } while (pendingChange)
-            result
-        }
+        return runExclusive { mergeNow(SnapshotOperation.SYNC) }
     }
 
     suspend fun reset(): SyncResult<T> = runExclusive { resetNow() }
@@ -85,13 +101,22 @@ class SnapshotSyncController<T>(
     }
 
     private suspend fun <R> runExclusive(operation: suspend () -> R): R {
-        operationCount += 1
+        operationCount.incrementAndGet()
         return try {
             mutex.withLock { operation() }
         } finally {
-            operationCount -= 1
+            operationCount.decrementAndGet()
         }
     }
+
+    private fun coalescedResult(): SyncResult<T> =
+        SyncResult(
+            operation = SnapshotOperation.SYNC,
+            outcome = SyncOutcome.COALESCED,
+            fileId = null,
+            syncedAt = null,
+            value = null,
+        )
 
     private suspend fun setupNow(): SyncResult<T> {
         val authorization = options.authorizationProvider.authorize()

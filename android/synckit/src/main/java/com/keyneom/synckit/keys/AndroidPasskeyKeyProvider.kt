@@ -57,13 +57,17 @@ open class AndroidPasskeyKeyProvider<T>(
                 SyncKitErrorCode.KEY,
                 "Passkey creation did not return a credential id.",
             )
-        val secret = prfResult(parsed)
+        val secret = prfResultFromResponse(parsed)
             ?: unlockPrf(activity, credentialId, Base64Url.encode(prfInput))
         return try {
             val metadata = V1KeyMetadata(credentialId, rpId, prfInput, kdfSalt)
             val key = envelopeCrypto.deriveContentKey(secret, kdfSalt)
-            remember(metadata, key)
-            CreatedKey(metadata, key.copyOf())
+            try {
+                remember(metadata, key)
+                CreatedKey(metadata, key.copyOf())
+            } finally {
+                key.fill(0)
+            }
         } finally {
             secret.fill(0)
         }
@@ -104,9 +108,14 @@ open class AndroidPasskeyKeyProvider<T>(
                     } finally {
                         secret.fill(0)
                     }
-                    remember(metadata, key)
-                    ownedDeferred.complete(key.copyOf())
-                    return key.copyOf()
+                    try {
+                        remember(metadata, key)
+                        val copy = key.copyOf()
+                        ownedDeferred.complete(copy)
+                        return copy.copyOf()
+                    } finally {
+                        key.fill(0)
+                    }
                 } catch (error: Throwable) {
                     ownedDeferred.completeExceptionally(error)
                     throw error
@@ -156,7 +165,7 @@ open class AndroidPasskeyKeyProvider<T>(
         cachedIdentity = null
     }
 
-    private suspend fun unlockPrf(
+    protected open suspend fun unlockPrf(
         activity: Activity,
         credentialId: String,
         prfInput: String,
@@ -173,7 +182,7 @@ open class AndroidPasskeyKeyProvider<T>(
             )
         val parsed =
             SyncKitJson.instance.parseToJsonElement(credential.authenticationResponseJson).jsonObject
-        return prfResult(parsed)
+        return prfResultFromResponse(parsed)
             ?: throw SyncKitError(
                 SyncKitErrorCode.KEY,
                 "This passkey provider did not return a PRF secret. Try current Google Password Manager and Chrome.",
@@ -221,18 +230,20 @@ open class AndroidPasskeyKeyProvider<T>(
         put("extensions", prfExtensions(prfInput))
     }
 
-    private fun prfExtensions(prfInput: String): JsonObject = buildJsonObject {
-        put("prf", buildJsonObject {
-            put("eval", buildJsonObject { put("first", prfInput) })
-        })
-    }
+    companion object {
+        internal fun prfResultFromResponse(response: JsonObject): ByteArray? {
+            val value = runCatching {
+                val prf = response["clientExtensionResults"]!!.jsonObject["prf"]!!.jsonObject
+                prf["results"]!!.jsonObject["first"]!!.jsonPrimitive.content
+            }.getOrNull() ?: return null
+            return Base64Url.decode(value)
+        }
 
-    private fun prfResult(response: JsonObject): ByteArray? {
-        val value = runCatching {
-            val prf = response["clientExtensionResults"]!!.jsonObject["prf"]!!.jsonObject
-            prf["results"]!!.jsonObject["first"]!!.jsonPrimitive.content
-        }.getOrNull() ?: return null
-        return Base64Url.decode(value)
+        internal fun prfExtensions(prfInput: String): JsonObject = buildJsonObject {
+            put("prf", buildJsonObject {
+                put("eval", buildJsonObject { put("first", prfInput) })
+            })
+        }
     }
 
     private fun JsonObject.string(key: String): String? =
