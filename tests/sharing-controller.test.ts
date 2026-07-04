@@ -21,6 +21,7 @@ import type {
 } from "../src/sharing/transport.js";
 import {
   createSharedBackupEnvelopeV1,
+  createSharingInvitationV1,
   createWebCryptoSharingIdentity,
   type WebCryptoSharingIdentity,
 } from "../src/sharing/web-crypto.js";
@@ -99,6 +100,97 @@ describe("shared-backup controller", () => {
     await expect(
       sharing.syncDataset("profile", { items: ["one", "two"] }),
     ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("preserves an existing owner pin and rejects a conflicting invitation", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const attacker = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const recipientRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, ownerRegistry);
+    const recipientController = controller(
+      recipient,
+      transport,
+      recipientRegistry,
+    );
+    const created = await ownerController.createDataset("tasks", {
+      items: ["owner"],
+    });
+    await recipientRegistry.set({
+      datasetId: "tasks",
+      fileId: created.fileId,
+      trustedOwnerKeyId: owner.publicKey.keyId,
+      lastRevisionId: created.revisionId,
+      seenRevisionIds: ["older", created.revisionId],
+    });
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "viewer" }],
+    });
+
+    await recipientController.submitKeyResponse(invited.invitationFileId);
+    await expect(recipientRegistry.get("tasks")).resolves.toMatchObject({
+      trustedOwnerKeyId: owner.publicKey.keyId,
+      lastRevisionId: created.revisionId,
+      seenRevisionIds: ["older", created.revisionId],
+    });
+
+    const malicious = await createSharingInvitationV1(attacker, {
+      appId: "fixture-app",
+      appFolderId: transport.storage.appFolderId,
+      recipientDrivePermissionId: "permission-recipient@example.com",
+      requestedGrants: [
+        { datasetId: "attacker-new", role: "viewer" },
+        { datasetId: "tasks", role: "viewer" },
+      ],
+      trustedOwnerKeyId: attacker.publicKey.keyId,
+    });
+    const maliciousFileId = await transport.createInvitation(malicious);
+    await expect(
+      recipientController.submitKeyResponse(maliciousFileId),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(recipientRegistry.get("tasks")).resolves.toMatchObject({
+      trustedOwnerKeyId: owner.publicKey.keyId,
+      lastRevisionId: created.revisionId,
+      seenRevisionIds: ["older", created.revisionId],
+    });
+    await expect(recipientRegistry.get("attacker-new")).resolves.toBeNull();
+  });
+
+  it("checks the pinned owner before authorizing an invitation", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const attacker = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, registry);
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const current = await transport.readDataset("dataset-tasks");
+    const substituted = await createSharedBackupEnvelopeV1(
+      { items: ["substituted"] },
+      codec,
+      attacker,
+      {
+        appId: "fixture-app",
+        backupId: "tasks",
+        participants: [
+          { publicKey: attacker.publicKey, role: "owner" },
+        ],
+      },
+    );
+    transport.datasets.set("dataset-tasks", {
+      ...current,
+      envelope: substituted,
+      version: '"substituted"',
+    });
+
+    await expect(
+      controller(attacker, transport, registry).inviteParticipant({
+        emailAddress: "recipient@example.com",
+        requestedGrants: [{ datasetId: "tasks", role: "viewer" }],
+      }),
+    ).rejects.toMatchObject({ code: "authorization" });
   });
 
   it("rotates the local owner identity without changing ownership", async () => {
@@ -335,10 +427,10 @@ class MemorySharingTransport implements SharedBackupTransport {
     role: Exclude<SharingRole, "owner">,
     options: {
       existingDirectPermissionId?: string;
-      inheritedReaderPermissionId?: string;
+      hasInheritedReadAccess?: boolean;
     } = {},
   ): Promise<SharedDatasetPermission> {
-    if (role === "viewer" && options.inheritedReaderPermissionId) {
+    if (role === "viewer" && options.hasInheritedReadAccess) {
       return { role: "reader" };
     }
     return {

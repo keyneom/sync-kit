@@ -77,6 +77,17 @@ describe("web passkey provider", () => {
 
     await provider.unlock(envelope);
     expect(get).toHaveBeenCalledOnce();
+    get.mockResolvedValue(
+      fakeCredential(
+        Uint8Array.of(1, 2, 3),
+        Uint8Array.from({ length: 32 }, () => 8),
+      ),
+    );
+    await provider.unlock({
+      ...envelope,
+      prfInput: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+    });
+    expect(get).toHaveBeenCalledTimes(2);
     provider.clear();
     get.mockResolvedValue(
       fakeCredential(
@@ -85,7 +96,7 @@ describe("web passkey provider", () => {
       ),
     );
     await provider.unlock(envelope);
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(3);
   });
 
   it("rejects a snapshot for another RP ID before opening passkey UI", async () => {

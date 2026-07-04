@@ -179,12 +179,14 @@ matches the remote value.
 The wire protocol is the native compatibility boundary; the browser adapter is
 not.
 
-- EasyBC Android's Kotlin implementation reads the same v1 AES-GCM/HKDF/gzip
-  fixtures as this package.
+- **Android:** `com.keyneom:sync-kit-android` (module `android/synckit`) provides
+  private v1 snapshot crypto, `SnapshotSyncController`, Drive `appDataFolder`
+  storage, and Credential Manager passkey PRF — the same contracts as the npm
+  `/crypto`, `/snapshot`, and appData store paths. See
+  [android-library.md](docs/android-library.md).
+- Shared backups (`/sharing`) are TypeScript-only for now.
 - React Native and other JavaScript-native runtimes can inject a
   `CryptoBackend<K>` backed by platform crypto.
-- Kotlin and Swift applications implement the small key, authorization, store,
-  and crypto contracts natively while consuming the shared fixtures.
 - Tauri applications can use `/core`, `/crypto`, and the low-level Google Drive
   object store, but should perform OAuth in the system browser through
   Authorization Code + PKCE.

@@ -276,9 +276,11 @@ export class SharedBackupController<T> {
       const trustedOwnerKeyIds = new Set<string>();
       for (const grant of input.requestedGrants) {
         const stored = await this.readDatasetById(grant.datasetId);
+        const record = await this.requiredRegistry(grant.datasetId);
         const verified = await verifySharedBackupEnvelopeV1(
           stored.envelope,
           this.crypto(),
+          { trustedOwnerKeyId: record.trustedOwnerKeyId },
         );
         const actor = sharedBackupParticipant(
           verified,
@@ -290,7 +292,6 @@ export class SharedBackupController<T> {
             `This identity cannot invite participants to ${grant.datasetId}.`,
           );
         }
-        const record = await this.requiredRegistry(grant.datasetId);
         trustedOwnerKeyIds.add(record.trustedOwnerKeyId);
       }
       if (trustedOwnerKeyIds.size !== 1) {
@@ -380,15 +381,39 @@ export class SharedBackupController<T> {
         this.cryptoOptions(),
       );
       const datasets = await this.options.transport.listDatasets();
-      for (const grant of invitation.requestedGrants) {
-        const file = datasets.find(
-          (dataset) => dataset.datasetId === grant.datasetId,
+      const registrations = await Promise.all(
+        invitation.requestedGrants.map(async (grant) => {
+          const file = datasets.find(
+            (dataset) => dataset.datasetId === grant.datasetId,
+          );
+          const existing = await this.options.registry.get(grant.datasetId);
+          return { grant, file, existing };
+        }),
+      );
+      for (const { grant, existing } of registrations) {
+        if (
+          existing &&
+          existing.trustedOwnerKeyId !== invitation.trustedOwnerKeyId
+        ) {
+          throw new SyncKitError(
+            "conflict",
+            `Dataset ${grant.datasetId} is already pinned to another owner key.`,
+          );
+        }
+      }
+      for (const { grant, file, existing } of registrations) {
+        await this.options.registry.set(
+          existing
+            ? {
+                ...existing,
+                ...(file ? { fileId: file.fileId } : {}),
+              }
+            : {
+                datasetId: grant.datasetId,
+                ...(file ? { fileId: file.fileId } : {}),
+                trustedOwnerKeyId: invitation.trustedOwnerKeyId,
+              },
         );
-        await this.options.registry.set({
-          datasetId: grant.datasetId,
-          ...(file ? { fileId: file.fileId } : {}),
-          trustedOwnerKeyId: invitation.trustedOwnerKeyId,
-        });
       }
       return {
         responseFileId:
@@ -495,8 +520,7 @@ export class SharedBackupController<T> {
                 ? "admin"
                 : grant.participant.role,
               {
-                inheritedReaderPermissionId:
-                  responseFile.ownerPermissionId,
+                hasInheritedReadAccess: true,
               },
             );
           const participantPermissionIds = {
@@ -571,7 +595,7 @@ export class SharedBackupController<T> {
                     }
                   : {}),
                 ...(input.role === "viewer"
-                  ? { inheritedReaderPermissionId: "inherited" }
+                  ? { hasInheritedReadAccess: true }
                   : {}),
               },
             );

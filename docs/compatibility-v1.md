@@ -13,7 +13,8 @@ and Family Chores applications. The machine-readable values live in
 - Authenticated data: UTF-8 `easy-bc-sync-envelope-v1`
 - HKDF: SHA-256, a per-passkey 32-byte salt, UTF-8 info
   `easy-bc-cloud-content-key-v1`
-- PRF input: 32 random bytes, persisted as unpadded base64url
+- PRF input: 32 random bytes, persisted as unpadded base64url (parsers reject
+  other lengths; historical one-byte test vectors were updated to 32 bytes)
 - Compression: gzip only when its byte length is smaller than plaintext;
   omission of `compression` means plaintext JSON
 - Passkey: RP ID `keyneom.github.io` in the native application, ES256,

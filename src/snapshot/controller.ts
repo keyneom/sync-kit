@@ -190,16 +190,11 @@ export function createSnapshotSync<T, E, K, M, A>(
         });
       }
       if (queuedChange) return queuedChange;
-      const pending = runExclusive(() => mergeNow("sync"));
+      const pending = runExclusive(() => {
+        queuedChange = null;
+        return mergeNow("sync");
+      });
       queuedChange = pending;
-      void pending.then(
-        () => {
-          if (queuedChange === pending) queuedChange = null;
-        },
-        () => {
-          if (queuedChange === pending) queuedChange = null;
-        },
-      );
       return pending;
     }
     return runExclusive(() => mergeNow("sync"));

@@ -331,6 +331,7 @@ function metadataIdentity(metadata: V1KeyMetadata): string {
   return [
     metadata.rpId,
     metadata.credentialId,
+    bytesToBase64Url(metadata.prfInput),
     bytesToBase64Url(metadata.kdfSalt),
   ].join("\n");
 }

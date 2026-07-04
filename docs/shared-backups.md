@@ -179,6 +179,10 @@ A writer creates a child revision whose `parentRevisionId` is the last verified
 revision. A writer may change content but not participants. An owner or admin
 may change participants. Owner transfer is not supported in sharing v1.
 
+Each revision retains at most 256 recent ancestor IDs. A client whose last
+verified revision falls outside that window cannot prove direct descent from
+the head alone and must use the consumer's explicit fork merge/reject policy.
+
 ## Envelope model
 
 Each revision is encrypted independently. The envelope contains public routing

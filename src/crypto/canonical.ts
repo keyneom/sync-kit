@@ -8,6 +8,14 @@ export function canonicalAad(value: unknown): Uint8Array {
   return new TextEncoder().encode(canonicalJson(value));
 }
 
+/**
+ * Compares strings by UTF-16 code units so canonicalization is independent of
+ * the host locale and matches Java String.compareTo.
+ */
+export function compareUtf16CodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function canonicalValue(value: unknown): unknown {
   if (
     value === null ||
@@ -30,7 +38,7 @@ function canonicalValue(value: unknown): unknown {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .filter(([, child]) => child !== undefined)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .sort(([left], [right]) => compareUtf16CodeUnits(left, right))
         .map(([key, child]) => [key, canonicalValue(child)]),
     );
   }

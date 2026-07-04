@@ -65,6 +65,7 @@ export function parseSyncEnvelopeV1(
   }
   validateEncodedLength(parsed.nonce, profile.nonceBytes, "nonce");
   validateEncodedLength(parsed.kdfSalt, profile.kdfSaltBytes, "KDF salt");
+  validateEncodedLength(parsed.prfInput, profile.prfInputBytes, "PRF input");
   return parsed as SyncEnvelopeV1;
 }
 

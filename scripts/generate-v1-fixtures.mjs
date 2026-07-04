@@ -61,12 +61,14 @@ const familyChoresProfile = {
   },
 };
 
+const easyBcPrfInput = toBase64Url(prfInput);
+
 const easyBcUncompressedEnvelope = {
   schemaVersion: 1,
   algorithm,
   credentialId: "credential",
   rpId: "keyneom.github.io",
-  prfInput: "AA",
+  prfInput: easyBcPrfInput,
   kdfSalt: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
   nonce: "QEFCQ0RFRkdISUpL",
   ciphertext:
@@ -80,7 +82,7 @@ const easyBcGzipEnvelope = {
   compression: "gzip",
   credentialId: "credential",
   rpId: "keyneom.github.io",
-  prfInput: "AA",
+  prfInput: easyBcPrfInput,
   kdfSalt: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
   nonce: "QEFCQ0RFRkdISUpL",
   ciphertext:

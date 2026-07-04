@@ -6,3 +6,9 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Android library
+android/local.properties
+android/.gradle/
+android/**/build/
+android/.idea/

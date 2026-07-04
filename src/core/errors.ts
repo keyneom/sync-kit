@@ -11,6 +11,20 @@ export type SyncErrorCode =
   | "serialization"
   | "state";
 
+const SYNC_ERROR_CODES = new Set<SyncErrorCode>([
+  "authorization",
+  "compatibility",
+  "configuration",
+  "conflict",
+  "crypto",
+  "decompression",
+  "key",
+  "not-found",
+  "provider",
+  "serialization",
+  "state",
+]);
+
 export class SyncKitError extends Error {
   readonly code: SyncErrorCode;
   readonly status: number | undefined;
@@ -28,7 +42,15 @@ export class SyncKitError extends Error {
 }
 
 export function isSyncKitError(value: unknown): value is SyncKitError {
-  return value instanceof SyncKitError;
+  if (value instanceof SyncKitError) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as { code?: unknown; message?: unknown; name?: unknown };
+  return (
+    candidate.name === "SyncKitError" &&
+    typeof candidate.message === "string" &&
+    typeof candidate.code === "string" &&
+    SYNC_ERROR_CODES.has(candidate.code as SyncErrorCode)
+  );
 }
 
 export function asSyncKitError(

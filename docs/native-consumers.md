@@ -1,48 +1,44 @@
 # Native consumer guidance
 
-`@keyneom/sync-kit` is a TypeScript package, but its compatibility contract is
-not browser-specific. Native applications use the same envelope and provider
-contracts with platform implementations.
+`@keyneom/sync-kit` is a TypeScript package. Android apps use the sibling
+Maven artifact `com.keyneom:sync-kit-android` for private v1 snapshots. Both
+consume the same wire format and `fixtures/v1/` vectors.
 
 ## What is portable
 
-The following behavior must be identical in TypeScript, Kotlin, Swift, Rust,
-and JavaScript-native runtimes:
+The following behavior must be identical in TypeScript, Kotlin, and any future
+native ports:
 
 - unpadded RFC 4648 base64url;
 - HKDF-SHA-256 with the profile's exact UTF-8 `info`;
 - AES-256-GCM with a 12-byte nonce, 128-bit tag, and exact UTF-8 AAD;
 - ciphertext followed by the GCM tag in the envelope's `ciphertext` field;
 - profile-specific gzip behavior;
-- exact envelope fields, filenames, RP IDs, and passkey PRF inputs.
+- exact envelope fields, filenames, RP IDs, and 32-byte passkey PRF inputs.
 
 Use `fixtures/v1/` as the conformance suite. Do not generate platform-specific
 expected ciphertext from random inputs and call that compatibility.
 
 ## Android
 
-EasyBC is the current Android reference implementation:
+Published module: `android/synckit` → `com.keyneom:sync-kit-android`.
 
-```text
-android/app/src/main/java/com/easybc/planner/sync/SyncCrypto.kt
-android/app/src/main/java/com/easybc/planner/sync/PasskeyPrfClient.kt
-android/app/src/main/java/com/easybc/planner/sync/GoogleDriveSyncClient.kt
-android/app/src/test/java/com/easybc/planner/sync/SyncCryptoTest.kt
-```
+See [android-library.md](./android-library.md) for install and API shape.
 
-Its `AES/GCM/NoPadding`, RFC 5869 HKDF implementation, `GZIPInputStream`, and
-Credential Manager PRF requests consume the shared EasyBC fixture. The native
-RP ID is fixed to `keyneom.github.io`, and unlock requests include exactly one
-credential ID.
+Reference consumer: EasyBC (`easy-bc/android`), which depends on the library
+via Gradle `includeBuild` and keeps only app-owned types (payload schema,
+merge, Room persistence, Google Sign-In).
 
-A reusable Android adapter should implement the core contracts with:
+The library implements:
 
 - Android Credential Manager for passkey PRF;
-- Google Identity authorization for the Drive app-data scope;
-- an HTTP Drive `appDataFolder` store;
-- an in-memory derived-key session cleared by the app's lifecycle policy.
+- HTTP Drive `appDataFolder` store;
+- an in-memory derived-key session cleared by the app's lifecycle policy;
+- `SnapshotSyncController` matching the npm `/snapshot` controller.
 
-That adapter is intentionally not emulated through a webview.
+It is intentionally not emulated through a webview.
+
+Shared backups are not on Android yet.
 
 ## React Native and other JavaScript-native runtimes
 
@@ -70,7 +66,9 @@ token client in the Tauri webview.
 Before changing a writer version or cryptographic constant:
 
 1. add a deterministic, synthetic fixture;
-2. read it in every active platform implementation;
-3. write it in at least one implementation and read it in every other;
+2. read it in every active platform implementation (npm tests and
+   `android/synckit` unit tests);
+3. run `npm run parity:check` so JS and Kotlin emit identical deterministic
+   reports and cross-decrypt compressed envelopes;
 4. install the packed library artifact into consumers;
 5. stage writer-version changes only after all deployed readers support them.

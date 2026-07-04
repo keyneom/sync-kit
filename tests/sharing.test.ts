@@ -13,11 +13,13 @@ import {
   verifySharingPublicKeyResponseV1,
   type WebCryptoSharingIdentity,
 } from "../src/sharing/web-crypto.js";
-import type {
-  SharedBackupCodec,
-  SharedBackupEnvelopeV1,
-  SharingPublicKeyResponseV1,
-  SharingPublicKeyV1,
+import {
+  parseSharedBackupEnvelopeV1,
+  SHARED_BACKUP_MAX_REVISION_ANCESTORS,
+  type SharedBackupCodec,
+  type SharedBackupEnvelopeV1,
+  type SharingPublicKeyResponseV1,
+  type SharingPublicKeyV1,
 } from "../src/sharing/index.js";
 import {
   createProtectedSharingIdentityV1,
@@ -161,8 +163,10 @@ describe("shared-backup crypto", () => {
         exchangeId: "exchange-1",
         recipientDrivePermissionId: "recipient-permission",
         requestedGrants: [
-          { datasetId: "private-notes", role: "viewer" },
-          { datasetId: "shared-list", role: "writer" },
+          { datasetId: "a_b", role: "viewer" },
+          { datasetId: "aB1", role: "writer" },
+          { datasetId: "a-B", role: "viewer" },
+          { datasetId: "Zx_", role: "writer" },
         ],
         createdAt: "2026-07-01T12:00:00.000Z",
         expiresAt: "2026-07-08T12:00:00.000Z",
@@ -179,8 +183,10 @@ describe("shared-backup crypto", () => {
       }),
     ).rejects.toMatchObject({ code: "authorization" });
     expect(invitation.requestedGrants).toEqual([
-      { datasetId: "private-notes", role: "viewer" },
-      { datasetId: "shared-list", role: "writer" },
+      { datasetId: "Zx_", role: "writer" },
+      { datasetId: "a-B", role: "viewer" },
+      { datasetId: "aB1", role: "writer" },
+      { datasetId: "a_b", role: "viewer" },
     ]);
   });
 
@@ -460,6 +466,17 @@ describe("shared-backup crypto", () => {
     await expect(
       verifySharedBackupEnvelopeV1(tamperedRole),
     ).rejects.toMatchObject({ code: "compatibility" });
+
+    expect(() =>
+      parseSharedBackupEnvelopeV1({
+        ...envelope,
+        parentRevisionId: "ancestor-256",
+        revisionAncestors: Array.from(
+          { length: SHARED_BACKUP_MAX_REVISION_ANCESTORS + 1 },
+          (_, index) => `ancestor-${index}`,
+        ),
+      }),
+    ).toThrow(/at most 256/u);
   });
 });
 

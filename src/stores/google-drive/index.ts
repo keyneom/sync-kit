@@ -880,6 +880,9 @@ export class GoogleDriveFileSnapshotStore<E>
         ? { parentFolderId: this.options.parentFolderId }
         : {}),
       drive: this.drive,
+    }).catch((error: unknown) => {
+      this.folderPromise = null;
+      throw error;
     });
     return this.folderPromise;
   }

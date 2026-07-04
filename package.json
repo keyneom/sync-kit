@@ -3,6 +3,12 @@
   "version": "0.2.0-rc.0",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
+  "keywords": [
+    "encrypted-sync",
+    "google-drive",
+    "passkeys",
+    "webcrypto"
+  ],
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
@@ -14,75 +20,92 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./core": {
       "types": "./dist/core/index.d.ts",
-      "import": "./dist/core/index.js"
+      "import": "./dist/core/index.js",
+      "default": "./dist/core/index.js"
     },
     "./crypto": {
       "types": "./dist/crypto/index.d.ts",
-      "import": "./dist/crypto/index.js"
+      "import": "./dist/crypto/index.js",
+      "default": "./dist/crypto/index.js"
     },
     "./snapshot": {
       "types": "./dist/snapshot/index.d.ts",
-      "import": "./dist/snapshot/index.js"
+      "import": "./dist/snapshot/index.js",
+      "default": "./dist/snapshot/index.js"
     },
     "./snapshot/lifecycle": {
       "types": "./dist/snapshot/lifecycle.d.ts",
-      "import": "./dist/snapshot/lifecycle.js"
+      "import": "./dist/snapshot/lifecycle.js",
+      "default": "./dist/snapshot/lifecycle.js"
     },
     "./sharing": {
       "types": "./dist/sharing/index.d.ts",
-      "import": "./dist/sharing/index.js"
+      "import": "./dist/sharing/index.js",
+      "default": "./dist/sharing/index.js"
     },
     "./sharing/web-crypto": {
       "types": "./dist/sharing/web-crypto.d.ts",
-      "import": "./dist/sharing/web-crypto.js"
+      "import": "./dist/sharing/web-crypto.js",
+      "default": "./dist/sharing/web-crypto.js"
     },
     "./sharing/controller": {
       "types": "./dist/sharing/controller.d.ts",
-      "import": "./dist/sharing/controller.js"
+      "import": "./dist/sharing/controller.js",
+      "default": "./dist/sharing/controller.js"
     },
     "./sharing/web-passkey": {
       "types": "./dist/sharing/web-passkey.d.ts",
-      "import": "./dist/sharing/web-passkey.js"
+      "import": "./dist/sharing/web-passkey.js",
+      "default": "./dist/sharing/web-passkey.js"
     },
     "./sharing/account-binding": {
       "types": "./dist/sharing/account-binding.d.ts",
-      "import": "./dist/sharing/account-binding.js"
+      "import": "./dist/sharing/account-binding.js",
+      "default": "./dist/sharing/account-binding.js"
     },
     "./keys/web-passkey": {
       "types": "./dist/keys/web-passkey/index.d.ts",
-      "import": "./dist/keys/web-passkey/index.js"
+      "import": "./dist/keys/web-passkey/index.js",
+      "default": "./dist/keys/web-passkey/index.js"
     },
     "./auth/google-web": {
       "types": "./dist/auth/google-web/index.d.ts",
-      "import": "./dist/auth/google-web/index.js"
+      "import": "./dist/auth/google-web/index.js",
+      "default": "./dist/auth/google-web/index.js"
     },
     "./auth/google-web/identity": {
       "types": "./dist/auth/google-web/identity.d.ts",
-      "import": "./dist/auth/google-web/identity.js"
+      "import": "./dist/auth/google-web/identity.js",
+      "default": "./dist/auth/google-web/identity.js"
     },
     "./stores/google-drive": {
       "types": "./dist/stores/google-drive/index.d.ts",
-      "import": "./dist/stores/google-drive/index.js"
+      "import": "./dist/stores/google-drive/index.js",
+      "default": "./dist/stores/google-drive/index.js"
     },
     "./stores/google-drive/sharing": {
       "types": "./dist/stores/google-drive/sharing.d.ts",
-      "import": "./dist/stores/google-drive/sharing.js"
+      "import": "./dist/stores/google-drive/sharing.js",
+      "default": "./dist/stores/google-drive/sharing.js"
     },
     "./stores/google-drive/picker": {
       "types": "./dist/stores/google-drive/picker.d.ts",
-      "import": "./dist/stores/google-drive/picker.js"
+      "import": "./dist/stores/google-drive/picker.js",
+      "default": "./dist/stores/google-drive/picker.js"
     }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run fixtures:check && npm run native:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "fixtures": "node scripts/generate-v1-fixtures.mjs",
     "fixtures:check": "node scripts/check-v1-fixtures.mjs",
     "native:check": "sh scripts/check-native-sharing-fixture.sh",
+    "parity:check": "sh scripts/check-js-kotlin-parity.sh",
     "lint": "eslint .",
     "live:drive": "npm run build && node scripts/live-google-drive-sharing.mjs",
     "pack:check": "node scripts/check-package.mjs",

@@ -13,7 +13,11 @@ import {
   type SyncEnvelopeV1,
   type V1KeyMetadata,
 } from "../src/crypto/index.js";
-import { SyncKitError, type SyncCodec } from "../src/core/index.js";
+import {
+  isSyncKitError,
+  SyncKitError,
+  type SyncCodec,
+} from "../src/core/index.js";
 import {
   easyBcTestProfile,
   familyChoresTestProfile,
@@ -199,6 +203,12 @@ describe("v1 compatibility crypto", () => {
     expect(() =>
       parseSyncEnvelopeV1(failures.malformedEnvelope, easyBcTestProfile),
     ).toThrow(SyncKitError);
+    expect(() =>
+      parseSyncEnvelopeV1(
+        { ...fixture.envelope, prfInput: "AA" },
+        easyBcTestProfile,
+      ),
+    ).toThrow(/PRF input has an invalid length/u);
   });
 
   it("distinguishes authenticated invalid gzip data from key failure", async () => {
@@ -235,6 +245,19 @@ describe("portable encodings", () => {
     expect(canonicalJson({ z: 1, a: { y: 2, b: 3 } })).toBe(
       '{"a":{"b":3,"y":2},"z":1}',
     );
+    expect(
+      canonicalJson({ a_b: 4, aB1: 3, "a-B": 2, Zx_: 1 }),
+    ).toBe('{"Zx_":1,"a-B":2,"aB1":3,"a_b":4}');
+  });
+
+  it("recognizes SyncKitError instances from another package copy", () => {
+    expect(
+      isSyncKitError({
+        name: "SyncKitError",
+        code: "provider",
+        message: "Foreign package instance",
+      }),
+    ).toBe(true);
   });
 });
 

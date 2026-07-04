@@ -138,6 +138,36 @@ describe("Google Drive per-file sharing", () => {
     expect(fetch.mock.calls[5]?.[1]?.body).toContain('"role":"writer"');
   });
 
+  it("retries managed storage initialization after a transient failure", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("temporary", { status: 500 }))
+      .mockResolvedValueOnce(Response.json({ files: [] }))
+      .mockResolvedValueOnce(Response.json({ id: "app-folder" }))
+      .mockResolvedValueOnce(Response.json({ files: [] }))
+      .mockResolvedValueOnce(Response.json({ id: "exchanges-folder" }));
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: {
+        authorize: async () => authorization,
+        clear: vi.fn(),
+      },
+      drive: new GoogleDriveFileStore({
+        fetch,
+        randomUUID: () => "boundary",
+      }),
+    });
+
+    await expect(transport.ensureStorage()).rejects.toMatchObject({
+      code: "provider",
+      status: 500,
+    });
+    await expect(transport.ensureStorage()).resolves.toEqual({
+      appFolderId: "app-folder",
+      exchangesFolderId: "exchanges-folder",
+    });
+  });
+
   it("uses the downloaded ETag for conditional dataset writes", async () => {
     const fetch = vi
       .fn()
@@ -255,6 +285,31 @@ describe("Google Drive per-file sharing", () => {
     expect(appFolderBody).not.toContain('"parents"');
     const snapshotBody = (fetch.mock.calls[3]?.[1]?.body as Blob);
     expect(await snapshotBody.text()).toContain('"parents":["app-folder"]');
+  });
+
+  it("retries snapshot folder initialization after a transient failure", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("temporary", { status: 500 }))
+      .mockResolvedValueOnce(Response.json({ files: [] }))
+      .mockResolvedValueOnce(Response.json({ id: "app-folder" }))
+      .mockResolvedValueOnce(Response.json({ files: [] }));
+    const store = new GoogleDriveFileSnapshotStore({
+      appId: "fixture-app",
+      filename: "profile.json",
+      parse: JSON.parse,
+      drive: new GoogleDriveFileStore({
+        fetch,
+        randomUUID: () => "boundary",
+      }),
+    });
+
+    await expect(
+      store.find("fixture-app", authorization),
+    ).rejects.toMatchObject({ code: "provider", status: 500 });
+    await expect(
+      store.find("fixture-app", authorization),
+    ).resolves.toBeNull();
   });
 
   it("returns Drive provenance for an explicitly opened key response", async () => {

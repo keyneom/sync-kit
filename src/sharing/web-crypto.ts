@@ -1,9 +1,14 @@
 import { SyncKitError, asSyncKitError } from "../core/errors.js";
 import { base64UrlToBytes, bytesToBase64Url } from "../crypto/base64url.js";
-import { canonicalAad, canonicalJson } from "../crypto/canonical.js";
+import {
+  canonicalAad,
+  canonicalJson,
+  compareUtf16CodeUnits,
+} from "../crypto/canonical.js";
 import { copyBuffer } from "../crypto/runtime.js";
 import {
   SHARED_BACKUP_KIND,
+  SHARED_BACKUP_MAX_REVISION_ANCESTORS,
   SHARING_CONTENT_ALGORITHM,
   SHARING_ENCRYPTION_ALGORITHM,
   SHARING_INVITATION_KIND,
@@ -388,7 +393,7 @@ export async function createSharedBackupEnvelopeV1<T>(
           revisionAncestors: [
             ...(previous.revisionAncestors ?? []),
             previous.revisionId,
-          ],
+          ].slice(-SHARED_BACKUP_MAX_REVISION_ANCESTORS),
         }
       : {}),
     createdAt,
@@ -999,7 +1004,9 @@ async function verifyAccessKeyRotation(
   }
   const expectedParticipants = previous.participants
     .map((participant) => (participant.keyId === from.keyId ? to : participant))
-    .sort((left, right) => left.keyId.localeCompare(right.keyId));
+    .sort((left, right) =>
+      compareUtf16CodeUnits(left.keyId, right.keyId),
+    );
   if (canonicalJson(expectedParticipants) !== canonicalJson(entry.participants)) {
     return false;
   }
@@ -1046,7 +1053,9 @@ function normalizedParticipants(
       role,
       ...(accepted ? { accepted } : {}),
     }))
-    .sort((left, right) => left.keyId.localeCompare(right.keyId));
+    .sort((left, right) =>
+      compareUtf16CodeUnits(left.keyId, right.keyId),
+    );
   const duplicate = participants.find(
     (participant, index) =>
       index > 0 && participants[index - 1]?.keyId === participant.keyId,
@@ -1076,7 +1085,7 @@ function normalizedRequestedGrants(
     );
   }
   const grants = [...input].sort((left, right) =>
-    left.datasetId.localeCompare(right.datasetId),
+    compareUtf16CodeUnits(left.datasetId, right.datasetId),
   );
   for (const [index, grant] of grants.entries()) {
     requireNonEmpty(grant.datasetId, "datasetId");
@@ -1179,7 +1188,9 @@ function assertRevisionAuthority(
         (participant): participant is SharedBackupParticipantV1 =>
           participant !== undefined,
       )
-      .sort((left, right) => left.keyId.localeCompare(right.keyId));
+      .sort((left, right) =>
+        compareUtf16CodeUnits(left.keyId, right.keyId),
+      );
     if (
       replacement?.role !== priorAuthor.role ||
       canonicalJson(replacement?.accepted ?? null) !==

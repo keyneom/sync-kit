@@ -154,15 +154,20 @@ Recommended defaults, all consumer-configurable:
 
 - Invitation validity: 7 days.
 - Pending responses: process until the invitation expires.
-- Accepted/rejected/expired artifacts: retain for 7 days after terminal state,
-  then owner cleanup.
-- Raw Google ID tokens: delete immediately after successful verification.
+- Accepted/rejected/expired artifacts: retain for audit during early validation
+  so exchange history can be inspected when testing live flows. After a long
+  clean run, switch to post-accept cleanup or a short retention window (see
+  `docs/execution-checklist.md` deferred recovery/audits items).
+- Raw Google ID tokens: delete the response artifact immediately after
+  successful account-binding verification (current controller behavior). Do not
+  retain the raw token.
 - Accepted public keys and roles: retain indefinitely in dataset ACL history.
 - Minimal acceptance record: retain in ACL history with exchange ID, key ID,
   Drive permission ID, Google `sub` when verified, role, actor, and timestamp.
 
 Cleanup is operational hygiene, not a security boundary. Retaining public-key
-responses longer is allowed; normal sync must never depend on them.
+responses longer is intentional while audits matter more than inbox size;
+normal sync must never depend on them.
 
 ## Concurrency and rollback
 
@@ -175,6 +180,9 @@ The controller and Drive transport now:
 - pin the genesis owner key from the accepted invitation.
 - carry signed revision ancestry, reject known rollback, and invoke a
   consumer-supplied merge/reject policy for divergent valid heads.
+- retain the 256 most recent signed ancestor IDs. A controller that has been
+  offline beyond that window treats the unrecognized head as a possible fork
+  and requires the same explicit consumer merge/reject policy.
 
 Before production use, validate conditional updates against live Drive. The
 consumer owns its merge function and explicit fork decision callback; without

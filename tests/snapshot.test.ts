@@ -209,6 +209,98 @@ describe("snapshot orchestration", () => {
     expect(test.state.writes).toBe(0);
   });
 
+  it("queues another change after a queued sync has started reading local state", async () => {
+    let local = value(1);
+    let remote = envelope(0);
+    let readCount = 0;
+    let writes = 0;
+    let releaseFirstRead!: () => void;
+    let releaseSecondRead!: () => void;
+    let signalFirstRead!: () => void;
+    let signalSecondRead!: () => void;
+    const firstReadStarted = new Promise<void>((resolve) => {
+      signalFirstRead = resolve;
+    });
+    const secondReadStarted = new Promise<void>((resolve) => {
+      signalSecondRead = resolve;
+    });
+    const firstReadGate = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    const secondReadGate = new Promise<void>((resolve) => {
+      releaseSecondRead = resolve;
+    });
+    const controller = createSnapshotSync({
+      appId: "fixture",
+      codec: {
+        serialize: (item: Value) => item,
+        parse: (item) => item as Value,
+        merge: (left, right) =>
+          left.revision >= right.revision ? left : right,
+        fingerprint: (item) => String(item.revision),
+      },
+      envelopeCrypto: {
+        encrypt: async (item: Value, _key: string, metadata: Metadata) => ({
+          value: item,
+          keyId: metadata.keyId,
+          updatedAt: item.exportedAt,
+        }),
+        decrypt: async (item: Envelope) => item.value,
+        metadataFromEnvelope: (item: Envelope) => ({ keyId: item.keyId }),
+      },
+      keyProvider: {
+        create: async () => ({
+          metadata: { keyId: "fixture-key" },
+          key: "fixture-key",
+        }),
+        unlock: async () => "fixture-key",
+        clear: vi.fn(),
+      },
+      authorizationProvider: {
+        authorize: async () => ({ token: "token" }),
+        clear: vi.fn(),
+      },
+      cloudStore: {
+        find: async () => ({ fileId: "file", envelope: remote }),
+        write: async (_appId, next) => {
+          writes += 1;
+          remote = next;
+          return "file";
+        },
+      },
+      readLocal: async () => {
+        readCount += 1;
+        const captured = local;
+        if (readCount === 1) {
+          signalFirstRead();
+          await firstReadGate;
+        } else if (readCount === 2) {
+          signalSecondRead();
+          await secondReadGate;
+        }
+        return captured;
+      },
+      applyMerged: vi.fn(),
+      envelopeUpdatedAt: (item: Envelope) => item.updatedAt,
+    });
+
+    const active = controller.sync("manual");
+    await firstReadStarted;
+    const queued = controller.sync("change");
+    local = value(2);
+    releaseFirstRead();
+    await secondReadStarted;
+    local = value(3);
+    const followUp = controller.sync("change");
+    expect(followUp).not.toBe(queued);
+    releaseSecondRead();
+
+    await Promise.all([active, queued, followUp]);
+    expect(readCount).toBe(3);
+    expect(writes).toBe(3);
+    expect(remote.value).toEqual(value(3));
+  });
+
   it("resets keys, deletes safely, and clears both session caches", async () => {
     const test = harness(envelope(1), value(3));
     await expect(test.controller.reset()).resolves.toMatchObject({

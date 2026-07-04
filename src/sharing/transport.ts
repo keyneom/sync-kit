@@ -80,7 +80,7 @@ export interface SharedBackupTransport {
     role: Exclude<SharingRole, "owner" | "admin"> | "admin",
     options?: {
       existingDirectPermissionId?: string;
-      inheritedReaderPermissionId?: string;
+      hasInheritedReadAccess?: boolean;
     },
   ): Promise<SharedDatasetPermission>;
   removeDatasetPermission(

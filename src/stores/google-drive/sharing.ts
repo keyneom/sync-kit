@@ -61,7 +61,10 @@ export class GoogleDriveSharedBackupTransport
   }
 
   async ensureStorage(): Promise<SharedBackupStorage> {
-    this.storagePromise ??= this.ensureStorageNow();
+    this.storagePromise ??= this.ensureStorageNow().catch((error: unknown) => {
+      this.storagePromise = null;
+      throw error;
+    });
     return this.storagePromise;
   }
 
@@ -161,7 +164,7 @@ export class GoogleDriveSharedBackupTransport
       );
     }
     const authorization = await this.authorize();
-    await this.drive.write(
+    const written = await this.drive.write(
       current.fileId,
       JSON.stringify(envelope),
       authorization,
@@ -170,7 +173,12 @@ export class GoogleDriveSharedBackupTransport
         ifMatch: current.version,
       },
     );
-    return this.readDataset(current.fileId);
+    if (!written.etag) return this.readDataset(current.fileId);
+    return {
+      ...current,
+      envelope,
+      version: written.etag,
+    };
   }
 
   async grantExchangeAccess(
@@ -346,7 +354,7 @@ export class GoogleDriveSharedBackupTransport
     role: Exclude<SharingRole, "owner">,
     options: {
       existingDirectPermissionId?: string;
-      inheritedReaderPermissionId?: string;
+      hasInheritedReadAccess?: boolean;
     } = {},
   ): Promise<SharedDatasetPermission> {
     const driveRole = role === "viewer" ? "reader" : "writer";
@@ -362,7 +370,7 @@ export class GoogleDriveSharedBackupTransport
         role: driveRole,
       };
     }
-    if (driveRole === "reader" && options.inheritedReaderPermissionId) {
+    if (driveRole === "reader" && options.hasInheritedReadAccess) {
       return { role: "reader" };
     }
     const permissionId = await this.drive.share(

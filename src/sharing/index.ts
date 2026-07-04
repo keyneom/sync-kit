@@ -9,6 +9,7 @@ export const SHARING_SIGNATURE_ALGORITHM =
   "ECDSA-P256-SHA256-P1363" as const;
 export const SHARING_CONTENT_ALGORITHM =
   "AES-256-GCM+ECDH-P256+HKDF-SHA256" as const;
+export const SHARED_BACKUP_MAX_REVISION_ANCESTORS = 256;
 
 export type SharingRole = "owner" | "admin" | "writer" | "viewer";
 
@@ -271,6 +272,11 @@ export function parseSharedBackupEnvelopeV1(
       throw compatibility("revisionAncestors must contain revision IDs.");
     }
     const ancestors = parsed.revisionAncestors;
+    if (ancestors.length > SHARED_BACKUP_MAX_REVISION_ANCESTORS) {
+      throw compatibility(
+        `revisionAncestors must contain at most ${SHARED_BACKUP_MAX_REVISION_ANCESTORS} revision IDs.`,
+      );
+    }
     if (
       new Set(ancestors).size !== ancestors.length ||
       ancestors.includes(parsed.revisionId as string)

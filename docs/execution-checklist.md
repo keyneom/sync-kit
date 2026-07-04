@@ -127,6 +127,35 @@ Validated on 2026-07-01 for the unpublished sharing extension:
 Live Google Picker, Drive ETag/permission behavior, Google/passkey account
 attestation, consumer integration, and native fixture consumption remain open.
 
+Validated on 2026-07-03 for the unpublished sharing review fixes:
+
+- locale-independent UTF-16 code-unit canonical and protocol ordering;
+- owner-pin preservation and enforcement during invitation exchange;
+- queued local changes that arrive after a queued sync starts;
+- retryable Drive folder/storage initialization after transient failures;
+- a 256-entry signed revision-ancestry window with explicit fork policy beyond
+  that window;
+- passkey cache separation by PRF input, cross-package error recognition,
+  conditional-write response reuse, and installed-artifact default exports;
+- lint, strict typecheck, 56 tests, build, unchanged deterministic fixtures,
+  Java sharing-fixture verification, and packed npm/pnpm consumer imports.
+
+The live Google and external-consumer release gates remain open.
+
+## Android library (private snapshots)
+
+- [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive
+      `appDataFolder` store, and Credential Manager passkey provider into
+      `android/synckit` (`com.keyneom:sync-kit-android`).
+- [x] Prove EasyBC fixtures in Android library unit tests (including 32-byte
+      PRF input enforcement).
+- [x] Add `npm run parity:check` (JS + Kotlin reports, identical-section diff,
+      mutual decrypt of compressed peer envelopes).
+- [x] Migrate EasyBC Android to depend on the library via `includeBuild`.
+- [ ] Publish `sync-kit-android` to Maven Central (or GitHub Packages) alongside
+      the npm `0.2.0` line.
+- [ ] Port shared-backup (`/sharing`) APIs to Android when a consumer needs them.
+
 ## Deferred: v2 and desktop adapters
 
 - [ ] Add v2 readers with canonical authenticated headers and explicit `appId`.
@@ -135,6 +164,21 @@ attestation, consumer integration, and native fixture consumption remain open.
 - [ ] Change writer versions only after every active consumer can read v2.
 - [ ] Design Keynote system-browser OAuth, desktop keys, and manifest/blob sync
       before implementing desktop provider adapters.
+
+## Deferred: recovery, audits, and operational hardening
+
+- [ ] Expose Drive file-revision recovery helpers so a conflict or lost race can
+      list prior revisions, fetch a chosen revision's envelope, and feed it
+      through the existing decrypt/merge/fork path (prevention via `If-Match`
+      remains primary; revision history is the ambulance).
+- [ ] Keep accepted key-response exchange files for audit while early sharing
+      deployments are being validated. Only delete immediately when a verified
+      account binding carried a raw Google ID token (current behavior). After a
+      long clean run, switch non-binding responses to post-accept cleanup (or a
+      short retention window) so `exchanges/` does not accumulate forever.
+- [ ] Consider optional payload/schema version signals on envelopes (min reader
+      version, writer version) and controller hooks that surface
+      "remote requires a newer app" without owning update UI or install flows.
 
 ## Extension: shared encrypted backups
 
