@@ -13,12 +13,55 @@ They remain TypeScript-only until a separate Android sharing port.
 | --- | --- |
 | Group | `com.keyneom` |
 | Artifact | `sync-kit-android` |
-| Version | same as npm (`0.2.0-rc.0` while unpublished) |
+| Version | same as npm (currently `0.2.0-rc.0`) |
 | Module | `android/synckit` |
+| Registry | [GitHub Packages](https://github.com/keyneom/sync-kit/packages) (`https://maven.pkg.github.com/keyneom/sync-kit`) |
 
 ## Install
 
-From a composite build (development, as EasyBC does):
+### GitHub Packages (recommended for apps)
+
+GitHub Packages uses your existing GitHub account — no Maven Central or
+third-party registry signup.
+
+1. Create a [personal access token](https://github.com/settings/tokens) with
+   **`read:packages`** (and `repo` if the package repo is private).
+2. Add credentials to `~/.gradle/gradle.properties` (never commit these):
+
+```properties
+gpr.user=YOUR_GITHUB_USERNAME
+gpr.key=ghp_...
+```
+
+3. Add the repository and dependency:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven {
+            url = uri("https://maven.pkg.github.com/keyneom/sync-kit")
+            credentials {
+                username = providers.gradleProperty("gpr.user").get()
+                password = providers.gradleProperty("gpr.key").get()
+            }
+        }
+    }
+}
+
+// app/build.gradle.kts
+implementation("com.keyneom:sync-kit-android:0.2.0-rc.0")
+```
+
+In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.
+The default `GITHUB_TOKEN` in GitHub Actions has `packages: read` for packages
+in the same org/repo.
+
+### Composite build (development)
+
+When sync-kit is checked out beside your app (as EasyBC does today):
 
 ```kotlin
 // settings.gradle.kts
@@ -33,12 +76,38 @@ includeBuild("../sync-kit/android") {
 implementation("com.keyneom:sync-kit-android:0.2.0-rc.0")
 ```
 
-From Maven Local after `./gradlew :synckit:publishToMavenLocal` in
-`android/`:
+### Maven Local (local publish smoke test)
+
+After `./gradlew :synckit:publishToMavenLocal` in `android/`:
 
 ```kotlin
 repositories { mavenLocal() }
 implementation("com.keyneom:sync-kit-android:0.2.0-rc.0")
+```
+
+## Publishing releases
+
+Releases are published to GitHub Packages automatically when a version tag is
+pushed:
+
+```sh
+git tag v0.2.0-rc.0
+git push origin v0.2.0-rc.0
+```
+
+The [`publish-android` workflow](../.github/workflows/publish-android.yml)
+builds `:synckit` and publishes `com.keyneom:sync-kit-android` at the tag
+version (strip the leading `v`). You can also run it manually from the Actions
+tab.
+
+To publish from a workstation:
+
+```sh
+export GITHUB_ACTOR=your-github-username
+export GITHUB_TOKEN=ghp_...   # needs write:packages
+cd android
+./gradlew :synckit:publishReleasePublicationToGitHubPackagesRepository \
+  -PsynckitVersion=0.2.0-rc.0
 ```
 
 ## What apps provide
@@ -58,7 +127,7 @@ Same split as the npm package:
 | Type | Role |
 | --- | --- |
 | `V1EnvelopeCrypto` | AES-GCM, HKDF, gzip-if-smaller, 32-byte PRF input validation |
-| `SnapshotSyncController` | setup / enable / sync / reset / delete, serialized ops, change dirty-flag |
+| `SnapshotSyncController` | setup / enable / sync / reset / delete, serialized ops, change coalescing |
 | `AndroidPasskeyKeyProvider` | Credential Manager PRF + in-memory content-key cache |
 | `GoogleDriveAppDataStore` | `appDataFolder` find / write / delete by profile filename |
 

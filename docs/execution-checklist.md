@@ -152,8 +152,10 @@ The live Google and external-consumer release gates remain open.
 - [x] Add `npm run parity:check` (JS + Kotlin reports, identical-section diff,
       mutual decrypt of compressed peer envelopes).
 - [x] Migrate EasyBC Android to depend on the library via `includeBuild`.
-- [ ] Publish `sync-kit-android` to Maven Central (or GitHub Packages) alongside
-      the npm `0.2.0` line.
+- [x] Publish `sync-kit-android` to GitHub Packages on version tags
+      (`.github/workflows/publish-android.yml`).
+- [ ] Cut a tagged Android release (`v0.2.0-rc.0`) and verify consumer install
+      from GitHub Packages.
 - [ ] Port shared-backup (`/sharing`) APIs to Android when a consumer needs them.
 
 ## Deferred: v2 and desktop adapters

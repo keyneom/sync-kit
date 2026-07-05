@@ -6,7 +6,10 @@ plugins {
 }
 
 group = "com.keyneom"
-version = "0.2.0-rc.0"
+version = (findProperty("synckitVersion") ?: "0.2.0-rc.0").toString()
+
+val githubPackagesRepository =
+    findProperty("githubPackagesRepository")?.toString() ?: "keyneom/sync-kit"
 
 android {
     namespace = "com.keyneom.synckit"
@@ -70,6 +73,20 @@ afterEvaluate {
         }
         repositories {
             mavenLocal()
+            val githubActor = providers.environmentVariable("GITHUB_ACTOR").orNull
+                ?: providers.gradleProperty("gpr.user").orNull
+            val githubToken = providers.environmentVariable("GITHUB_TOKEN").orNull
+                ?: providers.gradleProperty("gpr.key").orNull
+            if (!githubActor.isNullOrBlank() && !githubToken.isNullOrBlank()) {
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/$githubPackagesRepository")
+                    credentials {
+                        username = githubActor
+                        password = githubToken
+                    }
+                }
+            }
         }
     }
 }

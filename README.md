@@ -182,7 +182,8 @@ not.
 - **Android:** `com.keyneom:sync-kit-android` (module `android/synckit`) provides
   private v1 snapshot crypto, `SnapshotSyncController`, Drive `appDataFolder`
   storage, and Credential Manager passkey PRF — the same contracts as the npm
-  `/crypto`, `/snapshot`, and appData store paths. See
+  `/crypto`, `/snapshot`, and appData store paths. Published to
+  [GitHub Packages](https://github.com/keyneom/sync-kit/packages). See
   [android-library.md](docs/android-library.md).
 - Shared backups (`/sharing`) are TypeScript-only for now.
 - React Native and other JavaScript-native runtimes can inject a
