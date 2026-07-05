@@ -1033,3 +1033,14 @@ function driveUserMatches(
 function escapeDriveQuery(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll("'", "\\'");
 }
+
+export {
+  buildSyncKitFolderName,
+  sanitizeDriveFolderName,
+  type SyncKitFolderNameInput,
+} from "./folder-name.js";
+export {
+  listAccessibleSyncKitAppFolders,
+  type ListAccessibleSyncKitAppFoldersOptions,
+  type SyncKitAppFolder,
+} from "./app-folders.js";

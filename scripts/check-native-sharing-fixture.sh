@@ -16,3 +16,6 @@ mkdir -p "$OUTPUT"
 javac -d "$OUTPUT" "$ROOT/native/java/SharingFixtureVerifier.java"
 java -cp "$OUTPUT" SharingFixtureVerifier \
   "$ROOT/fixtures/sharing-v1/webcrypto-owner-viewer.json"
+
+# Kotlin parity: SharingFixtureTest reads the same fixture from test resources.
+(cd "$ROOT/android" && ./gradlew :synckit:test --quiet)

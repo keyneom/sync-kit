@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sync-kit.dev/schemas/sharing-checkpoint-v1.json",
+  "title": "SharingSyncCheckpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "lastPollAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lastSeenKeyResponseFileIds": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "datasetHeads": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/sharedDatasetHead"
+      }
+    }
+  },
+  "$defs": {
+    "sharedDatasetHead": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["datasetId", "fileId"],
+      "properties": {
+        "datasetId": { "type": "string", "minLength": 1 },
+        "fileId": { "type": "string", "minLength": 1 },
+        "modifiedTime": { "type": "string" },
+        "version": { "type": "string" },
+        "headRevisionId": { "type": "string" },
+        "etag": { "type": "string" }
+      }
+    },
+    "sharingNotificationEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "exchangeId", "fileId"],
+          "properties": {
+            "kind": { "const": "pending-key-response" },
+            "exchangeId": { "type": "string", "minLength": 1 },
+            "fileId": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "datasetId", "fileId"],
+          "properties": {
+            "kind": { "const": "shared-dataset-changed" },
+            "datasetId": { "type": "string", "minLength": 1 },
+            "fileId": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "expiresAt"],
+          "properties": {
+            "kind": { "const": "token-expiring-soon" },
+            "expiresAt": { "type": "string", "format": "date-time" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "token-expired" }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -15,7 +15,9 @@ import {
 import type {
   SharedBackupStorage,
   SharedBackupTransport,
+  SharedDatasetDrivePermission,
   SharedDatasetFile,
+  SharedDatasetHead,
   SharedDatasetPermission,
   SharedExchangeFile,
   SharedKeyResponseFile,
@@ -392,6 +394,50 @@ export class GoogleDriveSharedBackupTransport
       permissionId,
       await this.authorize(),
     );
+  }
+
+  async listDatasetPermissions(
+    fileId: string,
+  ): Promise<SharedDatasetDrivePermission[]> {
+    const permissions = await this.drive.listPermissions(
+      fileId,
+      await this.authorize(),
+    );
+    return permissions
+      .filter(
+        (permission) =>
+          permission.type === "user" &&
+          (permission.role === "reader" || permission.role === "writer"),
+      )
+      .map((permission) => ({
+        permissionId: permission.permissionId,
+        role: permission.role as "reader" | "writer",
+        ...(permission.emailAddress
+          ? { emailAddress: permission.emailAddress }
+          : {}),
+        inherited: permission.inherited ?? false,
+      }));
+  }
+
+  async listDatasetHeads(): Promise<SharedDatasetHead[]> {
+    const authorization = await this.authorize();
+    const storage = await this.ensureStorage();
+    const files = await this.listAll(authorization, {
+      parentId: storage.appFolderId,
+      appProperties: this.properties("dataset"),
+    });
+    return files.map((file) => ({
+      datasetId: requiredProperty(
+        file,
+        SYNC_KIT_DATASET_ID_PROPERTY,
+        "dataset",
+      ),
+      fileId: file.fileId,
+      ...(file.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
+      ...(file.version ? { version: file.version } : {}),
+      ...(file.headRevisionId ? { headRevisionId: file.headRevisionId } : {}),
+      ...(file.etag ? { etag: file.etag } : {}),
+    }));
   }
 
   private async ensureStorageNow(): Promise<SharedBackupStorage> {

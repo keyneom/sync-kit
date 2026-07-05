@@ -147,6 +147,11 @@ Each application owns:
 - Choosing startup, foreground, debounce, and background-grace policies.
 - Platform lifecycle integration.
 
+Sharing adopters should also read
+[consumer-responsibilities.md](consumer-responsibilities.md) for multi-profile
+indexing, Drive folder naming, join deeplinks, and related boundaries beyond
+this list.
+
 ## Session and authorization behavior
 
 The default web behavior should support one interactive authorization/unlock

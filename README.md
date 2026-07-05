@@ -36,9 +36,9 @@ Version `0.1.1` was published to npm on 2026-06-30. It removes the
 application-specific runtime presets from `0.1.0` and keeps compatibility
 profiles consumer-owned.
 
-The current worktree is the unpublished `0.2.0-rc.0` sharing release
-candidate. Publication remains gated on live Google validation and one
-external consumer integration.
+Version `0.2.0-rc.1` publishes shared encrypted backups, Tier A background
+detection helpers, and the Android sharing port. Live Google validation and
+one external consumer integration remain release gates for a stable `0.2.0`.
 
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the
@@ -115,11 +115,12 @@ Available exports:
 - `/snapshot` — serialized snapshot synchronization
 - `/snapshot/lifecycle` — opt-in browser lifecycle binding
 - `/sharing` — browser-independent shared-backup protocol types, validation,
-  roles, invitations, and signed multi-recipient envelopes
+  roles, invitations, signed multi-recipient envelopes, and join-link helpers
 - `/sharing/web-crypto` — P-256 identities, ECDH key grants, signed revisions,
   invitation/key-response proofs, and decryption
 - `/sharing/controller` — headless multi-dataset orchestration, owner pinning,
-  serialized writes, exchange processing, roles, and revocation
+  serialized writes, exchange processing, roles, revocation, Drive permission
+  reconciliation, and optional IndexedDB registry persistence
 - `/sharing/web-passkey` — passkey-encrypted sharing identities with
   non-extractable runtime keys and optional IndexedDB ciphertext storage
 - `/sharing/account-binding` — backendless Google ID-token and WebAuthn
@@ -131,7 +132,8 @@ Available exports:
 - `/auth/google-web/identity` — uncached nonce-bound Google ID tokens for
   account-binding exchanges
 - `/stores/google-drive` — low-level `appDataFolder` objects, a typed snapshot
-  wrapper, and normal-Drive folder/per-file stores
+  wrapper, normal-Drive folder/per-file stores, folder-name helpers, and
+  accessible app-folder discovery
 - `/stores/google-drive/sharing` — managed app/exchange folders, conditional
   dataset writes, provenance checks, and per-dataset permissions
 - `/stores/google-drive/picker` — explicit folder Picker and Drive Open-with
@@ -230,10 +232,11 @@ metadata, and ciphertext to app participants while cryptographic grants control
 decryption. Applications needing metadata isolation can instead use direct file
 sharing or limited-access subfolders.
 
-See the [protocol and threat model](docs/shared-backups.md) and
-[authoritative implementation handoff](docs/sharing-implementation-handoff.md).
-The phased gates remain in the
-[sharing execution plan](docs/sharing-execution-plan.md). The crypto and
+See the [protocol and threat model](docs/shared-backups.md),
+[authoritative implementation handoff](docs/sharing-implementation-handoff.md),
+[consumer responsibilities](docs/consumer-responsibilities.md), and
+[background notifications](docs/background-notifications.md). The phased gates
+remain in the [sharing execution plan](docs/sharing-execution-plan.md). The crypto and
 per-file transport, Picker, protected identity, account binding, signed
 ancestry/fork policy, key rotation, and controller primitives are implemented.
 The same sharing fixture is consumed by Java, and the packed package completes

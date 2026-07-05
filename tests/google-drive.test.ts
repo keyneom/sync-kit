@@ -5,6 +5,7 @@ import {
   GoogleDriveFileStore,
   GoogleDriveFileSnapshotStore,
   GoogleDriveSnapshotStore,
+  listAccessibleSyncKitAppFolders,
 } from "../src/stores/google-drive/index.js";
 import { GoogleDriveSharedBackupTransport } from "../src/stores/google-drive/sharing.js";
 
@@ -475,5 +476,45 @@ describe("Google Drive per-file sharing", () => {
     expect(query).toContain(
       "appProperties has { key='sync-kit-app-id' and value='fixture-app' }",
     );
+  });
+
+  it("lists accessible sync-kit app-root folders for one application", async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      Response.json({
+        files: [
+          {
+            id: "folder-a",
+            name: "EasyBC — Personal",
+            mimeType: "application/vnd.google-apps.folder",
+            appProperties: {
+              "sync-kit-app-id": "easy-bc",
+              "sync-kit-kind": "app-root",
+            },
+          },
+          {
+            id: "file-a",
+            name: "not-a-folder.json",
+            mimeType: "application/json",
+            appProperties: {
+              "sync-kit-app-id": "easy-bc",
+              "sync-kit-kind": "dataset",
+            },
+          },
+        ],
+      }),
+    );
+
+    await expect(
+      listAccessibleSyncKitAppFolders({
+        appId: "easy-bc",
+        authorization,
+        drive: new GoogleDriveFileStore({ fetch }),
+      }),
+    ).resolves.toEqual([
+      {
+        appFolderId: "folder-a",
+        name: "EasyBC — Personal",
+      },
+    ]);
   });
 });

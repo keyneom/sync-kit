@@ -132,6 +132,30 @@ Exit gate: one consumer completes owner/invite/response/grant/read/write/revoke
 flows using only per-file Drive access, and a second platform consumes the
 frozen wire fixtures before cross-platform release.
 
+## Phase S6: background change detection
+
+- [x] Document Tier A (Drive metadata) vs Tier B (local reminders) boundaries.
+- [x] Add `SharingSyncCheckpoint` and `SharingNotificationEvent` (JSON schema).
+- [x] Add metadata-only `SharingChangeDetector` on npm `/sharing`.
+- [x] Add opt-in `IndexedDbAuthorizationCache` and `bindSharingPoll` (web).
+- [x] Add `SharingSyncWorker` skeleton on Android.
+- [ ] Validate WorkManager poll against mocked Drive in instrumented tests.
+
+Exit gate: apps can notify users of pending key responses and dataset head
+changes without background decrypt or signing.
+
+## Phase S7: Android sharing port
+
+- [x] Add Kotlin sharing protocol parsers and P-256 crypto matching the fixture.
+- [x] Add `GoogleDriveFileStore` and `GoogleDriveSharedBackupTransport`.
+- [x] Add `SharedBackupController` parity with npm headless API.
+- [x] Add join URL helpers and folder naming utilities.
+- [ ] Live Google Drive validation on Android (ETag, permissions, provenance).
+- [ ] One native consumer completes end-to-end sharing from a published artifact.
+
+Exit gate: Android matches npm sharing behavior on frozen fixtures and one
+live Drive smoke path.
+
 ## Release posture
 
 The current build completes the package implementation through S4, including

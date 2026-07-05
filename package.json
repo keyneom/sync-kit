@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.2.0-rc.0",
+  "version": "0.2.0-rc.1",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "keywords": [
@@ -68,6 +68,11 @@
       "import": "./dist/sharing/account-binding.js",
       "default": "./dist/sharing/account-binding.js"
     },
+    "./sharing/lifecycle": {
+      "types": "./dist/sharing/lifecycle.d.ts",
+      "import": "./dist/sharing/lifecycle.js",
+      "default": "./dist/sharing/lifecycle.js"
+    },
     "./keys/web-passkey": {
       "types": "./dist/keys/web-passkey/index.d.ts",
       "import": "./dist/keys/web-passkey/index.js",
@@ -82,6 +87,11 @@
       "types": "./dist/auth/google-web/identity.d.ts",
       "import": "./dist/auth/google-web/identity.js",
       "default": "./dist/auth/google-web/identity.js"
+    },
+    "./auth/google-web/cache": {
+      "types": "./dist/auth/google-web/cache.d.ts",
+      "import": "./dist/auth/google-web/cache.js",
+      "default": "./dist/auth/google-web/cache.js"
     },
     "./stores/google-drive": {
       "types": "./dist/stores/google-drive/index.d.ts",
@@ -101,11 +111,12 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run parity:sharing:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "fixtures": "node scripts/generate-v1-fixtures.mjs",
     "fixtures:check": "node scripts/check-v1-fixtures.mjs",
     "native:check": "sh scripts/check-native-sharing-fixture.sh",
     "parity:check": "sh scripts/check-js-kotlin-parity.sh",
+    "parity:sharing:check": "node scripts/check-sharing-checkpoint-parity.mjs",
     "lint": "eslint .",
     "live:drive": "npm run build && node scripts/live-google-drive-sharing.mjs",
     "pack:check": "node scripts/check-package.mjs",

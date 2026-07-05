@@ -30,6 +30,8 @@ import {
   type WebCryptoSharingIdentity,
   type WebCryptoSharingOptions,
 } from "./web-crypto.js";
+import { formatSharingInviteEmailMessage, appendSharingJoinParams } from "./join.js";
+export { IndexedDbSharedBackupRegistry } from "./registry-indexeddb.js";
 
 export type SharedBackupControllerCodec<T> = SharedBackupCodec<T> & {
   merge(local: T, remote: T): T;
@@ -98,6 +100,22 @@ export type RotatedDatasetResult = {
   status: "rotated" | "failed";
   revisionId?: string;
   error?: unknown;
+};
+
+export type DrivePermissionReconciliationAction =
+  | {
+      kind: "granted" | "updated";
+      keyId: string;
+      permissionId: string;
+      role: "reader" | "writer";
+    }
+  | { kind: "removed"; permissionId: string }
+  | { kind: "unchanged"; keyId: string }
+  | { kind: "skipped"; keyId: string; reason: string };
+
+export type DrivePermissionReconciliationResult = {
+  datasetId: string;
+  actions: DrivePermissionReconciliationAction[];
 };
 
 export type SharedBackupControllerOptions<T> = {
@@ -270,6 +288,11 @@ export class SharedBackupController<T> {
     expiresAt?: string;
     sendNotificationEmail?: boolean;
     emailMessage?: string;
+  /** Consumer landing URL; folder ID is appended before the Drive notification. */
+    joinLandingUrl?: string;
+    /** Fully built join URL; must already include the app folder ID when used. */
+    joinUrl?: string;
+    appDisplayName?: string;
   }): Promise<SharingInvitationResult> {
     return this.serialized(async () => {
       const identity = await this.options.identity();
@@ -307,13 +330,30 @@ export class SharedBackupController<T> {
           "The invitation has no owner trust root.",
         );
       }
+      const storage = await this.options.transport.ensureStorage();
+      const appDisplayName = input.appDisplayName?.trim() ?? this.options.appId;
+      const emailMessage =
+        input.emailMessage ??
+        (input.joinLandingUrl
+          ? formatSharingInviteEmailMessage({
+              joinUrl: appendSharingJoinParams(input.joinLandingUrl, {
+                appFolderId: storage.appFolderId,
+              }),
+              appDisplayName,
+            })
+          : input.joinUrl
+            ? formatSharingInviteEmailMessage({
+                joinUrl: input.joinUrl,
+                appDisplayName,
+              })
+            : undefined);
       const access = await this.options.transport.grantExchangeAccess(
         input.emailAddress,
         {
           ...(input.sendNotificationEmail === undefined
             ? {}
             : { sendNotificationEmail: input.sendNotificationEmail }),
-          ...(input.emailMessage ? { emailMessage: input.emailMessage } : {}),
+          ...(emailMessage ? { emailMessage } : {}),
         },
       );
       const invitation = await createSharingInvitationV1(
@@ -751,6 +791,174 @@ export class SharedBackupController<T> {
     });
   }
 
+  reconcileDrivePermissions(input: {
+    datasetId: string;
+    participantEmails: Record<string, string>;
+  }): Promise<DrivePermissionReconciliationResult> {
+    return this.serialized(async () => {
+      const stored = await this.readDatasetById(input.datasetId);
+      const record = await this.requiredRegistry(input.datasetId);
+      await this.verifyHead(stored, record);
+      const identity = await this.options.identity();
+      const actor = sharedBackupParticipant(
+        stored.envelope,
+        identity.publicKey.keyId,
+      );
+      if (!actor || !canAdministerSharedBackup(actor.role)) {
+        throw new SyncKitError(
+          "authorization",
+          "Only a current owner or admin can reconcile Drive permissions.",
+        );
+      }
+      const livePermissions = await this.options.transport.listDatasetPermissions(
+        stored.fileId,
+      );
+      const directPermissions = livePermissions.filter(
+        (permission) => !permission.inherited,
+      );
+      const actions: DrivePermissionReconciliationAction[] = [];
+      const expectedPermissionIds = new Set<string>();
+      let participantPermissionIds = {
+        ...record.participantPermissionIds,
+      };
+      const participants = sharedBackupParticipants(stored.envelope).filter(
+        (participant): participant is typeof participant & {
+          role: Exclude<SharingRole, "owner">;
+        } => participant.role !== "owner",
+      );
+      for (const participant of participants) {
+        const emailAddress = input.participantEmails[participant.keyId]?.trim();
+        const expectedRole = sharingRoleToDriveRole(participant.role);
+        const permissionId = participantPermissionIds[participant.keyId];
+        const live = permissionId
+          ? directPermissions.find(
+              (permission) => permission.permissionId === permissionId,
+            )
+          : emailAddress
+            ? directPermissions.find(
+                (permission) =>
+                  permission.emailAddress?.toLowerCase() ===
+                  emailAddress.toLowerCase(),
+              )
+            : undefined;
+        if (
+          participant.role === "viewer" &&
+          !permissionId &&
+          !emailAddress &&
+          livePermissions.some(
+            (permission) =>
+              permission.inherited && permission.role === "reader",
+          )
+        ) {
+          actions.push({
+            kind: "unchanged",
+            keyId: participant.keyId,
+          });
+          continue;
+        }
+        if (!emailAddress) {
+          if (live?.role === expectedRole) {
+            expectedPermissionIds.add(live.permissionId);
+            actions.push({ kind: "unchanged", keyId: participant.keyId });
+          } else {
+            actions.push({
+              kind: "skipped",
+              keyId: participant.keyId,
+              reason: "No email address was provided for reconciliation.",
+            });
+            if (live) {
+              expectedPermissionIds.add(live.permissionId);
+            }
+          }
+          continue;
+        }
+        if (live?.role === expectedRole) {
+          expectedPermissionIds.add(live.permissionId);
+          if (permissionId !== live.permissionId) {
+            participantPermissionIds = {
+              ...participantPermissionIds,
+              [participant.keyId]: live.permissionId,
+            };
+          }
+          actions.push({ kind: "unchanged", keyId: participant.keyId });
+          continue;
+        }
+        const permission = await this.options.transport.setDatasetPermission(
+          stored.fileId,
+          emailAddress,
+          participant.role,
+          {
+            ...(live?.permissionId
+              ? { existingDirectPermissionId: live.permissionId }
+              : {}),
+            ...(participant.role === "viewer"
+              ? { hasInheritedReadAccess: true }
+              : {}),
+          },
+        );
+        if (!permission.permissionId) {
+          actions.push({
+            kind: "unchanged",
+            keyId: participant.keyId,
+          });
+          continue;
+        }
+        expectedPermissionIds.add(permission.permissionId);
+        participantPermissionIds = {
+          ...participantPermissionIds,
+          [participant.keyId]: permission.permissionId,
+        };
+        actions.push({
+          kind: live ? "updated" : "granted",
+          keyId: participant.keyId,
+          permissionId: permission.permissionId,
+          role: permission.role,
+        });
+      }
+      if (
+        JSON.stringify(participantPermissionIds) !==
+        JSON.stringify(record.participantPermissionIds ?? {})
+      ) {
+        await this.options.registry.set({
+          ...record,
+          participantPermissionIds,
+        });
+      }
+      const removedPermissionIds = new Set<string>();
+      for (const permission of directPermissions) {
+        const tracked = Object.values(participantPermissionIds).includes(
+          permission.permissionId,
+        );
+        if (
+          tracked &&
+          !expectedPermissionIds.has(permission.permissionId)
+        ) {
+          await this.options.transport.removeDatasetPermission(
+            stored.fileId,
+            permission.permissionId,
+          );
+          removedPermissionIds.add(permission.permissionId);
+          actions.push({
+            kind: "removed",
+            permissionId: permission.permissionId,
+          });
+        }
+      }
+      if (removedPermissionIds.size > 0) {
+        participantPermissionIds = Object.fromEntries(
+          Object.entries(participantPermissionIds).filter(
+            ([, permissionId]) => !removedPermissionIds.has(permissionId),
+          ),
+        );
+        await this.options.registry.set({
+          ...record,
+          participantPermissionIds,
+        });
+      }
+      return { datasetId: input.datasetId, actions };
+    });
+  }
+
   private changeParticipants(
     datasetId: string,
     change: (
@@ -954,6 +1162,12 @@ export function createSharedBackupController<T>(
   options: SharedBackupControllerOptions<T>,
 ): SharedBackupController<T> {
   return new SharedBackupController(options);
+}
+
+function sharingRoleToDriveRole(
+  role: Exclude<SharingRole, "owner">,
+): "reader" | "writer" {
+  return role === "viewer" ? "reader" : "writer";
 }
 
 function participantInputs(

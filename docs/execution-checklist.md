@@ -154,9 +154,9 @@ The live Google and external-consumer release gates remain open.
 - [x] Migrate EasyBC Android to depend on the library via `includeBuild`.
 - [x] Publish `sync-kit-android` to GitHub Packages on version tags
       (`.github/workflows/publish-android.yml`).
-- [ ] Cut a tagged Android release (`v0.2.0-rc.0`) and verify consumer install
+- [ ] Cut a tagged Android release (`v0.2.0-rc.1`) and verify consumer install
       from GitHub Packages.
-- [ ] Port shared-backup (`/sharing`) APIs to Android when a consumer needs them.
+- [x] Port shared-backup (`/sharing`) APIs to Android (primary sharing target).
 
 ## Deferred: v2 and desktop adapters
 
@@ -209,8 +209,13 @@ The live Google and external-consumer release gates remain open.
 - [x] Add Picker/Open-with, Google/passkey account attestation, signed ancestry,
       fork policy, and dual-proof key rotation.
 - [x] Execute sharing exchange/decryption from packed npm and pnpm artifacts.
+- [x] Add metadata-only `listDatasetHeads`, `SharingChangeDetector`, and
+      `SharingSyncCheckpoint` on npm `/sharing`.
+- [x] Add opt-in `IndexedDbAuthorizationCache`, `bindSharingPoll`, and SW
+      integration guidance.
+- [x] Add Kotlin sharing fixture verification and Android sharing port (S7).
 - [ ] Validate OAuth, Picker, conditional writes, permissions, and account
-      attestation against live Google services.
+      attestation against live Google services (`npm run live:drive`).
 - [ ] Integrate the complete flow into an external consumer from a packed
       artifact.
 

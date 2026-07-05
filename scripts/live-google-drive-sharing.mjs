@@ -92,6 +92,23 @@ try {
   ) {
     throw new Error("Drive did not apply the direct dataset writer role.");
   }
+
+  const metadata = await drive.get(fileId, authorization);
+  if (!metadata.version && !metadata.etag) {
+    throw new Error("Drive did not expose dataset head metadata.");
+  }
+  const listed = await drive.list(authorization, {
+    parentId: folderId,
+    appProperties: {
+      [SYNC_KIT_APP_ID_PROPERTY]: "sync-kit-live-test",
+      [SYNC_KIT_KIND_PROPERTY]: "live-test-dataset",
+    },
+  });
+  const head = listed.files.find((file) => file.fileId === fileId);
+  if (!head?.fileId) {
+    throw new Error("Drive list did not return the dataset head.");
+  }
+
   console.log("Live Google Drive sharing validation passed.");
 } finally {
   if (filePermissionId && fileId) {

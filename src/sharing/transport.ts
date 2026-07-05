@@ -4,6 +4,9 @@ import type {
   SharingPublicKeyResponseV1,
   SharingRole,
 } from "./index.js";
+import type { SharedDatasetHead } from "./checkpoint.js";
+
+export type { SharedDatasetHead } from "./checkpoint.js";
 
 export type SharedBackupStorage = {
   appFolderId: string;
@@ -39,6 +42,13 @@ export type SharedKeyResponseFile = {
 export type SharedDatasetPermission = {
   permissionId?: string;
   role: "reader" | "writer";
+};
+
+export type SharedDatasetDrivePermission = {
+  permissionId: string;
+  role: "reader" | "writer";
+  emailAddress?: string;
+  inherited: boolean;
 };
 
 /**
@@ -87,4 +97,6 @@ export interface SharedBackupTransport {
     fileId: string,
     permissionId: string,
   ): Promise<void>;
+  listDatasetPermissions(fileId: string): Promise<SharedDatasetDrivePermission[]>;
+  listDatasetHeads(): Promise<SharedDatasetHead[]>;
 }

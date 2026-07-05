@@ -580,11 +580,41 @@ function compatibility(message: string): SyncKitError {
 }
 
 export type {
+  SharedDatasetHead,
+  SharingChangeDetectionResult,
+  SharingNotificationEvent,
+  SharingSyncCheckpoint,
+} from "./checkpoint.js";
+export {
+  SharingChangeDetector,
+  createSharingChangeDetectorFromTransport,
+  detectSharingChanges,
+} from "./change-detector.js";
+export type {
   SharedBackupStorage,
   SharedBackupTransport,
   SharedDatasetFile,
+  SharedDatasetDrivePermission,
   SharedDatasetPermission,
   SharedExchangeFile,
   SharedKeyResponseFile,
   VersionedSharedDataset,
 } from "./transport.js";
+export {
+  appendSharingJoinParams,
+  buildSharingJoinSearchParams,
+  findSharingJoinInvitation,
+  formatSharingInviteEmailMessage,
+  parseSharingJoinParams,
+  resolveSharingJoinInvitation,
+  SHARING_JOIN_EXCHANGE_PARAM,
+  SHARING_JOIN_FOLDER_PARAM,
+  SHARING_JOIN_MARKER_PARAM,
+  SHARING_JOIN_SHORT_EXCHANGE_PARAM,
+  SHARING_JOIN_SHORT_FOLDER_PARAM,
+  SHARING_JOIN_SHORT_MARKER_PARAM,
+  SHARING_JOIN_SHORT_MARKER_VALUE,
+  type SharingJoinInvitationMatch,
+  type SharingJoinParamStyle,
+  type SharingJoinParams,
+} from "./join.js";

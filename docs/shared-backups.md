@@ -8,6 +8,10 @@ The concise, settled implementation decisions are in
 `docs/sharing-implementation-handoff.md`. Use that file for continuation work;
 this document provides the longer rationale and threat model.
 
+For multi-profile UX, folder naming, join deeplinks, and what each application
+must build versus what sync-kit provides, see
+[consumer-responsibilities.md](consumer-responsibilities.md).
+
 ## Goal
 
 An application can expose multiple encrypted backup files. Each file has its

@@ -5,7 +5,7 @@ const typedFiles = ["src/**/*.ts", "tests/**/*.ts"];
 
 export default [
   {
-    ignores: ["dist/", "fixtures/", "eslint.config.js"],
+    ignores: ["dist/", "fixtures/", "eslint.config.js", "android/**/build/"],
   },
   {
     ...eslint.configs.recommended,

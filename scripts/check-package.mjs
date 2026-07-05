@@ -65,9 +65,11 @@ async function verifyInstalledPackage(packageManager, tarball) {
     await import("@keyneom/sync-kit/sharing/controller");
     await import("@keyneom/sync-kit/sharing/web-passkey");
     await import("@keyneom/sync-kit/sharing/account-binding");
+    await import("@keyneom/sync-kit/sharing/lifecycle");
     await import("@keyneom/sync-kit/keys/web-passkey");
     await import("@keyneom/sync-kit/auth/google-web");
     await import("@keyneom/sync-kit/auth/google-web/identity");
+    await import("@keyneom/sync-kit/auth/google-web/cache");
     await import("@keyneom/sync-kit/stores/google-drive");
     await import("@keyneom/sync-kit/stores/google-drive/sharing");
     await import("@keyneom/sync-kit/stores/google-drive/picker");

@@ -260,6 +260,190 @@ describe("shared-backup controller", () => {
       outcome: "updated",
     });
   });
+
+  it("appends a folder join URL to invite email messages when configured", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const sharing = controller(owner, transport, registry);
+    await sharing.createDataset("tasks", { items: ["owner"] });
+
+    await sharing.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+      joinLandingUrl: "https://example.com/easy-bc/",
+      appDisplayName: "EasyBC",
+    });
+
+    expect(transport.lastInviteEmailMessage).toContain(
+      "https://example.com/easy-bc/",
+    );
+    expect(transport.lastInviteEmailMessage).toContain("folder=app-folder");
+    expect(transport.lastInviteEmailMessage).not.toContain("exchange=");
+  });
+
+  it("does not remove Drive permissions for skipped participants with correct ACLs", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const recipientRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, ownerRegistry);
+    const recipientController = controller(
+      recipient,
+      transport,
+      recipientRegistry,
+    );
+
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const submitted = await recipientController.submitKeyResponse(
+      invited.invitationFileId,
+    );
+    await ownerController.acceptKeyResponse({
+      invitation: invited.invitation,
+      responseFileId: submitted.responseFileId,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    const reconciled = await ownerController.reconcileDrivePermissions({
+      datasetId: "tasks",
+      participantEmails: {},
+    });
+
+    expect(reconciled.actions).toContainEqual({
+      kind: "unchanged",
+      keyId: recipient.publicKey.keyId,
+    });
+    expect(
+      transport.permissions
+        .get("dataset-tasks")
+        ?.has("permission-recipient@example.com"),
+    ).toBe(true);
+  });
+
+  it("does not remove Drive permissions for skipped participants with drifted ACLs", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const recipientRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, ownerRegistry);
+    const recipientController = controller(
+      recipient,
+      transport,
+      recipientRegistry,
+    );
+
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const submitted = await recipientController.submitKeyResponse(
+      invited.invitationFileId,
+    );
+    await ownerController.acceptKeyResponse({
+      invitation: invited.invitation,
+      responseFileId: submitted.responseFileId,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    const stored = await transport.readDataset("dataset-tasks");
+    const filePermissions = transport.permissions.get(stored.fileId);
+    expect(filePermissions).toBeDefined();
+    if (!filePermissions) {
+      throw new Error("Expected dataset permissions to exist.");
+    }
+    for (const [permissionId, permission] of filePermissions.entries()) {
+      if (permission.emailAddress === "recipient@example.com") {
+        filePermissions.set(permissionId, {
+          ...permission,
+          role: "reader",
+        });
+      }
+    }
+
+    const reconciled = await ownerController.reconcileDrivePermissions({
+      datasetId: "tasks",
+      participantEmails: {},
+    });
+
+    expect(reconciled.actions).toContainEqual({
+      kind: "skipped",
+      keyId: recipient.publicKey.keyId,
+      reason: "No email address was provided for reconciliation.",
+    });
+    expect(reconciled.actions).not.toContainEqual({
+      kind: "removed",
+      permissionId: "permission-recipient@example.com",
+    });
+    expect(
+      transport.permissions
+        .get("dataset-tasks")
+        ?.has("permission-recipient@example.com"),
+    ).toBe(true);
+  });
+
+  it("reconciles drifted Drive permissions for known participants", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const recipientRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, ownerRegistry);
+    const recipientController = controller(
+      recipient,
+      transport,
+      recipientRegistry,
+    );
+
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const submitted = await recipientController.submitKeyResponse(
+      invited.invitationFileId,
+    );
+    await ownerController.acceptKeyResponse({
+      invitation: invited.invitation,
+      responseFileId: submitted.responseFileId,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    const stored = await transport.readDataset("dataset-tasks");
+    const filePermissions = transport.permissions.get(stored.fileId);
+    expect(filePermissions).toBeDefined();
+    if (!filePermissions) {
+      throw new Error("Expected dataset permissions to exist.");
+    }
+    for (const [permissionId, permission] of filePermissions.entries()) {
+      if (permission.emailAddress === "recipient@example.com") {
+        filePermissions.set(permissionId, {
+          ...permission,
+          role: "reader",
+        });
+      }
+    }
+
+    const reconciled = await ownerController.reconcileDrivePermissions({
+      datasetId: "tasks",
+      participantEmails: {
+        [recipient.publicKey.keyId]: "recipient@example.com",
+      },
+    });
+
+    expect(reconciled.actions).toContainEqual({
+      kind: "updated",
+      keyId: recipient.publicKey.keyId,
+      permissionId: "permission-recipient@example.com",
+      role: "writer",
+    });
+  });
 });
 
 function controller(
@@ -296,7 +480,19 @@ class MemorySharingTransport implements SharedBackupTransport {
   readonly datasets = new Map<string, VersionedSharedDataset>();
   readonly invitations = new Map<string, SharingInvitationV1>();
   readonly responses = new Map<string, SharingPublicKeyResponseV1>();
+  readonly permissions = new Map<
+    string,
+    Map<
+      string,
+      {
+        role: "reader" | "writer";
+        emailAddress?: string;
+        inherited: boolean;
+      }
+    >
+  >();
   conflictNextWrite = false;
+  lastInviteEmailMessage: string | undefined;
   private counter = 0;
 
   async ensureStorage(): Promise<SharedBackupStorage> {
@@ -360,7 +556,12 @@ class MemorySharingTransport implements SharedBackupTransport {
 
   async grantExchangeAccess(
     emailAddress: string,
+    options: {
+      sendNotificationEmail?: boolean;
+      emailMessage?: string;
+    } = {},
   ): Promise<{ drivePermissionId: string; appFolderId: string }> {
+    this.lastInviteEmailMessage = options.emailMessage;
     return {
       drivePermissionId: `permission-${emailAddress}`,
       appFolderId: this.storage.appFolderId,
@@ -381,7 +582,12 @@ class MemorySharingTransport implements SharedBackupTransport {
     return fileId;
   }
 
-  async listExchanges(): Promise<SharedExchangeFile[]> {
+  async listExchanges(
+    options: {
+      exchangeId?: string;
+      kind?: SharedExchangeFile["kind"];
+    } = {},
+  ): Promise<SharedExchangeFile[]> {
     return [
       ...[...this.invitations.entries()].map(([fileId, invitation]) => ({
         fileId,
@@ -394,7 +600,13 @@ class MemorySharingTransport implements SharedBackupTransport {
         kind: "key-response" as const,
         keyId: response.keyId,
       })),
-    ];
+    ].filter((file) => {
+      if (options.exchangeId && file.exchangeId !== options.exchangeId) {
+        return false;
+      }
+      if (options.kind && file.kind !== options.kind) return false;
+      return true;
+    });
   }
 
   async readInvitation(fileId: string): Promise<SharingInvitationV1> {
@@ -422,7 +634,7 @@ class MemorySharingTransport implements SharedBackupTransport {
   }
 
   async setDatasetPermission(
-    _fileId: string,
+    fileId: string,
     emailAddress: string,
     role: Exclude<SharingRole, "owner">,
     options: {
@@ -433,15 +645,56 @@ class MemorySharingTransport implements SharedBackupTransport {
     if (role === "viewer" && options.hasInheritedReadAccess) {
       return { role: "reader" };
     }
+    const permissionId =
+      options.existingDirectPermissionId ??
+      `permission-${emailAddress}`;
+    const driveRole = role === "viewer" ? "reader" : "writer";
+    const filePermissions =
+      this.permissions.get(fileId) ?? new Map<string, {
+        role: "reader" | "writer";
+        emailAddress?: string;
+        inherited: boolean;
+      }>();
+    filePermissions.set(permissionId, {
+      role: driveRole,
+      emailAddress,
+      inherited: false,
+    });
+    this.permissions.set(fileId, filePermissions);
     return {
-      permissionId:
-        options.existingDirectPermissionId ??
-        `permission-${emailAddress}`,
-      role: role === "viewer" ? "reader" : "writer",
+      permissionId,
+      role: driveRole,
     };
   }
 
-  removeDatasetPermission(): Promise<void> {
-    return Promise.resolve();
+  async listDatasetPermissions(fileId: string) {
+    const filePermissions = this.permissions.get(fileId);
+    if (!filePermissions) return [];
+    return [...filePermissions.entries()].map(([permissionId, permission]) => ({
+      permissionId,
+      role: permission.role,
+      ...(permission.emailAddress
+        ? { emailAddress: permission.emailAddress }
+        : {}),
+      inherited: permission.inherited,
+    }));
+  }
+
+  async listDatasetHeads() {
+    return [...this.datasets.values()].map(
+      ({ datasetId, fileId, version }) => ({
+        datasetId,
+        fileId,
+        version,
+        etag: version,
+      }),
+    );
+  }
+
+  async removeDatasetPermission(
+    fileId: string,
+    permissionId: string,
+  ): Promise<void> {
+    this.permissions.get(fileId)?.delete(permissionId);
   }
 }

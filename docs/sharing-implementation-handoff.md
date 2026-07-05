@@ -28,6 +28,8 @@ is open, and token renewal or passkey use may require user presence.
   Do not treat this as recursive authorization for arbitrary foreign files.
 - Expose headless APIs and typed state. Consumers own all UI.
 - Treat Drive file IDs and signed IDs as authoritative. Names are presentation.
+  See [consumer-responsibilities.md](consumer-responsibilities.md) for profile
+  indexing, folder naming, and join-deeplink boundaries.
 
 ## Default Drive layout
 
@@ -224,6 +226,11 @@ Implemented:
 - multi-dataset invitations and signed acceptance provenance;
 - `/sharing/controller` headless dataset, invitation, response, role, and
   revocation orchestration;
+- join-link param parsing/building, invite email formatting, and invitation
+  lookup helpers on `/sharing`;
+- `buildSyncKitFolderName`, `listAccessibleSyncKitAppFolders`, and
+  `reconcileDrivePermissions`;
+- optional `IndexedDbSharedBackupRegistry` persistence;
 - `/sharing/web-passkey` passkey-encrypted identity records and an IndexedDB
   ciphertext store;
 - `/sharing/account-binding` Google JWT and WebAuthn verification over one

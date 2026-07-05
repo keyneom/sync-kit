@@ -38,7 +38,23 @@ The library implements:
 
 It is intentionally not emulated through a webview.
 
-Shared backups are not on Android yet.
+Shared backups ship on Android in `com.keyneom:sync-kit-android` alongside the
+npm `/sharing` package. Both must consume `fixtures/sharing-v1/` before a
+cross-platform sharing release.
+
+### Sharing parity gate
+
+Before claiming native sharing compatibility:
+
+1. Kotlin unit tests verify and decrypt the sharing-v1 fixture (not only the
+   standalone Java verifier).
+2. `SharedBackupController` completes invite → response → accept → decrypt in
+   mocked transport tests.
+3. `SharingSyncCheckpoint` JSON matches the npm schema (`npm run parity:sharing:check`).
+4. Live Drive smoke test passes on at least one platform.
+
+See [background-notifications.md](./background-notifications.md) for Android-first
+background detection.
 
 ## React Native and other JavaScript-native runtimes
 

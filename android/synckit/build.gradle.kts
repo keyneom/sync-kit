@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.keyneom"
-version = (findProperty("synckitVersion") ?: "0.2.0-rc.0").toString()
+version = (findProperty("synckitVersion") ?: "0.2.0-rc.1").toString()
 
 val githubPackagesRepository =
     findProperty("githubPackagesRepository")?.toString() ?: "keyneom/sync-kit"
@@ -49,6 +49,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("androidx.credentials:credentials:1.6.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.6.0")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
