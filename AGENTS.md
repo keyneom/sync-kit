@@ -35,3 +35,8 @@ Platform parity:
   negotiates HTTP/2 with googleapis.com and receives lowercased response
   header names, and Drive v3 does not send HTTP ETags on dataset reads —
   use metadata change tokens (`headRevisionId`, `version`) instead.
+- `drive.file` cannot see files shared from another account (Drive returns
+  404) until the user grants them explicitly — on web that grant is the
+  Google Picker; native apps have no Picker equivalent and need a broader
+  Drive scope for cross-account sharing flows (invitations, key responses,
+  shared datasets).
