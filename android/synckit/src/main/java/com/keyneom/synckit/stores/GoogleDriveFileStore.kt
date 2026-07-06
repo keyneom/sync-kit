@@ -72,6 +72,21 @@ data class DriveFileWriteResult(
     val etag: String? = null,
 )
 
+data class DriveV2WriteHead(
+    val etag: String,
+    val headRevisionId: String? = null,
+)
+
+data class DriveV2WriteResult(
+    val fileId: String,
+    val etag: String,
+    val headRevisionId: String? = null,
+)
+
+class DriveV2UnavailableException(
+    cause: SyncKitError,
+) : Exception(cause.message, cause)
+
 data class DrivePermission(
     val permissionId: String,
     val type: String,
@@ -248,6 +263,64 @@ open class GoogleDriveFileStore(
         DriveFileWriteResult(fileId, response.headers["ETag"])
     }
 
+    suspend fun getV2WriteHead(
+        fileId: String,
+        authorization: Authorization,
+    ): DriveV2WriteHead = withContext(Dispatchers.IO) {
+        try {
+            val response = request(
+                "${options.apiOrigin}/drive/v2/files/${encodePathSegment(fileId)}" +
+                    "?fields=etag,headRevisionId",
+                authorization.accessToken,
+            )
+            val root = SyncKitJson.instance.parseToJsonElement(response.body).jsonObject
+            val etag = root["etag"]?.jsonPrimitive?.content
+                ?: throw providerError("Google Drive v2 metadata did not include an etag.")
+            DriveV2WriteHead(
+                etag = etag,
+                headRevisionId = root["headRevisionId"]?.jsonPrimitive?.content,
+            )
+        } catch (error: SyncKitError) {
+            if (isDriveV2EndpointUnavailable(error)) {
+                throw DriveV2UnavailableException(error)
+            }
+            throw error
+        }
+    }
+
+    suspend fun writeV2Media(
+        fileId: String,
+        content: String,
+        authorization: Authorization,
+        contentType: String = "application/octet-stream",
+        ifMatch: String,
+    ): DriveV2WriteResult = withContext(Dispatchers.IO) {
+        try {
+            val response = request(
+                "${options.uploadOrigin}/upload/drive/v2/files/${encodePathSegment(fileId)}" +
+                    "?uploadType=media&fields=etag,headRevisionId",
+                authorization.accessToken,
+                method = "PUT",
+                contentType = contentType,
+                body = content.toByteArray(Charsets.UTF_8),
+                extraHeaders = mapOf("If-Match" to ifMatch),
+            )
+            val root = SyncKitJson.instance.parseToJsonElement(response.body).jsonObject
+            val etag = root["etag"]?.jsonPrimitive?.content
+                ?: throw providerError("Google Drive v2 upload did not return an etag.")
+            DriveV2WriteResult(
+                fileId = fileId,
+                etag = etag,
+                headRevisionId = root["headRevisionId"]?.jsonPrimitive?.content,
+            )
+        } catch (error: SyncKitError) {
+            if (isDriveV2EndpointUnavailable(error)) {
+                throw DriveV2UnavailableException(error)
+            }
+            throw error
+        }
+    }
+
     suspend fun share(
         fileId: String,
         emailAddress: String,
@@ -387,6 +460,7 @@ open class GoogleDriveFileStore(
                         else -> SyncKitErrorCode.NETWORK
                     },
                     "Google Drive request failed ($code). ${response.take(400)}",
+                    httpStatus = code,
                 )
             }
             return DriveHttpResponse(response, responseHeaders)
@@ -479,6 +553,9 @@ internal fun driveResponseHeaders(fields: Map<String?, List<String>>): Map<Strin
     }
     return headers
 }
+
+private fun isDriveV2EndpointUnavailable(error: SyncKitError): Boolean =
+    error.httpStatus == 404 || error.httpStatus == 410
 
 fun assertDriveFileProvenance(
     file: DriveFileMetadata,

@@ -11,6 +11,20 @@ import { GoogleDriveSharedBackupTransport } from "../src/stores/google-drive/sha
 
 const authorization = { accessToken: "token" };
 
+function requestHeader(
+  init: RequestInit | undefined,
+  name: string,
+): string | null {
+  const headers = init?.headers;
+  if (!headers) return null;
+  if (headers instanceof Headers) return headers.get(name);
+  if (Array.isArray(headers)) {
+    const match = headers.find(([key]) => key.toLowerCase() === name.toLowerCase());
+    return match?.[1] ?? null;
+  }
+  return headers[name] ?? headers[name.toLowerCase()] ?? null;
+}
+
 describe("Google Drive appDataFolder", () => {
   it("uses an exact app-specific filename and parses the selected snapshot", async () => {
     const fetch = vi
@@ -214,6 +228,69 @@ describe("Google Drive per-file sharing", () => {
         ifMatch: '"old"',
       }),
     ).rejects.toMatchObject({ code: "conflict", status: 412 });
+  });
+
+  it("reads v2 write metadata from the JSON body", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(
+      Response.json({ etag: '"rev-etag"', headRevisionId: "rev-7" }),
+    );
+    const drive = new GoogleDriveFileStore({ fetch });
+
+    await expect(
+      drive.getV2WriteHead("dataset", authorization),
+    ).resolves.toEqual({
+      etag: '"rev-etag"',
+      headRevisionId: "rev-7",
+    });
+    expect(String(fetch.mock.calls[0]?.[0])).toContain("/drive/v2/files/");
+  });
+
+  it("uploads via the v2 media endpoint with If-Match", async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(
+      Response.json({
+        id: "dataset",
+        etag: '"rev-8-etag"',
+        headRevisionId: "rev-8",
+      }),
+    );
+    const drive = new GoogleDriveFileStore({ fetch });
+
+    await expect(
+      drive.writeV2Media("dataset", '{"next":true}', authorization, {
+        contentType: "application/json",
+        ifMatch: '"rev-7-etag"',
+      }),
+    ).resolves.toEqual({
+      fileId: "dataset",
+      etag: '"rev-8-etag"',
+      headRevisionId: "rev-8",
+    });
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/upload/drive/v2/files/");
+    expect((init as RequestInit).method).toBe("PUT");
+    expect(requestHeader(init as RequestInit, "If-Match")).toBe('"rev-7-etag"');
+  });
+
+  it("reports a failed v2 conditional write as a conflict", async () => {
+    const drive = new GoogleDriveFileStore({
+      fetch: vi.fn().mockResolvedValue(
+        new Response("precondition failed", { status: 412 }),
+      ),
+    });
+    await expect(
+      drive.writeV2Media("dataset", "stale", authorization, {
+        ifMatch: '"old"',
+      }),
+    ).rejects.toMatchObject({ code: "conflict", status: 412 });
+  });
+
+  it("maps missing v2 endpoints to DriveV2UnavailableError", async () => {
+    const drive = new GoogleDriveFileStore({
+      fetch: vi.fn().mockResolvedValue(new Response("gone", { status: 404 })),
+    });
+    await expect(
+      drive.getV2WriteHead("dataset", authorization),
+    ).rejects.toMatchObject({ name: "SyncKitError", code: "not-found" });
   });
 
   it("lists and updates explicit dataset permissions", async () => {
@@ -609,7 +686,7 @@ describe("Google Drive dataset change tokens", () => {
     expect(String(deleteCall?.[0])).toContain("orphan-file");
   });
 
-  it("skips If-Match and preflights freshness for non-ETag versions", async () => {
+  it("uses v2 conditional writes with headRevisionId version tokens", async () => {
     const envelope = await makeEnvelope();
     const next = { ...envelope, revisionId: "revision-2", parentRevisionId: "revision-1" };
     const current = {
@@ -621,7 +698,74 @@ describe("Google Drive dataset change tokens", () => {
     };
     const fetch = vi
       .fn()
-      // freshness preflight metadata
+      .mockResolvedValueOnce(
+        Response.json({ etag: '"rev-7-etag"', headRevisionId: "rev-7" }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "ds-file",
+          etag: '"rev-8-etag"',
+          headRevisionId: "rev-8",
+        }),
+      );
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: { authorize: async () => authorization, clear: vi.fn() },
+      drive: new GoogleDriveFileStore({ fetch }),
+    });
+
+    const written = await transport.writeDataset(current, next);
+    expect(written.version).toBe("rev-8");
+    const preflightUrl = String(fetch.mock.calls[0]?.[0]);
+    const uploadInit = fetch.mock.calls[1]?.[1] as RequestInit;
+    expect(preflightUrl).toContain("/drive/v2/files/");
+    expect(uploadInit.method).toBe("PUT");
+    expect(requestHeader(uploadInit, "If-Match")).toBe('"rev-7-etag"');
+  });
+
+  it("reports stale v2 If-Match writes as conflicts", async () => {
+    const envelope = await makeEnvelope();
+    const next = { ...envelope, revisionId: "revision-2", parentRevisionId: "revision-1" };
+    const current = {
+      datasetId: "ds-1",
+      fileId: "ds-file",
+      name: "ds-1.sync-kit.json",
+      envelope,
+      version: "rev-7",
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({ etag: '"rev-7-etag"', headRevisionId: "rev-7" }),
+      )
+      .mockResolvedValueOnce(
+        new Response("precondition failed", { status: 412 }),
+      );
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: { authorize: async () => authorization, clear: vi.fn() },
+      drive: new GoogleDriveFileStore({ fetch }),
+    });
+
+    await expect(transport.writeDataset(current, next)).rejects.toMatchObject({
+      code: "conflict",
+      status: 412,
+    });
+  });
+
+  it("falls back to v3 preflight-only writes when v2 is unavailable", async () => {
+    const envelope = await makeEnvelope();
+    const next = { ...envelope, revisionId: "revision-2", parentRevisionId: "revision-1" };
+    const current = {
+      datasetId: "ds-1",
+      fileId: "ds-file",
+      name: "ds-1.sync-kit.json",
+      envelope,
+      version: "rev-7",
+    };
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response("gone", { status: 404 }))
       .mockResolvedValueOnce(
         Response.json({
           id: "ds-file",
@@ -630,9 +774,7 @@ describe("Google Drive dataset change tokens", () => {
           appProperties: datasetProperties,
         }),
       )
-      // upload
       .mockResolvedValueOnce(Response.json({ id: "ds-file" }))
-      // re-read after write: metadata + content
       .mockResolvedValueOnce(
         Response.json({
           id: "ds-file",
@@ -650,7 +792,10 @@ describe("Google Drive dataset change tokens", () => {
 
     const written = await transport.writeDataset(current, next);
     expect(written.version).toBe("rev-8");
-    const uploadHeaders = fetch.mock.calls[1]?.[1]?.headers as Headers;
-    expect(uploadHeaders.get("If-Match")).toBeNull();
+    const urls = fetch.mock.calls.map((call) => String(call[0]));
+    expect(urls[0]).toContain("/drive/v2/files/");
+    expect(urls[1]).toContain("/drive/v3/files/");
+    const uploadInit = fetch.mock.calls[2]?.[1] as RequestInit;
+    expect(requestHeader(uploadInit, "If-Match")).toBeNull();
   });
 });

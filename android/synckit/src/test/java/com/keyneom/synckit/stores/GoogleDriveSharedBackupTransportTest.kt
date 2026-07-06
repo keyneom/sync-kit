@@ -144,7 +144,7 @@ class GoogleDriveSharedBackupTransportTest {
     }
 
     @Test
-    fun writeDatasetSkipsIfMatchForNonEtagVersions() = runBlocking {
+    fun writeDatasetUsesV2ConditionalWrites() = runBlocking {
         val first = envelope()
         val next = envelope(revisionId = "revision-2", previous = first)
         val current = VersionedSharedDataset(
@@ -154,9 +154,61 @@ class GoogleDriveSharedBackupTransportTest {
             envelope = first,
             version = "rev-7",
         )
-        // Freshness preflight sees the same head we read.
+        server.enqueue(
+            json("""{"etag":"\"rev-7-etag\"","headRevisionId":"rev-7"}"""),
+        )
+        server.enqueue(
+            json("""{"id":"ds-file","etag":"\"rev-8-etag\"","headRevisionId":"rev-8"}"""),
+        )
+
+        val written = transport().writeDataset(current, next)
+
+        assertEquals("rev-8", written.version)
+        val requests = generateSequence { server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS) }
+            .take(2)
+            .toList()
+        assertTrue(requests[0].path.orEmpty().contains("/drive/v2/files/"))
+        val upload = requests[1]
+        assertEquals("PUT", upload.method)
+        assertEquals("\"rev-7-etag\"", upload.getHeader("If-Match"))
+    }
+
+    @Test
+    fun writeDatasetRejectsStaleV2IfMatch() {
+        runBlocking {
+            val first = envelope()
+            val next = envelope(revisionId = "revision-2", previous = first)
+            val current = VersionedSharedDataset(
+                datasetId = "ds-1",
+                fileId = "ds-file",
+                name = "ds-1.sync-kit.json",
+                envelope = first,
+                version = "rev-7",
+            )
+            server.enqueue(
+                json("""{"etag":"\"rev-7-etag\"","headRevisionId":"rev-7"}"""),
+            )
+            server.enqueue(MockResponse().setResponseCode(412))
+
+            assertThrows(Exception::class.java) {
+                runBlocking { transport().writeDataset(current, next) }
+            }
+        }
+    }
+
+    @Test
+    fun writeDatasetFallsBackToV3WhenV2Unavailable() = runBlocking {
+        val first = envelope()
+        val next = envelope(revisionId = "revision-2", previous = first)
+        val current = VersionedSharedDataset(
+            datasetId = "ds-1",
+            fileId = "ds-file",
+            name = "ds-1.sync-kit.json",
+            envelope = first,
+            version = "rev-7",
+        )
+        server.enqueue(MockResponse().setResponseCode(404))
         server.enqueue(json(metadataJson("rev-7")))
-        // Upload returns no ETag, so the transport re-reads the dataset.
         server.enqueue(json("""{"id":"ds-file"}"""))
         server.enqueue(json(metadataJson("rev-8")))
         server.enqueue(json(envelopeJson(next)))
@@ -165,9 +217,11 @@ class GoogleDriveSharedBackupTransportTest {
 
         assertEquals("rev-8", written.version)
         val requests = generateSequence { server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS) }
-            .take(4)
+            .take(5)
             .toList()
-        val upload: RecordedRequest = requests.first { it.method == "POST" }
+        assertTrue(requests[0].path.orEmpty().contains("/drive/v2/files/"))
+        assertTrue(requests[1].path.orEmpty().contains("/drive/v3/files/"))
+        val upload = requests[2]
         assertNull(upload.getHeader("If-Match"))
     }
 }

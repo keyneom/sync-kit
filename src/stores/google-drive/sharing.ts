@@ -25,6 +25,7 @@ import type {
 } from "../../sharing/transport.js";
 import {
   assertDriveFileProvenance,
+  DriveV2UnavailableError,
   ensureGoogleDriveSyncKitFolder,
   GoogleDriveFileStore,
   SYNC_KIT_APP_ID_PROPERTY,
@@ -182,10 +183,51 @@ export class GoogleDriveSharedBackupTransport
       );
     }
     const authorization = await this.authorize();
+    const content = JSON.stringify(envelope);
+    try {
+      const head = await this.drive.getV2WriteHead(
+        current.fileId,
+        authorization,
+      );
+      assertWriteHeadFresh(current.version, head);
+      const written = await this.drive.writeV2Media(
+        current.fileId,
+        content,
+        authorization,
+        {
+          contentType: "application/json",
+          ifMatch: head.etag,
+        },
+      );
+      const version = written.headRevisionId;
+      if (!version) return await this.readDataset(current.fileId);
+      return {
+        ...current,
+        envelope,
+        version,
+      };
+    } catch (error) {
+      if (error instanceof DriveV2UnavailableError) {
+        logDriveV2FallbackOnce();
+        return await this.writeDatasetV3Fallback(
+          current,
+          envelope,
+          content,
+          authorization,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async writeDatasetV3Fallback(
+    current: VersionedSharedDataset,
+    envelope: SharedBackupEnvelopeV1,
+    content: string,
+    authorization: Authorization,
+  ): Promise<VersionedSharedDataset> {
     const ifMatch = isHttpEtag(current.version) ? current.version : undefined;
     if (!ifMatch) {
-      // Without an ETag the upload cannot be conditional, so verify the file
-      // has not moved past the version we read just before writing.
       const head = await this.drive.get(current.fileId, authorization);
       const headToken = head.etag ?? head.headRevisionId ?? head.version;
       if (headToken && headToken !== current.version) {
@@ -197,7 +239,7 @@ export class GoogleDriveSharedBackupTransport
     }
     const written = await this.drive.write(
       current.fileId,
-      JSON.stringify(envelope),
+      content,
       authorization,
       {
         contentType: "application/json",
@@ -585,4 +627,35 @@ function requireNonEmpty(value: string, name: string): void {
 // like headRevisionId are not and must not be sent as If-Match.
 function isHttpEtag(value: string): boolean {
   return value.startsWith('"') || value.startsWith("W/");
+}
+
+function assertWriteHeadFresh(
+  currentVersion: string,
+  head: { etag: string; headRevisionId?: string },
+): void {
+  if (isHttpEtag(currentVersion)) {
+    if (head.etag !== currentVersion) {
+      throw new SyncKitError(
+        "conflict",
+        "The Drive dataset changed after it was last read.",
+      );
+    }
+    return;
+  }
+  if (head.headRevisionId && head.headRevisionId !== currentVersion) {
+    throw new SyncKitError(
+      "conflict",
+      "The Drive dataset changed after it was last read.",
+    );
+  }
+}
+
+let driveV2FallbackLogged = false;
+
+function logDriveV2FallbackOnce(): void {
+  if (driveV2FallbackLogged) return;
+  driveV2FallbackLogged = true;
+  console.warn(
+    "Google Drive v2 conditional writes are unavailable; falling back to preflight-only writes.",
+  );
 }

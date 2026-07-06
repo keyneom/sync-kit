@@ -7,6 +7,9 @@ import { SyncKitError } from "../../core/errors.js";
 
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
+const DRIVE_V2_API = "https://www.googleapis.com/drive/v2/files";
+const DRIVE_V2_UPLOAD_API =
+  "https://www.googleapis.com/upload/drive/v2/files";
 const DRIVE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
 export const SYNC_KIT_APP_ID_PROPERTY = "sync-kit-app-id";
@@ -380,6 +383,30 @@ export type DriveFileWriteResult = {
   etag?: string;
 };
 
+export type DriveV2WriteHead = {
+  etag: string;
+  headRevisionId?: string;
+};
+
+export type DriveV2WriteResult = {
+  fileId: string;
+  etag: string;
+  headRevisionId?: string;
+};
+
+/** Thrown when Drive v2 endpoints are gone; callers may fall back to v3. */
+export class DriveV2UnavailableError extends SyncKitError {
+  constructor(options: ErrorOptions = {}) {
+    super("not-found", "Google Drive v2 API is unavailable.", options);
+  }
+}
+
+export function isDriveV2UnavailableError(
+  value: unknown,
+): value is DriveV2UnavailableError {
+  return value instanceof DriveV2UnavailableError;
+}
+
 export type DrivePermission = {
   permissionId: string;
   type: "user" | "group" | "domain" | "anyone";
@@ -582,6 +609,82 @@ export class GoogleDriveFileStore {
     };
   }
 
+  async getV2WriteHead(
+    fileId: string,
+    authorization: Authorization,
+  ): Promise<DriveV2WriteHead> {
+    try {
+      const response = await this.request(
+        `${DRIVE_V2_API}/${encodeURIComponent(fileId)}?fields=etag,headRevisionId`,
+        authorization,
+      );
+      const body = (await response.json()) as {
+        etag?: string;
+        headRevisionId?: string;
+      };
+      const etag = body.etag;
+      if (!etag) {
+        throw new SyncKitError(
+          "provider",
+          "Google Drive v2 metadata did not include an etag.",
+        );
+      }
+      return {
+        etag,
+        ...(body.headRevisionId ? { headRevisionId: body.headRevisionId } : {}),
+      };
+    } catch (error) {
+      if (isDriveV2EndpointUnavailable(error)) {
+        throw new DriveV2UnavailableError({ cause: error });
+      }
+      throw error;
+    }
+  }
+
+  async writeV2Media(
+    fileId: string,
+    content: DriveContent,
+    authorization: Authorization,
+    options: { ifMatch: string; contentType?: string },
+  ): Promise<DriveV2WriteResult> {
+    try {
+      const headers = new Headers({
+        "Content-Type": options.contentType ?? "application/octet-stream",
+        "If-Match": options.ifMatch,
+      });
+      const response = await this.request(
+        `${DRIVE_V2_UPLOAD_API}/${encodeURIComponent(fileId)}?uploadType=media&fields=etag,headRevisionId`,
+        authorization,
+        {
+          method: "PUT",
+          headers,
+          body: content,
+        },
+      );
+      const body = (await response.json()) as {
+        etag?: string;
+        headRevisionId?: string;
+      };
+      const etag = body.etag;
+      if (!etag) {
+        throw new SyncKitError(
+          "provider",
+          "Google Drive v2 upload did not return an etag.",
+        );
+      }
+      return {
+        fileId,
+        etag,
+        ...(body.headRevisionId ? { headRevisionId: body.headRevisionId } : {}),
+      };
+    } catch (error) {
+      if (isDriveV2EndpointUnavailable(error)) {
+        throw new DriveV2UnavailableError({ cause: error });
+      }
+      throw error;
+    }
+  }
+
   async share(
     fileId: string,
     emailAddress: string,
@@ -736,6 +839,13 @@ export class GoogleDriveFileStore {
     }
     return implementation();
   }
+}
+
+function isDriveV2EndpointUnavailable(error: unknown): boolean {
+  return (
+    error instanceof SyncKitError &&
+    (error.status === 404 || error.status === 410)
+  );
 }
 
 export type GoogleDriveSyncKitFolderOptions = {

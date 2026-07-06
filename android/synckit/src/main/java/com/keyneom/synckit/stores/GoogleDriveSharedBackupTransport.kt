@@ -1,5 +1,6 @@
 package com.keyneom.synckit.stores
 
+import android.util.Log
 import com.keyneom.synckit.core.Authorization
 import com.keyneom.synckit.core.AuthorizationProvider
 import com.keyneom.synckit.core.SyncKitError
@@ -132,10 +133,37 @@ class GoogleDriveSharedBackupTransport(
             )
         }
         val authorization = authorize()
+        val content = SyncKitJson.instance.encodeToString(
+            SharedBackupEnvelopeV1.serializer(),
+            envelope,
+        )
+        return try {
+            val head = drive.getV2WriteHead(current.fileId, authorization)
+            assertWriteHeadFresh(current.version, head)
+            val written = drive.writeV2Media(
+                fileId = current.fileId,
+                content = content,
+                authorization = authorization,
+                contentType = "application/json",
+                ifMatch = head.etag,
+            )
+            val version = written.headRevisionId
+                ?: return readDataset(current.fileId)
+            current.copy(envelope = envelope, version = version)
+        } catch (error: DriveV2UnavailableException) {
+            logDriveV2FallbackOnce()
+            writeDatasetV3Fallback(current, envelope, content, authorization)
+        }
+    }
+
+    private suspend fun writeDatasetV3Fallback(
+        current: VersionedSharedDataset,
+        envelope: SharedBackupEnvelopeV1,
+        content: String,
+        authorization: Authorization,
+    ): VersionedSharedDataset {
         val ifMatch = current.version.takeIf { isHttpEtag(it) }
         if (ifMatch == null) {
-            // Without an ETag the upload cannot be conditional, so verify the
-            // file has not moved past the version we read just before writing.
             val head = drive.get(current.fileId, authorization)
             val headToken = head.etag ?: head.headRevisionId ?: head.version
             if (headToken != null && headToken != current.version) {
@@ -147,10 +175,7 @@ class GoogleDriveSharedBackupTransport(
         }
         val written = drive.write(
             fileId = current.fileId,
-            content = SyncKitJson.instance.encodeToString(
-                SharedBackupEnvelopeV1.serializer(),
-                envelope,
-            ),
+            content = content,
             authorization = authorization,
             contentType = "application/json",
             ifMatch = ifMatch,
@@ -163,6 +188,24 @@ class GoogleDriveSharedBackupTransport(
     // tokens like headRevisionId are not and must not be sent as If-Match.
     private fun isHttpEtag(value: String): Boolean =
         value.startsWith("\"") || value.startsWith("W/")
+
+    private fun assertWriteHeadFresh(currentVersion: String, head: DriveV2WriteHead) {
+        if (isHttpEtag(currentVersion)) {
+            if (head.etag != currentVersion) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFLICT,
+                    "The Drive dataset changed after it was last read.",
+                )
+            }
+            return
+        }
+        if (head.headRevisionId != null && head.headRevisionId != currentVersion) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFLICT,
+                "The Drive dataset changed after it was last read.",
+            )
+        }
+    }
 
     override suspend fun grantExchangeAccess(
         emailAddress: String,
@@ -469,5 +512,22 @@ class GoogleDriveSharedBackupTransport(
 
     private fun requireNonEmpty(value: String, name: String) {
         if (value.isBlank()) throw IllegalArgumentException("$name must not be empty.")
+    }
+
+    private companion object {
+        private var driveV2FallbackLogged = false
+
+        private fun logDriveV2FallbackOnce() {
+            if (driveV2FallbackLogged) return
+            driveV2FallbackLogged = true
+            try {
+                Log.w(
+                    "GoogleDriveSharedBackupTransport",
+                    "Google Drive v2 conditional writes are unavailable; falling back to preflight-only writes.",
+                )
+            } catch (_: RuntimeException) {
+                // android.util.Log is not mocked in JVM unit tests.
+            }
+        }
     }
 }

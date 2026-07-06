@@ -17,4 +17,5 @@ class SyncKitError(
     val code: SyncKitErrorCode,
     message: String,
     cause: Throwable? = null,
+    val httpStatus: Int? = null,
 ) : Exception(message, cause)
