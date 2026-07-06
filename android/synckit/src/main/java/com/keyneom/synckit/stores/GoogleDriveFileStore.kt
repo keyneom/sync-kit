@@ -376,10 +376,7 @@ open class GoogleDriveFileStore(
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
             val response = stream?.use { it.readBytes().toString(Charsets.UTF_8) }.orEmpty()
-            val responseHeaders = connection.headerFields
-                .filterKeys { it != null }
-                .mapKeys { it.key!! }
-                .mapValues { it.value.firstOrNull().orEmpty() }
+            val responseHeaders = driveResponseHeaders(connection.headerFields)
             if (code !in 200..299) {
                 if (code == 401) options.onUnauthorized?.invoke()
                 throw SyncKitError(
@@ -472,6 +469,16 @@ data class DriveHttpResponse(
     val body: String,
     val headers: Map<String, String>,
 )
+
+// HTTP/2 (which Android negotiates with googleapis.com) delivers all header
+// names lowercase; a case-insensitive map keeps lookups like "ETag" working.
+internal fun driveResponseHeaders(fields: Map<String?, List<String>>): Map<String, String> {
+    val headers = java.util.TreeMap<String, String>(String.CASE_INSENSITIVE_ORDER)
+    for ((name, values) in fields) {
+        if (name != null) headers[name] = values.firstOrNull().orEmpty()
+    }
+    return headers
+}
 
 fun assertDriveFileProvenance(
     file: DriveFileMetadata,
