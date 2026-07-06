@@ -14,6 +14,7 @@
 // https://developers.google.com/oauthplayground (the script only touches a
 // throwaway file it creates itself, and deletes it afterwards).
 
+/* global fetch */
 const token = process.env.ACCESS_TOKEN;
 if (!token) {
   console.error("Set ACCESS_TOKEN (drive.file scope).");

@@ -311,6 +311,10 @@ class GoogleDriveSharedBackupTransport(
         )
     }
 
+    override suspend fun deleteDataset(fileId: String) {
+        drive.delete(fileId, authorize())
+    }
+
     override suspend fun deleteExchange(fileId: String) {
         drive.delete(fileId, authorize())
     }

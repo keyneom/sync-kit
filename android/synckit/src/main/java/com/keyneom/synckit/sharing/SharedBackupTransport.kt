@@ -1,5 +1,7 @@
 package com.keyneom.synckit.sharing
 
+import com.keyneom.synckit.core.SyncKitError
+import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.sharing.checkpoint.SharedDatasetHead
 
 data class SharedBackupStorage(
@@ -61,6 +63,10 @@ interface SharedBackupTransport {
         current: VersionedSharedDataset,
         envelope: SharedBackupEnvelopeV1,
     ): VersionedSharedDataset
+    suspend fun deleteDataset(fileId: String): Unit = throw SyncKitError(
+        SyncKitErrorCode.STATE,
+        "This transport does not support deleting datasets.",
+    )
     suspend fun grantExchangeAccess(
         emailAddress: String,
         sendNotificationEmail: Boolean? = null,

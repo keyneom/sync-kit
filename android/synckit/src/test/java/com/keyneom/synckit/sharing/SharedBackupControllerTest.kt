@@ -1,5 +1,7 @@
 package com.keyneom.synckit.sharing
 
+import com.keyneom.synckit.core.SyncKitError
+import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.sharing.checkpoint.SharedDatasetHead
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
@@ -59,6 +61,53 @@ class SharedBackupControllerTest {
         )
         assertEquals(listOf("owner", "recipient"), synced.value.items)
         assertEquals("updated", synced.outcome)
+    }
+
+    @Test
+    fun adoptDatasetRecoversAnOwnedDatasetWithoutARegistryRecord() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        controller(owner, transport, MemorySharedBackupRegistry())
+            .createDataset("tasks", Payload(listOf("owner")))
+
+        // Same identity, empty registry: an interrupted setup or reinstall.
+        val adopted = controller(owner, transport, MemorySharedBackupRegistry())
+            .adoptDataset("tasks", requireOwned = true)
+
+        assertEquals(listOf("owner"), adopted.value.items)
+        assertEquals("adopted", adopted.outcome)
+    }
+
+    @Test
+    fun adoptDatasetRequireOwnedRejectsNonOwners() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val stranger = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        controller(owner, transport, MemorySharedBackupRegistry())
+            .createDataset("tasks", Payload(listOf("owner")))
+
+        val error = try {
+            controller(stranger, transport, MemorySharedBackupRegistry())
+                .adoptDataset("tasks", requireOwned = true)
+            null
+        } catch (error: SyncKitError) {
+            error
+        }
+        assertEquals(SyncKitErrorCode.AUTHORIZATION, error?.code)
+    }
+
+    @Test
+    fun deleteDatasetRemovesTheFileAndLocalRecord() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val registry = MemorySharedBackupRegistry()
+        val ownerController = controller(owner, transport, registry)
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        ownerController.deleteDataset("tasks")
+
+        assertEquals(emptyList<SharedDatasetFile>(), ownerController.listDatasets())
+        assertEquals(null, registry.get("tasks"))
     }
 
     private fun controller(
@@ -141,6 +190,10 @@ class SharedBackupControllerTest {
             )
             datasets[current.fileId] = updated
             return updated
+        }
+
+        override suspend fun deleteDataset(fileId: String) {
+            datasets.remove(fileId)
         }
 
         override suspend fun grantExchangeAccess(

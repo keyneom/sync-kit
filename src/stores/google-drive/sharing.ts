@@ -375,6 +375,10 @@ export class GoogleDriveSharedBackupTransport
     };
   }
 
+  async deleteDataset(fileId: string): Promise<void> {
+    await this.drive.delete(fileId, await this.authorize());
+  }
+
   async deleteExchange(fileId: string): Promise<void> {
     await this.drive.delete(fileId, await this.authorize());
   }

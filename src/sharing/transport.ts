@@ -68,6 +68,8 @@ export interface SharedBackupTransport {
     current: VersionedSharedDataset,
     envelope: SharedBackupEnvelopeV1,
   ): Promise<VersionedSharedDataset>;
+  /** Optional: delete a dataset file. Required for controller.deleteDataset. */
+  deleteDataset?(fileId: string): Promise<void>;
   grantExchangeAccess(
     emailAddress: string,
     options?: { sendNotificationEmail?: boolean; emailMessage?: string },

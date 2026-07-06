@@ -446,6 +446,42 @@ describe("shared-backup controller", () => {
   });
 });
 
+describe("shared-backup controller adoption", () => {
+  it("adopts an owned dataset after the registry is lost", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const stranger = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    await controller(owner, transport, new MemorySharedBackupRegistry())
+      .createDataset("tasks", { items: ["owner"] });
+
+    const adopted = await controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    ).adoptDataset("tasks", { requireOwned: true });
+    expect(adopted.outcome).toBe("adopted");
+    expect(adopted.value.items).toEqual(["owner"]);
+
+    await expect(
+      controller(stranger, transport, new MemorySharedBackupRegistry())
+        .adoptDataset("tasks", { requireOwned: true }),
+    ).rejects.toThrow("does not own dataset");
+  });
+
+  it("deleteDataset removes the file and the local record", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, registry);
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+
+    await ownerController.deleteDataset("tasks");
+
+    expect(await ownerController.listDatasets()).toEqual([]);
+    expect(await registry.get("tasks")).toBeNull();
+  });
+});
+
 function controller(
   identity: WebCryptoSharingIdentity,
   transport: SharedBackupTransport,
@@ -531,6 +567,10 @@ class MemorySharingTransport implements SharedBackupTransport {
     };
     this.datasets.set(fileId, stored);
     return structuredClone(stored);
+  }
+
+  async deleteDataset(fileId: string): Promise<void> {
+    this.datasets.delete(fileId);
   }
 
   async writeDataset(

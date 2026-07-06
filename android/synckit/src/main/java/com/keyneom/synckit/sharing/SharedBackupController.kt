@@ -118,6 +118,54 @@ class SharedBackupController<T>(
         result(stored, value, "created")
     }
 
+    /**
+     * Reconnect to an existing dataset this identity can already decrypt —
+     * e.g. after a reinstall, or when an interrupted setup left the Drive
+     * file without a local registry record. The owner key is pinned from the
+     * envelope itself (trust-on-first-use), so callers recovering their own
+     * dataset should pass [requireOwned] to insist this identity is the
+     * dataset's owner.
+     */
+    suspend fun adoptDataset(
+        datasetId: String,
+        requireOwned: Boolean = false,
+    ): SharedDatasetResult<T> = serialized {
+        val stored = readDatasetById(datasetId)
+        val previous = registry.get(datasetId)
+        val record = previous ?: initialOwnerRecord(stored)
+        SharingCrypto.verifySharedBackupEnvelopeV1(
+            stored.envelope,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        val currentIdentity = identity()
+        if (requireOwned) {
+            val self = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+            if (self == null || self.role != SharingRole.OWNER) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "This identity does not own dataset $datasetId.",
+                )
+            }
+        }
+        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            codec,
+            currentIdentity,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        persistHead(stored, record.trustedOwnerKeyId, previous)
+        result(stored, value, "adopted")
+    }
+
+    /** Delete a dataset file from the transport and forget its local record. */
+    suspend fun deleteDataset(datasetId: String): Unit = serialized {
+        requireNonEmpty(datasetId, "datasetId")
+        val fileId = registry.get(datasetId)?.fileId
+            ?: transport.listDatasets().find { it.datasetId == datasetId }?.fileId
+        if (fileId != null) transport.deleteDataset(fileId)
+        registry.delete(datasetId)
+    }
+
     suspend fun loadDataset(datasetId: String): SharedDatasetResult<T> = serialized {
         val stored = readDatasetById(datasetId)
         val record = requiredRegistry(datasetId)

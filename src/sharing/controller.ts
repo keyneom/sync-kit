@@ -77,7 +77,7 @@ export type SharedDatasetResult<T> = {
   fileId: string;
   revisionId: string;
   value: T;
-  outcome: "created" | "loaded" | "updated" | "unchanged";
+  outcome: "created" | "adopted" | "loaded" | "updated" | "unchanged";
 };
 
 export type SharingInvitationResult = {
@@ -205,6 +205,76 @@ export class SharedBackupController<T> {
       );
       await this.persistHead(stored, identity.publicKey.keyId);
       return result(stored, value, "created");
+    });
+  }
+
+  /**
+   * Reconnect to an existing dataset this identity can already decrypt —
+   * e.g. after a reinstall, or when an interrupted setup left the remote
+   * file without a local registry record. The owner key is pinned from the
+   * envelope itself (trust-on-first-use), so callers recovering their own
+   * dataset should pass `requireOwned` to insist this identity is the
+   * dataset's owner.
+   */
+  adoptDataset(
+    datasetId: string,
+    options?: { requireOwned?: boolean },
+  ): Promise<SharedDatasetResult<T>> {
+    return this.serialized(async () => {
+      const stored = await this.readDatasetById(datasetId);
+      const previous = await this.options.registry.get(datasetId);
+      const record = previous ?? this.initialOwnerRecord(stored);
+      await verifySharedBackupEnvelopeV1(stored.envelope, this.crypto(), {
+        trustedOwnerKeyId: record.trustedOwnerKeyId,
+      });
+      const identity = await this.options.identity();
+      if (options?.requireOwned) {
+        const self = sharedBackupParticipant(
+          stored.envelope,
+          identity.publicKey.keyId,
+        );
+        if (self?.role !== "owner") {
+          throw new SyncKitError(
+            "authorization",
+            `This identity does not own dataset ${datasetId}.`,
+          );
+        }
+      }
+      const value = await decryptSharedBackupEnvelopeV1(
+        stored.envelope,
+        this.options.codec,
+        identity,
+        this.crypto(),
+        { trustedOwnerKeyId: record.trustedOwnerKeyId },
+      );
+      await this.persistHead(
+        stored,
+        record.trustedOwnerKeyId,
+        previous ?? undefined,
+      );
+      return result(stored, value, "adopted");
+    });
+  }
+
+  /** Delete a dataset file from the transport and forget its local record. */
+  deleteDataset(datasetId: string): Promise<void> {
+    return this.serialized(async () => {
+      requireNonEmpty(datasetId, "datasetId");
+      const fileId =
+        (await this.options.registry.get(datasetId))?.fileId ??
+        (await this.options.transport.listDatasets()).find(
+          (candidate) => candidate.datasetId === datasetId,
+        )?.fileId;
+      if (fileId) {
+        if (!this.options.transport.deleteDataset) {
+          throw new SyncKitError(
+            "state",
+            "This transport does not support deleting datasets.",
+          );
+        }
+        await this.options.transport.deleteDataset(fileId);
+      }
+      await this.options.registry.delete(datasetId);
     });
   }
 
