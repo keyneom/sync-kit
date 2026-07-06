@@ -518,3 +518,139 @@ describe("Google Drive per-file sharing", () => {
     ]);
   });
 });
+
+describe("Google Drive dataset change tokens", () => {
+  const datasetProperties = {
+    "sync-kit-app-id": "fixture-app",
+    "sync-kit-protocol": "sharing-v1",
+    "sync-kit-kind": "dataset",
+    "sync-kit-dataset-id": "ds-1",
+  };
+
+  const makeEnvelope = async () => {
+    const { createWebCryptoSharingIdentity, createSharedBackupEnvelopeV1 } =
+      await import("../src/sharing/web-crypto.js");
+    const owner = await createWebCryptoSharingIdentity();
+    return createSharedBackupEnvelopeV1(
+      { marker: "token-test" },
+      {
+        serialize: (value) => value,
+        parse: (value) => value as { marker: string },
+      },
+      owner,
+      {
+        appId: "fixture-app",
+        backupId: "ds-1",
+        revisionId: "revision-1",
+        createdAt: "2026-07-01T12:00:00.000Z",
+        participants: [{ publicKey: owner.publicKey, role: "owner" as const }],
+      },
+    );
+  };
+
+  it("falls back to headRevisionId when Drive sends no ETag header", async () => {
+    const envelope = await makeEnvelope();
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "ds-file",
+          name: "ds-1.sync-kit.json",
+          headRevisionId: "rev-7",
+          version: "3",
+          appProperties: datasetProperties,
+        }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(envelope)));
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: { authorize: async () => authorization, clear: vi.fn() },
+      drive: new GoogleDriveFileStore({ fetch }),
+    });
+
+    const dataset = await transport.readDataset("ds-file");
+    expect(dataset.version).toBe("rev-7");
+    expect(dataset.datasetId).toBe("ds-1");
+  });
+
+  it("deletes the orphan file when the post-create read-back fails", async () => {
+    const fetch = vi
+      .fn()
+      // ensureStorage: selectedAppFolderId set, so only the exchanges lookup
+      .mockResolvedValueOnce(
+        Response.json({ files: [{ id: "exchanges", name: "exchanges" }] }),
+      )
+      // createDataset upload
+      .mockResolvedValueOnce(Response.json({ id: "orphan-file" }))
+      // read-back metadata: managed, but content will be junk
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "orphan-file",
+          name: "ds-1.sync-kit.json",
+          headRevisionId: "rev-1",
+          appProperties: datasetProperties,
+        }),
+      )
+      .mockResolvedValueOnce(new Response("not-an-envelope"))
+      // rollback delete
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: { authorize: async () => authorization, clear: vi.fn() },
+      drive: new GoogleDriveFileStore({ fetch }),
+      selectedAppFolderId: "app-folder",
+    });
+    const envelope = await makeEnvelope();
+
+    await expect(transport.createDataset("ds-1", envelope)).rejects.toThrow();
+    const deleteCall = fetch.mock.calls.find(
+      (call) => (call[1] as RequestInit | undefined)?.method === "DELETE",
+    );
+    expect(String(deleteCall?.[0])).toContain("orphan-file");
+  });
+
+  it("skips If-Match and preflights freshness for non-ETag versions", async () => {
+    const envelope = await makeEnvelope();
+    const next = { ...envelope, revisionId: "revision-2", parentRevisionId: "revision-1" };
+    const current = {
+      datasetId: "ds-1",
+      fileId: "ds-file",
+      name: "ds-1.sync-kit.json",
+      envelope,
+      version: "rev-7",
+    };
+    const fetch = vi
+      .fn()
+      // freshness preflight metadata
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "ds-file",
+          name: "ds-1.sync-kit.json",
+          headRevisionId: "rev-7",
+          appProperties: datasetProperties,
+        }),
+      )
+      // upload
+      .mockResolvedValueOnce(Response.json({ id: "ds-file" }))
+      // re-read after write: metadata + content
+      .mockResolvedValueOnce(
+        Response.json({
+          id: "ds-file",
+          name: "ds-1.sync-kit.json",
+          headRevisionId: "rev-8",
+          appProperties: datasetProperties,
+        }),
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify(next)));
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: { authorize: async () => authorization, clear: vi.fn() },
+      drive: new GoogleDriveFileStore({ fetch }),
+    });
+
+    const written = await transport.writeDataset(current, next);
+    expect(written.version).toBe("rev-8");
+    const uploadHeaders = fetch.mock.calls[1]?.[1]?.headers as Headers;
+    expect(uploadHeaders.get("If-Match")).toBeNull();
+  });
+});

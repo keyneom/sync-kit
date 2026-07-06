@@ -101,11 +101,16 @@ export class GoogleDriveSharedBackupTransport
       "dataset",
     );
     const document = await this.drive.readTextVersioned(fileId, authorization);
-    const version = document.etag ?? metadata.etag;
+    // Drive v3 rarely exposes HTTP ETags (and browsers may hide them behind
+    // CORS), so fall back to the metadata change tokens. If-Match is only
+    // usable with a real ETag; writeDataset compensates with a pre-write
+    // freshness check when the token is not one.
+    const version =
+      document.etag ?? metadata.etag ?? metadata.headRevisionId ?? metadata.version;
     if (!version) {
       throw new SyncKitError(
         "state",
-        "Google Drive did not expose an ETag for the dataset; a safe conditional write is unavailable.",
+        "Google Drive did not expose a change token for the dataset; a safe conditional write is unavailable.",
       );
     }
     const envelope = parseSharedBackupEnvelopeV1(document.content);
@@ -151,7 +156,18 @@ export class GoogleDriveSharedBackupTransport
         },
       },
     );
-    return this.readDataset(fileId);
+    try {
+      return await this.readDataset(fileId);
+    } catch (error) {
+      // Best-effort rollback: an orphan dataset would block every future
+      // createDataset for this id with "already exists".
+      try {
+        await this.drive.delete(fileId, authorization);
+      } catch {
+        // Keep the original failure.
+      }
+      throw error;
+    }
   }
 
   async writeDataset(
@@ -166,13 +182,26 @@ export class GoogleDriveSharedBackupTransport
       );
     }
     const authorization = await this.authorize();
+    const ifMatch = isHttpEtag(current.version) ? current.version : undefined;
+    if (!ifMatch) {
+      // Without an ETag the upload cannot be conditional, so verify the file
+      // has not moved past the version we read just before writing.
+      const head = await this.drive.get(current.fileId, authorization);
+      const headToken = head.etag ?? head.headRevisionId ?? head.version;
+      if (headToken && headToken !== current.version) {
+        throw new SyncKitError(
+          "conflict",
+          "The Drive dataset changed after it was last read.",
+        );
+      }
+    }
     const written = await this.drive.write(
       current.fileId,
       JSON.stringify(envelope),
       authorization,
       {
         contentType: "application/json",
-        ifMatch: current.version,
+        ...(ifMatch ? { ifMatch } : {}),
       },
     );
     if (!written.etag) return this.readDataset(current.fileId);
@@ -546,4 +575,10 @@ function requiredProperty(
 
 function requireNonEmpty(value: string, name: string): void {
   if (!value.trim()) throw new TypeError(`${name} must not be empty.`);
+}
+
+// RFC 9110 ETags are quoted (optionally weak-prefixed); Drive change tokens
+// like headRevisionId are not and must not be sent as If-Match.
+function isHttpEtag(value: string): boolean {
+  return value.startsWith('"') || value.startsWith("W/");
 }

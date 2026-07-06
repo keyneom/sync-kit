@@ -64,10 +64,15 @@ class GoogleDriveSharedBackupTransport(
         assertManagedFile(metadata, "dataset")
         val datasetId = requiredProperty(metadata, SYNC_KIT_DATASET_ID_PROPERTY, "dataset")
         val document = drive.readTextVersioned(fileId, authorization)
-        val version = document.etag ?: metadata.etag
+        // Drive v3 rarely exposes HTTP ETags (never on Android's HTTP/2
+        // connections), so fall back to the metadata change tokens. If-Match
+        // is only usable with a real ETag; writeDataset compensates with a
+        // pre-write freshness check when the token is not one.
+        val version = document.etag ?: metadata.etag ?: metadata.headRevisionId
+            ?: metadata.version
             ?: throw SyncKitError(
                 SyncKitErrorCode.STATE,
-                "Google Drive did not expose an ETag for the dataset; a safe conditional write is unavailable.",
+                "Google Drive did not expose a change token for the dataset; a safe conditional write is unavailable.",
             )
         val envelope = SharingCrypto.parseSharedBackupEnvelopeV1(document.content)
         if (envelope.appId != appId || envelope.backupId != datasetId) {
@@ -105,7 +110,14 @@ class GoogleDriveSharedBackupTransport(
             contentType = "application/json",
             appProperties = properties("dataset") + mapOf(SYNC_KIT_DATASET_ID_PROPERTY to datasetId),
         )
-        return readDataset(fileId)
+        return try {
+            readDataset(fileId)
+        } catch (error: Exception) {
+            // Best-effort rollback: an orphan dataset would block every
+            // future createDataset for this id with "already exists".
+            runCatching { drive.delete(fileId, authorization) }
+            throw error
+        }
     }
 
     override suspend fun writeDataset(
@@ -119,19 +131,38 @@ class GoogleDriveSharedBackupTransport(
                 "The new dataset revision does not descend from the version being replaced.",
             )
         }
+        val authorization = authorize()
+        val ifMatch = current.version.takeIf { isHttpEtag(it) }
+        if (ifMatch == null) {
+            // Without an ETag the upload cannot be conditional, so verify the
+            // file has not moved past the version we read just before writing.
+            val head = drive.get(current.fileId, authorization)
+            val headToken = head.etag ?: head.headRevisionId ?: head.version
+            if (headToken != null && headToken != current.version) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFLICT,
+                    "The Drive dataset changed after it was last read.",
+                )
+            }
+        }
         val written = drive.write(
             fileId = current.fileId,
             content = SyncKitJson.instance.encodeToString(
                 SharedBackupEnvelopeV1.serializer(),
                 envelope,
             ),
-            authorization = authorize(),
+            authorization = authorization,
             contentType = "application/json",
-            ifMatch = current.version,
+            ifMatch = ifMatch,
         )
         if (written.etag == null) return readDataset(current.fileId)
         return current.copy(envelope = envelope, version = written.etag)
     }
+
+    // RFC 9110 ETags are quoted (optionally weak-prefixed); Drive change
+    // tokens like headRevisionId are not and must not be sent as If-Match.
+    private fun isHttpEtag(value: String): Boolean =
+        value.startsWith("\"") || value.startsWith("W/")
 
     override suspend fun grantExchangeAccess(
         emailAddress: String,
