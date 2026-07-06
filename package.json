@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "keywords": [

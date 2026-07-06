@@ -121,18 +121,76 @@ internal object SharingEcKeys {
         return agreement.generateSecret()
     }
 
+    // The sharing protocol exchanges P1363 (raw r||s) signatures because that
+    // is WebCrypto's native ECDSA form. Android's providers do not ship the
+    // SHA256withECDSAinP1363Format algorithm (it is desktop-JDK only), so sign
+    // with the universally available DER variant and convert.
     fun sign(privateKey: ECPrivateKey, message: ByteArray): ByteArray {
-        val signature = Signature.getInstance("SHA256withECDSAinP1363Format")
+        val signature = Signature.getInstance("SHA256withECDSA")
         signature.initSign(privateKey)
         signature.update(message)
-        return signature.sign()
+        return derToP1363(signature.sign())
     }
 
     fun verify(publicKey: PublicKey, message: ByteArray, proof: ByteArray): Boolean {
-        val signature = Signature.getInstance("SHA256withECDSAinP1363Format")
+        val derProof = try {
+            p1363ToDer(proof)
+        } catch (_: IllegalArgumentException) {
+            return false
+        }
+        val signature = Signature.getInstance("SHA256withECDSA")
         signature.initVerify(publicKey)
         signature.update(message)
-        return signature.verify(proof)
+        return signature.verify(derProof)
+    }
+
+    private const val P256_COMPONENT_SIZE = 32
+
+    private fun derToP1363(der: ByteArray): ByteArray {
+        // DER: SEQUENCE { INTEGER r, INTEGER s }. A P-256 signature is at most
+        // 72 bytes, so all DER lengths fit in a single byte.
+        require(der.size > 2 && der[0] == 0x30.toByte()) { "Malformed DER signature." }
+        var index = 2
+        fun readInteger(): ByteArray {
+            require(index + 2 <= der.size && der[index] == 0x02.toByte()) {
+                "Malformed DER signature."
+            }
+            val length = der[index + 1].toInt() and 0xff
+            val start = index + 2
+            require(start + length <= der.size) { "Malformed DER signature." }
+            index = start + length
+            return der.copyOfRange(start, index)
+        }
+        return p1363Component(readInteger()) + p1363Component(readInteger())
+    }
+
+    private fun p1363Component(value: ByteArray): ByteArray {
+        val significant = value.dropWhile { it == 0.toByte() }
+        require(significant.size <= P256_COMPONENT_SIZE) {
+            "Malformed DER signature component."
+        }
+        return ByteArray(P256_COMPONENT_SIZE - significant.size) +
+            significant.toByteArray()
+    }
+
+    private fun p1363ToDer(p1363: ByteArray): ByteArray {
+        require(p1363.size == P256_COMPONENT_SIZE * 2) {
+            "Expected a ${P256_COMPONENT_SIZE * 2}-byte P-256 signature."
+        }
+        val body = derInteger(p1363.copyOfRange(0, P256_COMPONENT_SIZE)) +
+            derInteger(p1363.copyOfRange(P256_COMPONENT_SIZE, P256_COMPONENT_SIZE * 2))
+        return byteArrayOf(0x30, body.size.toByte()) + body
+    }
+
+    private fun derInteger(value: ByteArray): ByteArray {
+        val significant = value.dropWhile { it == 0.toByte() }
+            .ifEmpty { listOf(0.toByte()) }
+        val padded = if (significant.first().toInt() and 0x80 != 0) {
+            listOf(0.toByte()) + significant
+        } else {
+            significant
+        }
+        return byteArrayOf(0x02, padded.size.toByte()) + padded.toByteArray()
     }
 
     fun hkdf(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
