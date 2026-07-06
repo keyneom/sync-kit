@@ -23,3 +23,15 @@ Engineering constraints:
 - Do not claim Android/web compatibility without cross-platform fixture tests.
 - Work in releasable phases and record completed gates in the execution
   checklist.
+
+Platform parity:
+
+- Android is the reference implementation for consumer-facing behavior; the
+  web package makes a best effort to match it (some capabilities, such as
+  background sync, cannot match a native app).
+- JVM unit tests passing does not prove Android compatibility. Verify
+  platform-dependent behavior on a real device: desktop JDKs ship JCA
+  algorithms Android lacks (e.g. `SHA256withECDSAinP1363Format`), Android
+  negotiates HTTP/2 with googleapis.com and receives lowercased response
+  header names, and Drive v3 does not send HTTP ETags on dataset reads —
+  use metadata change tokens (`headRevisionId`, `version`) instead.
