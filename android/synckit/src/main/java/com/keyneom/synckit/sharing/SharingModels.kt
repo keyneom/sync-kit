@@ -13,6 +13,7 @@ const val SHARING_CONTENT_ALGORITHM = "AES-256-GCM+ECDH-P256+HKDF-SHA256"
 const val SHARED_BACKUP_MAX_REVISION_ANCESTORS = 256
 const val SHARING_PROTOCOL = "sharing-v1"
 
+@Serializable
 enum class SharingRole {
     @SerialName("owner") OWNER,
     @SerialName("admin") ADMIN,

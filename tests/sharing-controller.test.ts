@@ -25,6 +25,12 @@ import {
   createWebCryptoSharingIdentity,
   type WebCryptoSharingIdentity,
 } from "../src/sharing/web-crypto.js";
+import {
+  buildSharingJoinLinkV1,
+  buildSharingResponseLinkV1,
+  parseSharingJoinLinkV1,
+  parseSharingResponseLinkV1,
+} from "../src/sharing/link-exchange.js";
 
 type Payload = {
   items: string[];
@@ -83,6 +89,69 @@ describe("shared-backup controller", () => {
       recipientController.syncDataset("tasks", {
         items: ["owner", "recipient"],
       }),
+    ).resolves.toMatchObject({
+      value: { items: ["owner", "recipient"] },
+      outcome: "updated",
+    });
+  });
+
+  it("completes a link-carried invite, response, and acceptance flow", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    const landing = "https://keyneom.github.io/easy-bc/";
+
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+
+    // Owner: per-email-share the file(s) + sign the invitation, embed in a link.
+    const invite = await ownerController.inviteParticipantForLink({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    expect(invite.files).toEqual([
+      { datasetId: "tasks", fileId: "dataset-tasks", role: "writer" },
+    ]);
+    const joinLink = buildSharingJoinLinkV1({
+      landingUrl: landing,
+      invitation: invite.invitation,
+      files: invite.files,
+    });
+
+    // Recipient: parse the link, produce a response link. No Drive exchange read.
+    const parsedJoin = parseSharingJoinLinkV1(joinLink);
+    if (!parsedJoin) throw new Error("join link did not parse");
+    const response = await recipientController.submitKeyResponseFromInvitation(
+      parsedJoin.invitation,
+      parsedJoin.files,
+    );
+    const responseLink = buildSharingResponseLinkV1({ landingUrl: landing, response });
+
+    // Owner: parse the response link, accept (keyGrant + per-email share).
+    const parsedResponse = parseSharingResponseLinkV1(responseLink);
+    if (!parsedResponse) throw new Error("response link did not parse");
+    const accepted = await ownerController.acceptKeyResponseFromPayload({
+      invitation: invite.invitation,
+      response: parsedResponse.response,
+      recipientEmailAddress: "recipient@example.com",
+    });
+    expect(accepted).toMatchObject([{ datasetId: "tasks", status: "accepted" }]);
+
+    // Recipient can now read and write the dataset — no exchange files touched.
+    await expect(recipientController.loadDataset("tasks")).resolves.toMatchObject({
+      value: { items: ["owner"] },
+    });
+    await expect(
+      recipientController.syncDataset("tasks", { items: ["owner", "recipient"] }),
     ).resolves.toMatchObject({
       value: { items: ["owner", "recipient"] },
       outcome: "updated",

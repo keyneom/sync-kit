@@ -64,6 +64,55 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun completesLinkCarriedInviteResponseAndAcceptFlow() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+        val landing = "https://keyneom.github.io/easy-bc/"
+
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        // Owner: per-email share + signed invitation, embedded in a link.
+        val invite = ownerController.inviteParticipantForLink(
+            emailAddress = "recipient@example.com",
+            requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+        )
+        assertEquals(1, invite.files.size)
+        assertEquals("tasks", invite.files[0].datasetId)
+        val joinLink = buildSharingJoinLinkV1(landing, invite.invitation, invite.files)
+
+        // Recipient: parse link, produce a response link. No Drive exchange read.
+        val parsedJoin = parseSharingJoinLinkV1(joinLink)!!
+        val response = recipientController.submitKeyResponseFromInvitation(
+            parsedJoin.invitation,
+            parsedJoin.files,
+        )
+        val responseLink = buildSharingResponseLinkV1(landing, response)
+
+        // Owner: parse response link, accept (keyGrant + per-email share).
+        val parsedResponse = parseSharingResponseLinkV1(responseLink)!!
+        val accepted = ownerController.acceptKeyResponseFromPayload(
+            invitation = invite.invitation,
+            response = parsedResponse.response,
+            recipientEmailAddress = "recipient@example.com",
+        )
+        assertEquals(1, accepted.size)
+        assertEquals("accepted", accepted[0].status)
+
+        // Recipient can now read and write the dataset — no exchange files touched.
+        val loaded = recipientController.loadDataset("tasks")
+        assertEquals(listOf("owner"), loaded.value.items)
+        val synced = recipientController.syncDataset(
+            "tasks",
+            Payload(listOf("owner", "recipient")),
+        )
+        assertEquals(listOf("owner", "recipient"), synced.value.items)
+        assertEquals("updated", synced.outcome)
+    }
+
+    @Test
     fun adoptDatasetRecoversAnOwnedDatasetWithoutARegistryRecord() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val transport = MemorySharingTransport()

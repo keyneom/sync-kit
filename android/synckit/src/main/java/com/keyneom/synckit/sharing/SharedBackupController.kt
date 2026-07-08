@@ -402,6 +402,19 @@ class SharedBackupController<T>(
         if (verifiedAccount != null) {
             transport.deleteExchange(responseFileId)
         }
+        applyAcceptedGrants(accepted, currentIdentity, recipientEmailAddress)
+    }
+
+    /**
+     * Applies verified acceptance grants to each dataset: add the participant,
+     * re-encrypt, write, and per-email-share the dataset file. Shared by the
+     * Drive-file accept path and the link-payload accept path.
+     */
+    private suspend fun applyAcceptedGrants(
+        accepted: List<AcceptedSharingGrantV1>,
+        currentIdentity: SharingIdentity,
+        recipientEmailAddress: String,
+    ): List<AcceptedDatasetResult> =
         accepted.map { grant ->
             try {
                 val stored = readDatasetById(grant.datasetId)
@@ -463,6 +476,161 @@ class SharedBackupController<T>(
                 )
             }
         }
+
+    /**
+     * Owner side of the link-carried exchange. Per-email shares each granted
+     * dataset file (so it lands in the recipient's Picker) and returns the signed
+     * invitation + file list to embed in the join link. Writes no Drive
+     * `exchanges/` invitation file.
+     */
+    suspend fun inviteParticipantForLink(
+        emailAddress: String,
+        requestedGrants: List<SharingDatasetGrantV1>,
+        expiresAt: String? = null,
+    ): SharingLinkInvite = serialized {
+        val currentIdentity = identity()
+        val trustedOwnerKeyIds = mutableSetOf<String>()
+        val files = mutableListOf<SharingDatasetFileV1>()
+        for (grant in requestedGrants) {
+            val stored = readDatasetById(grant.datasetId)
+            val record = requiredRegistry(grant.datasetId)
+            SharingCrypto.verifySharedBackupEnvelopeV1(
+                stored.envelope,
+                VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+            )
+            val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+            if (actor == null || !canAdministerSharedBackup(actor.role)) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "This identity cannot invite participants to ${grant.datasetId}.",
+                )
+            }
+            trustedOwnerKeyIds += record.trustedOwnerKeyId
+            transport.setDatasetPermission(
+                fileId = stored.fileId,
+                emailAddress = emailAddress,
+                role = grant.role,
+                hasInheritedReadAccess = false,
+            )
+            files += SharingDatasetFileV1(grant.datasetId, stored.fileId, grant.role)
+        }
+        if (trustedOwnerKeyIds.size != 1) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "One invitation cannot combine datasets with different owner trust roots.",
+            )
+        }
+        val storage = transport.ensureStorage()
+        val invitation = SharingCrypto.createSharingInvitationV1(
+            identity = currentIdentity,
+            input = CreateSharingInvitationInput(
+                appId = appId,
+                appFolderId = storage.appFolderId,
+                recipientDrivePermissionId = SHARING_LINK_PERMISSION_ID,
+                requestedGrants = requestedGrants,
+                trustedOwnerKeyId = trustedOwnerKeyIds.first(),
+                expiresAt = expiresAt,
+            ),
+            options = cryptoOptions,
+        )
+        SharingLinkInvite(invitation, files)
+    }
+
+    /**
+     * Recipient side. Verifies the invitation carried in the join link, registers
+     * the granted datasets with their file ids (so later reads/writes resolve
+     * without listing the owner's folder), and returns a signed key response to
+     * send back to the owner. Reads/writes no Drive `exchanges/` file.
+     */
+    suspend fun submitKeyResponseFromInvitation(
+        invitation: SharingInvitationV1,
+        datasetFiles: List<SharingDatasetFileV1>,
+    ): SharingPublicKeyResponseV1 = serialized {
+        val verified = SharingCrypto.verifySharingInvitationV1(invitation, cryptoOptions)
+        if (verified.appId != appId) {
+            throw SyncKitError(
+                SyncKitErrorCode.COMPATIBILITY,
+                "The invitation belongs to another app.",
+            )
+        }
+        val currentIdentity = identity()
+        val accountBinding = createAccountBinding?.invoke(
+            AccountBindingContext(
+                appId = appId,
+                exchangeId = verified.exchangeId,
+                sharingKeyId = currentIdentity.publicKey.keyId,
+            ),
+        )
+        val response = SharingCrypto.createSharingPublicKeyResponseV1(
+            identity = currentIdentity,
+            appId = appId,
+            exchangeId = verified.exchangeId,
+            options = cryptoOptions,
+            accountBinding = accountBinding,
+        )
+        val fileById = datasetFiles.associate { it.datasetId to it.fileId }
+        for (grant in verified.requestedGrants) {
+            val existing = registry.get(grant.datasetId)
+            if (existing != null && existing.trustedOwnerKeyId != verified.trustedOwnerKeyId) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFLICT,
+                    "Dataset ${grant.datasetId} is already pinned to another owner key.",
+                )
+            }
+            val fileId = fileById[grant.datasetId]
+            registry.set(
+                existing?.copy(fileId = fileId ?: existing.fileId)
+                    ?: SharedDatasetRegistryRecord(
+                        datasetId = grant.datasetId,
+                        fileId = fileId,
+                        trustedOwnerKeyId = verified.trustedOwnerKeyId,
+                    ),
+            )
+        }
+        response
+    }
+
+    /**
+     * Owner side. Accepts a key response carried in a response link (no Drive
+     * `exchanges/` read), adds the recipient to each granted dataset, and
+     * per-email shares the dataset files. The invitation must be supplied by the
+     * caller (persisted at invite time, keyed by exchange id).
+     */
+    suspend fun acceptKeyResponseFromPayload(
+        invitation: SharingInvitationV1,
+        response: SharingPublicKeyResponseV1,
+        recipientEmailAddress: String,
+    ): List<AcceptedDatasetResult> = serialized {
+        val currentIdentity = identity()
+        val binding = response.accountBinding
+        if (requireAccountBinding && binding == null) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "The key response has no required account binding.",
+            )
+        }
+        val verifiedAccount = if (binding != null && verifyAccountBinding != null) {
+            verifyAccountBinding.invoke(
+                binding,
+                VerifiedAccountBindingContext(
+                    appId = appId,
+                    exchangeId = invitation.exchangeId,
+                    sharingKeyId = response.keyId,
+                    credentialId = binding.passkey.credentialId,
+                ),
+            )
+        } else {
+            null
+        }
+        val accepted = SharingCrypto.acceptSharingPublicKeyResponseV1(
+            invitation = invitation,
+            response = response,
+            acceptedByKeyId = currentIdentity.publicKey.keyId,
+            drivePermissionId = invitation.recipientDrivePermissionId,
+            options = cryptoOptions,
+            googleSubject = verifiedAccount?.subject,
+        )
+        applyAcceptedGrants(accepted, currentIdentity, recipientEmailAddress)
     }
 
     suspend fun reconcileDrivePermissions(

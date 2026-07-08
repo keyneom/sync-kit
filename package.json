@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.2.0-rc.7",
+  "version": "0.2.0-rc.8",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "keywords": [
@@ -124,6 +124,7 @@
     "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run parity:sharing:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "fixtures": "node scripts/generate-v1-fixtures.mjs",
     "fixtures:identity": "npm run build && node scripts/generate-protected-identity-fixture.mjs",
+    "fixtures:link-exchange": "npm run build && node scripts/generate-link-exchange-fixture.mjs",
     "fixtures:check": "node scripts/check-v1-fixtures.mjs",
     "native:check": "bash scripts/check-native-sharing-fixture.sh",
     "parity:check": "bash scripts/check-js-kotlin-parity.sh",

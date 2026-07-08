@@ -9,8 +9,10 @@ import {
   type SharingAccountBindingV1,
   type SharingDatasetGrantV1,
   type SharingInvitationV1,
+  type SharingPublicKeyResponseV1,
   type SharingRole,
 } from "./index.js";
+import type { SharingDatasetFileV1 } from "./link-exchange.js";
 import type {
   SharedBackupStorage,
   SharedBackupTransport,
@@ -32,6 +34,14 @@ import {
 } from "./web-crypto.js";
 import { formatSharingInviteEmailMessage, appendSharingJoinParams } from "./join.js";
 export { IndexedDbSharedBackupRegistry } from "./registry-indexeddb.js";
+
+/**
+ * Placeholder recipient permission id for the link-carried exchange, which has
+ * no Drive exchange grant. Set identically on the invitation and passed to
+ * accept, so the anti-substitution equality check passes; account provenance in
+ * this flow comes from the response signature, not a Drive permission.
+ */
+const SHARING_LINK_PERMISSION_ID = "link";
 
 export type SharedBackupControllerCodec<T> = SharedBackupCodec<T> & {
   merge(local: T, remote: T): T;
@@ -585,88 +595,295 @@ export class SharedBackupController<T> {
       if (verifiedAccount) {
         await this.options.transport.deleteExchange(input.responseFileId);
       }
-      const results: AcceptedDatasetResult[] = [];
-      for (const grant of accepted) {
-        try {
-          const stored = await this.readDatasetById(grant.datasetId);
-          const record =
-            (await this.options.registry.get(grant.datasetId)) ??
-            this.initialOwnerRecord(stored);
-          await this.verifyHead(stored, record);
-          const value = await decryptSharedBackupEnvelopeV1(
-            stored.envelope,
-            this.options.codec,
-            identity,
-            this.crypto(),
-            { trustedOwnerKeyId: record.trustedOwnerKeyId },
-          );
-          const participants = participantInputs(stored.envelope).filter(
-            (participant) =>
-              participant.publicKey.keyId !==
-              grant.participant.publicKey.keyId,
-          );
-          participants.push(grant.participant);
-          const next = await createSharedBackupEnvelopeV1(
-            value,
-            this.options.codec,
-            identity,
+      return this.applyAcceptedGrants(
+        accepted,
+        identity,
+        input.recipientEmailAddress,
+      );
+    });
+  }
+
+  /**
+   * Applies verified acceptance grants to each dataset: add the participant,
+   * re-encrypt, write, and per-email-share the dataset file. Shared by the
+   * Drive-file accept path and the link-payload accept path.
+   */
+  private async applyAcceptedGrants(
+    accepted: Awaited<ReturnType<typeof acceptSharingPublicKeyResponseV1>>,
+    identity: WebCryptoSharingIdentity,
+    recipientEmailAddress: string,
+  ): Promise<AcceptedDatasetResult[]> {
+    const results: AcceptedDatasetResult[] = [];
+    for (const grant of accepted) {
+      try {
+        const stored = await this.readDatasetById(grant.datasetId);
+        const record =
+          (await this.options.registry.get(grant.datasetId)) ??
+          this.initialOwnerRecord(stored);
+        await this.verifyHead(stored, record);
+        const value = await decryptSharedBackupEnvelopeV1(
+          stored.envelope,
+          this.options.codec,
+          identity,
+          this.crypto(),
+          { trustedOwnerKeyId: record.trustedOwnerKeyId },
+        );
+        const participants = participantInputs(stored.envelope).filter(
+          (participant) =>
+            participant.publicKey.keyId !==
+            grant.participant.publicKey.keyId,
+        );
+        participants.push(grant.participant);
+        const next = await createSharedBackupEnvelopeV1(
+          value,
+          this.options.codec,
+          identity,
+          {
+            appId: this.options.appId,
+            backupId: grant.datasetId,
+            participants,
+            previous: stored.envelope,
+          },
+          this.cryptoOptions(),
+        );
+        const updated = await this.options.transport.writeDataset(
+          stored,
+          next,
+        );
+        const permission =
+          await this.options.transport.setDatasetPermission(
+            stored.fileId,
+            recipientEmailAddress,
+            grant.participant.role === "owner"
+              ? "admin"
+              : grant.participant.role,
             {
-              appId: this.options.appId,
-              backupId: grant.datasetId,
-              participants,
-              previous: stored.envelope,
+              hasInheritedReadAccess: true,
             },
-            this.cryptoOptions(),
           );
-          const updated = await this.options.transport.writeDataset(
-            stored,
-            next,
-          );
-          const permission =
-            await this.options.transport.setDatasetPermission(
-              stored.fileId,
-              input.recipientEmailAddress,
-              grant.participant.role === "owner"
-                ? "admin"
-                : grant.participant.role,
-              {
-                hasInheritedReadAccess: true,
-              },
-            );
-          const participantPermissionIds = {
-            ...record.participantPermissionIds,
-            ...(permission.permissionId
-              ? {
-                  [grant.participant.publicKey.keyId]:
-                    permission.permissionId,
-                }
-              : {}),
-          };
-          const nextRecord: SharedDatasetRegistryRecord = {
-            ...record,
-            fileId: updated.fileId,
-            lastRevisionId: updated.envelope.revisionId,
-            participantPermissionIds,
-          };
-          await this.options.registry.set(nextRecord);
-          results.push({
-            datasetId: grant.datasetId,
-            fileId: updated.fileId,
-            revisionId: updated.envelope.revisionId,
-            ...(permission.permissionId
-              ? { permissionId: permission.permissionId }
-              : {}),
-            status: "accepted",
-          });
-        } catch (error) {
-          results.push({
-            datasetId: grant.datasetId,
-            status: "failed",
-            error,
-          });
-        }
+        const participantPermissionIds = {
+          ...record.participantPermissionIds,
+          ...(permission.permissionId
+            ? {
+                [grant.participant.publicKey.keyId]:
+                  permission.permissionId,
+              }
+            : {}),
+        };
+        const nextRecord: SharedDatasetRegistryRecord = {
+          ...record,
+          fileId: updated.fileId,
+          lastRevisionId: updated.envelope.revisionId,
+          participantPermissionIds,
+        };
+        await this.options.registry.set(nextRecord);
+        results.push({
+          datasetId: grant.datasetId,
+          fileId: updated.fileId,
+          revisionId: updated.envelope.revisionId,
+          ...(permission.permissionId
+            ? { permissionId: permission.permissionId }
+            : {}),
+          status: "accepted",
+        });
+      } catch (error) {
+        results.push({
+          datasetId: grant.datasetId,
+          status: "failed",
+          error,
+        });
       }
-      return results;
+    }
+    return results;
+  }
+
+  /**
+   * Owner side of the link-carried exchange. Shares each granted dataset file
+   * with the recipient's email (so it lands in their Picker) and returns the
+   * signed invitation plus the file list to embed in the join link. Unlike
+   * {@link inviteParticipant} it writes no Drive `exchanges/` invitation file.
+   */
+  inviteParticipantForLink(input: {
+    emailAddress: string;
+    requestedGrants: SharingDatasetGrantV1[];
+    expiresAt?: string;
+  }): Promise<{
+    invitation: SharingInvitationV1;
+    files: SharingDatasetFileV1[];
+  }> {
+    return this.serialized(async () => {
+      const identity = await this.options.identity();
+      const trustedOwnerKeyIds = new Set<string>();
+      const files: SharingDatasetFileV1[] = [];
+      for (const grant of input.requestedGrants) {
+        const stored = await this.readDatasetById(grant.datasetId);
+        const record = await this.requiredRegistry(grant.datasetId);
+        const verified = await verifySharedBackupEnvelopeV1(
+          stored.envelope,
+          this.crypto(),
+          { trustedOwnerKeyId: record.trustedOwnerKeyId },
+        );
+        const actor = sharedBackupParticipant(
+          verified,
+          identity.publicKey.keyId,
+        );
+        if (!actor || !canAdministerSharedBackup(actor.role)) {
+          throw new SyncKitError(
+            "authorization",
+            `This identity cannot invite participants to ${grant.datasetId}.`,
+          );
+        }
+        trustedOwnerKeyIds.add(record.trustedOwnerKeyId);
+        await this.options.transport.setDatasetPermission(
+          stored.fileId,
+          input.emailAddress,
+          grant.role,
+          { hasInheritedReadAccess: false },
+        );
+        files.push({
+          datasetId: grant.datasetId,
+          fileId: stored.fileId,
+          role: grant.role,
+        });
+      }
+      if (trustedOwnerKeyIds.size !== 1) {
+        throw new SyncKitError(
+          "configuration",
+          "One invitation cannot combine datasets with different owner trust roots.",
+        );
+      }
+      const trustedOwnerKeyId = [...trustedOwnerKeyIds][0];
+      if (!trustedOwnerKeyId) {
+        throw new SyncKitError("state", "The invitation has no owner trust root.");
+      }
+      const storage = await this.options.transport.ensureStorage();
+      const invitation = await createSharingInvitationV1(
+        identity,
+        {
+          appId: this.options.appId,
+          appFolderId: storage.appFolderId,
+          recipientDrivePermissionId: SHARING_LINK_PERMISSION_ID,
+          requestedGrants: input.requestedGrants,
+          trustedOwnerKeyId,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+        },
+        this.cryptoOptions(),
+      );
+      return { invitation, files };
+    });
+  }
+
+  /**
+   * Recipient side of the link-carried exchange. Verifies the invitation carried
+   * in the join link, registers the granted datasets with their file ids (so
+   * later reads/writes resolve without listing the owner's folder), and returns
+   * a signed key response to send back to the owner. Reads/writes no Drive
+   * `exchanges/` file.
+   */
+  submitKeyResponseFromInvitation(
+    invitation: SharingInvitationV1,
+    datasetFiles: SharingDatasetFileV1[],
+  ): Promise<SharingPublicKeyResponseV1> {
+    return this.serialized(async () => {
+      const verified = await verifySharingInvitationV1(invitation, {
+        crypto: this.crypto(),
+        ...(this.options.now ? { now: this.options.now } : {}),
+      });
+      if (verified.appId !== this.options.appId) {
+        throw new SyncKitError(
+          "compatibility",
+          "The invitation belongs to another app.",
+        );
+      }
+      const identity = await this.options.identity();
+      const accountBinding = await this.options.createAccountBinding?.({
+        appId: this.options.appId,
+        exchangeId: verified.exchangeId,
+        sharingKeyId: identity.publicKey.keyId,
+      });
+      const response = await createSharingPublicKeyResponseV1(
+        identity,
+        {
+          appId: this.options.appId,
+          exchangeId: verified.exchangeId,
+          ...(accountBinding ? { accountBinding } : {}),
+        },
+        this.cryptoOptions(),
+      );
+      const fileById = new Map(
+        datasetFiles.map((file) => [file.datasetId, file.fileId]),
+      );
+      for (const grant of verified.requestedGrants) {
+        const existing = await this.options.registry.get(grant.datasetId);
+        if (
+          existing &&
+          existing.trustedOwnerKeyId !== verified.trustedOwnerKeyId
+        ) {
+          throw new SyncKitError(
+            "conflict",
+            `Dataset ${grant.datasetId} is already pinned to another owner key.`,
+          );
+        }
+        const fileId = fileById.get(grant.datasetId);
+        await this.options.registry.set(
+          existing
+            ? { ...existing, ...(fileId ? { fileId } : {}) }
+            : {
+                datasetId: grant.datasetId,
+                ...(fileId ? { fileId } : {}),
+                trustedOwnerKeyId: verified.trustedOwnerKeyId,
+              },
+        );
+      }
+      return response;
+    });
+  }
+
+  /**
+   * Owner side. Accepts a key response carried in a response link (no Drive
+   * `exchanges/` read), adds the recipient to each granted dataset, and
+   * per-email shares the dataset files (re-affirming the invite-time share).
+   * The invitation must be supplied by the caller (persisted at invite time,
+   * keyed by exchange id).
+   */
+  acceptKeyResponseFromPayload(input: {
+    invitation: SharingInvitationV1;
+    response: SharingPublicKeyResponseV1;
+    recipientEmailAddress: string;
+  }): Promise<AcceptedDatasetResult[]> {
+    return this.serialized(async () => {
+      const identity = await this.options.identity();
+      const binding = input.response.accountBinding;
+      if (this.options.requireAccountBinding && !binding) {
+        throw new SyncKitError(
+          "authorization",
+          "The key response has no required account binding.",
+        );
+      }
+      const verifiedAccount =
+        binding && this.options.verifyAccountBinding
+          ? await this.options.verifyAccountBinding(binding, {
+              appId: this.options.appId,
+              exchangeId: input.invitation.exchangeId,
+              sharingKeyId: input.response.keyId,
+              credentialId: binding.passkey.credentialId,
+            })
+          : undefined;
+      const accepted = await acceptSharingPublicKeyResponseV1(
+        input.invitation,
+        input.response,
+        {
+          acceptedByKeyId: identity.publicKey.keyId,
+          drivePermissionId: input.invitation.recipientDrivePermissionId,
+          ...(verifiedAccount ? { googleSubject: verifiedAccount.subject } : {}),
+        },
+        this.cryptoOptions(),
+      );
+      return this.applyAcceptedGrants(
+        accepted,
+        identity,
+        input.recipientEmailAddress,
+      );
     });
   }
 

@@ -618,3 +618,22 @@ export {
   type SharingJoinParamStyle,
   type SharingJoinParams,
 } from "./join.js";
+export {
+  buildSharingJoinLinkV1,
+  buildSharingResponseLinkV1,
+  decodeSharingDatasetFilesV1,
+  decodeSharingInvitationV1,
+  decodeSharingPublicKeyResponseV1,
+  encodeSharingDatasetFilesV1,
+  encodeSharingInvitationV1,
+  encodeSharingPublicKeyResponseV1,
+  parseSharingJoinLinkV1,
+  parseSharingResponseLinkV1,
+  SHARING_JOIN_FILES_PARAM,
+  SHARING_JOIN_INVITATION_PARAM,
+  SHARING_RESPONSE_MARKER_PARAM,
+  SHARING_RESPONSE_PAYLOAD_PARAM,
+  type SharingDatasetFileV1,
+  type SharingJoinLinkV1,
+  type SharingResponseLinkV1,
+} from "./link-exchange.js";
