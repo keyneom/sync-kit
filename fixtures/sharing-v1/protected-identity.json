@@ -1,0 +1,27 @@
+{
+  "provenance": "Synthetic ProtectedSharingIdentityV1 WebCrypto conformance vector",
+  "wrappingKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "record": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-protected-sharing-identity",
+    "appId": "easy-bc",
+    "rpId": "keyneom.github.io",
+    "credentialId": "yMnKy8zNzs_Q0dLT1NXW19jZ2ts",
+    "prfInput": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+    "kdfSalt": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp8",
+    "nonce": "R5-V5AUeRctJcewR",
+    "publicKey": {
+      "keyId": "Gp2D2IhRNtcEJRBFzWNPL789HMwAzqhvpvQ0GF0JMfY",
+      "encryptionAlgorithm": "ECDH-P256",
+      "encryptionPublicKey": "BJYTKsw77BcdJQqXe55Q-FOXZEOjNJ1ErsAn574yDGWK0XXRvud0SJ8J7ezjMpUKc7eqk-rTecx2U4J1DxcuAPQ",
+      "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+      "signingPublicKey": "BDyhU0SegJalM6--uGQRfo1ziu8nJlcuNNN3ABesbdIfjBstKzD8ub4LuVqisBClX1D0EFdxlJRSeV6Tor7_cTU"
+    },
+    "encryptedPrivateKeys": "QXjga9NQq7vUB65p6qKls279l620w6_cM8Se3P8T4LkFD4QmsI6-myxsODMCO_nkcdKpnVeSZ-XLOS9ifVMPy2tGco8wRed3PtVungrdpcvsOH6V9pBs5Ulnu-_5HHTDVnb9GwsWGWwtOXOtvG1hUs37-OyoHZ6BaOqibBG7tmk8dJTWavMBFsDjmemOoQVLtG_x0RkgDajgHkg9oVs4WGkeOR5wsx0okURuojbyyabwKRN3Siz9f4dm6IsO6ojUlESubhR4DPp0UXKk7LEgMoJrnKUzMxoEJdgb9t8ZaQmREg4RCftj7P5lWeyQUMpONx1FFuCkdsC-gNJQxK0pAg3JMdDOk3wwYW2YThLvsdCaWa3p5LQ-qr1OAWPSDeTpa7q7q1zXZZM"
+  },
+  "expected": {
+    "keyId": "Gp2D2IhRNtcEJRBFzWNPL789HMwAzqhvpvQ0GF0JMfY",
+    "encryptionPublicKey": "BJYTKsw77BcdJQqXe55Q-FOXZEOjNJ1ErsAn574yDGWK0XXRvud0SJ8J7ezjMpUKc7eqk-rTecx2U4J1DxcuAPQ",
+    "signingPublicKey": "BDyhU0SegJalM6--uGQRfo1ziu8nJlcuNNN3ABesbdIfjBstKzD8ub4LuVqisBClX1D0EFdxlJRSeV6Tor7_cTU"
+  }
+}

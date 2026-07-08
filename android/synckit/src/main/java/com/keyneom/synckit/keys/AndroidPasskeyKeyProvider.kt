@@ -128,6 +128,27 @@ open class AndroidPasskeyKeyProvider<T>(
         }
     }
 
+    /**
+     * Derives the content/wrapping key for [metadata] directly, prompting the
+     * passkey each call. Used to unwrap a passkey-protected sharing identity,
+     * whose key material is cached by the consumer (not here) so this stays off
+     * the personal-sync caching/coalescing path.
+     */
+    suspend fun unlockMetadata(activity: Activity, metadata: V1KeyMetadata): ByteArray {
+        if (metadata.rpId != rpId) {
+            throw SyncKitError(
+                SyncKitErrorCode.COMPATIBILITY,
+                "The protected key belongs to ${metadata.rpId}, not $rpId.",
+            )
+        }
+        val secret = unlockPrf(activity, metadata.credentialId, Base64Url.encode(metadata.prfInput))
+        return try {
+            envelopeCrypto.deriveContentKey(secret, metadata.kdfSalt)
+        } finally {
+            secret.fill(0)
+        }
+    }
+
     override fun clear() {
         synchronized(this) {
             clearLocked()

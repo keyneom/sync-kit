@@ -25,6 +25,8 @@ import {
   createProtectedSharingIdentityV1,
   unlockProtectedSharingIdentityV1,
 } from "../src/sharing/web-passkey.js";
+import { base64UrlToBytes } from "../src/crypto/index.js";
+import { copyBuffer } from "../src/crypto/runtime.js";
 
 type Payload = {
   profile: string;
@@ -91,6 +93,32 @@ describe("shared-backup crypto", () => {
         wrongKey,
       ),
     ).rejects.toMatchObject({ code: "key" });
+  });
+
+  it("unlocks the frozen ProtectedSharingIdentityV1 conformance fixture", async () => {
+    // The same fixture the Kotlin ProtectedSharingIdentityTest unlocks, proving
+    // a web-wrapped sharing identity round-trips byte-for-byte across platforms.
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../fixtures/sharing-v1/protected-identity.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { wrappingKey: string; record: unknown; expected: { keyId: string } };
+    const wrappingKey = await crypto.subtle.importKey(
+      "raw",
+      copyBuffer(base64UrlToBytes(fixture.wrappingKey)),
+      "AES-GCM",
+      false,
+      ["decrypt"],
+    );
+    const unlocked = await unlockProtectedSharingIdentityV1(
+      fixture.record,
+      wrappingKey,
+    );
+    expect(unlocked.publicKey.keyId).toBe(fixture.expected.keyId);
   });
 
   it("verifies and decrypts the frozen sharing-v1 WebCrypto fixture", async () => {
