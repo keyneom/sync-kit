@@ -25,10 +25,12 @@ type DocsView = {
   setIncludeFolders(value: boolean): DocsView;
   setMimeTypes(value: string): DocsView;
   setSelectFolderEnabled(value: boolean): DocsView;
+  setOwnedByMe(value: boolean): DocsView;
 };
 
 type PickerBuilder = {
   addView(view: DocsView): PickerBuilder;
+  enableFeature(feature: string): PickerBuilder;
   setAppId(appId: string): PickerBuilder;
   setCallback(callback: (response: PickerResponse) => void): PickerBuilder;
   setDeveloperKey(key: string): PickerBuilder;
@@ -42,7 +44,8 @@ type GooglePicker = {
   Action: { PICKED: string; CANCEL: string };
   DocsView: new (viewId: string) => DocsView;
   PickerBuilder: new () => PickerBuilder;
-  ViewId: { FOLDERS: string };
+  ViewId: { FOLDERS: string; DOCS: string };
+  Feature: { MULTISELECT_ENABLED: string };
 };
 
 type GoogleApiWindow = Window & {
@@ -54,6 +57,12 @@ type GoogleApiWindow = Window & {
 
 export type GoogleDrivePickedFolder = {
   folderId: string;
+  name?: string;
+  url?: string;
+};
+
+export type GoogleDrivePickedFile = {
+  fileId: string;
   name?: string;
   url?: string;
 };
@@ -140,6 +149,91 @@ export class GoogleDriveFolderPicker {
               ...(document.name ? { name: document.name } : {}),
               ...(document.url ? { url: document.url } : {}),
             });
+          })
+          .build();
+        picker.setVisible(true);
+      } catch (error) {
+        reject(
+          new SyncKitError(
+            "provider",
+            "Google Picker could not be opened.",
+            { cause: error },
+          ),
+        );
+      }
+    });
+  }
+
+  /**
+   * Lets the user select one or more files shared with their account (including
+   * "shared with me" from another owner), granting the app `drive.file` access
+   * to each selected file. This is how a recipient grants the specific shared
+   * dataset files — a folder grant does not cascade to reading files inside it.
+   */
+  async pickFiles(
+    authorization: Authorization,
+    options: { multiSelect?: boolean } = {},
+  ): Promise<GoogleDrivePickedFile[]> {
+    await this.loadPicker();
+    const pickerApi = this.browserWindow().google?.picker;
+    if (!pickerApi) {
+      throw new SyncKitError(
+        "provider",
+        "Google Picker loaded without its file API.",
+      );
+    }
+    return new Promise((resolve, reject) => {
+      let picker: Picker | undefined;
+      const finish = (value: GoogleDrivePickedFile[]): void => {
+        picker?.dispose?.();
+        resolve(value);
+      };
+      // Show files the user can see, including those shared with them by another
+      // account (setOwnedByMe(false)). Folders are included so the user can
+      // navigate into the shared folder to reach the dataset files.
+      const view = new pickerApi.DocsView(pickerApi.ViewId.DOCS)
+        .setIncludeFolders(true)
+        .setSelectFolderEnabled(false)
+        .setOwnedByMe(false);
+      try {
+        let builder = new pickerApi.PickerBuilder()
+          .addView(view)
+          .setAppId(this.options.cloudProjectNumber)
+          .setDeveloperKey(this.options.developerKey)
+          .setOAuthToken(authorization.accessToken)
+          .setOrigin(this.options.origin ?? this.browserWindow().location.origin)
+          .setTitle(this.options.title ?? "Select the shared files");
+        if (options.multiSelect) {
+          builder = builder.enableFeature(pickerApi.Feature.MULTISELECT_ENABLED);
+        }
+        picker = builder
+          .setCallback((response) => {
+            if (response.action === pickerApi.Action.CANCEL) {
+              finish([]);
+              return;
+            }
+            if (response.action !== pickerApi.Action.PICKED) return;
+            const docs = (response.docs ?? []).filter(
+              (document): document is { id: string; name?: string; url?: string } =>
+                Boolean(document.id) &&
+                document.mimeType !== DRIVE_FOLDER_MIME_TYPE,
+            );
+            if (docs.length === 0) {
+              reject(
+                new SyncKitError(
+                  "compatibility",
+                  "Google Picker did not return a Drive file.",
+                ),
+              );
+              return;
+            }
+            finish(
+              docs.map((document) => ({
+                fileId: document.id,
+                ...(document.name ? { name: document.name } : {}),
+                ...(document.url ? { url: document.url } : {}),
+              })),
+            );
           })
           .build();
         picker.setVisible(true);
