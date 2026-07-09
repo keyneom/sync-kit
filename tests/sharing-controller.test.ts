@@ -10,6 +10,7 @@ import type {
   SharingPublicKeyResponseV1,
   SharingRole,
 } from "../src/sharing/index.js";
+import { sharedBackupParticipant } from "../src/sharing/index.js";
 import type {
   SharedBackupStorage,
   SharedBackupTransport,
@@ -99,10 +100,11 @@ describe("shared-backup controller", () => {
     const owner = await createWebCryptoSharingIdentity();
     const recipient = await createWebCryptoSharingIdentity();
     const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
     const ownerController = controller(
       owner,
       transport,
-      new MemorySharedBackupRegistry(),
+      ownerRegistry,
     );
     const recipientController = controller(
       recipient,
@@ -156,6 +158,160 @@ describe("shared-backup controller", () => {
       value: { items: ["owner", "recipient"] },
       outcome: "updated",
     });
+  });
+
+  it("keeps participant roles and Drive permissions aligned", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(
+      owner,
+      transport,
+      ownerRegistry,
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invite = await ownerController.inviteParticipantForLink({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const response = await recipientController.submitKeyResponseFromInvitation(
+      invite.invitation,
+      invite.files,
+    );
+    await ownerController.acceptKeyResponseFromPayload({
+      invitation: invite.invitation,
+      response,
+      recipientEmailAddress: "recipient@example.com",
+    });
+    const registryRecord = await ownerRegistry.get("tasks");
+    if (!registryRecord) throw new Error("Expected owner registry record.");
+    await ownerRegistry.set({
+      ...registryRecord,
+      participantPermissionIds: {},
+    });
+
+    await ownerController.setDatasetRole({
+      datasetId: "tasks",
+      keyId: recipient.publicKey.keyId,
+      role: "viewer",
+      emailAddress: "recipient@example.com",
+    });
+
+    const stored = await transport.readDataset("dataset-tasks");
+    expect(
+      sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId)?.role,
+    ).toBe("viewer");
+    expect(await transport.listDatasetPermissions(stored.fileId)).toMatchObject([
+      { role: "reader", emailAddress: "recipient@example.com" },
+    ]);
+  });
+
+  it("makes participant revocation retryable after encryption membership changes", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const ownerController = controller(
+      owner,
+      transport,
+      ownerRegistry,
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invite = await ownerController.inviteParticipantForLink({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const response = await recipientController.submitKeyResponseFromInvitation(
+      invite.invitation,
+      invite.files,
+    );
+    await ownerController.acceptKeyResponseFromPayload({
+      invitation: invite.invitation,
+      response,
+      recipientEmailAddress: "recipient@example.com",
+    });
+    const registryRecord = await ownerRegistry.get("tasks");
+    if (!registryRecord) throw new Error("Expected owner registry record.");
+    await ownerRegistry.set({
+      ...registryRecord,
+      participantPermissionIds: {},
+    });
+
+    await expect(
+      ownerController.revokeDatasetKey({
+        datasetId: "tasks",
+        keyId: recipient.publicKey.keyId,
+        emailAddress: "recipient@example.com",
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+    await expect(
+      ownerController.revokeDatasetKey({
+        datasetId: "tasks",
+        keyId: recipient.publicKey.keyId,
+      }),
+    ).resolves.toMatchObject({ outcome: "unchanged" });
+
+    const stored = await transport.readDataset("dataset-tasks");
+    expect(
+      sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId),
+    ).toBeNull();
+    expect(await transport.listDatasetPermissions(stored.fileId)).toEqual([]);
+  });
+
+  it("removes Drive access before writing a revocation envelope", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invite = await ownerController.inviteParticipantForLink({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const response = await recipientController.submitKeyResponseFromInvitation(
+      invite.invitation,
+      invite.files,
+    );
+    await ownerController.acceptKeyResponseFromPayload({
+      invitation: invite.invitation,
+      response,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    transport.conflictNextWrite = true;
+    await expect(
+      ownerController.revokeDatasetKey({
+        datasetId: "tasks",
+        keyId: recipient.publicKey.keyId,
+        emailAddress: "recipient@example.com",
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    const stored = await transport.readDataset("dataset-tasks");
+    expect(
+      sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId)?.role,
+    ).toBe("writer");
+    expect(await transport.listDatasetPermissions(stored.fileId)).toEqual([]);
   });
 
   it("rejects a stale conditional write instead of losing another writer", async () => {
@@ -751,7 +907,11 @@ class MemorySharingTransport implements SharedBackupTransport {
       hasInheritedReadAccess?: boolean;
     } = {},
   ): Promise<SharedDatasetPermission> {
-    if (role === "viewer" && options.hasInheritedReadAccess) {
+    if (
+      !options.existingDirectPermissionId &&
+      role === "viewer" &&
+      options.hasInheritedReadAccess
+    ) {
       return { role: "reader" };
     }
     const permissionId =

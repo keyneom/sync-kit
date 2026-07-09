@@ -16,6 +16,7 @@ import type { SharingDatasetFileV1 } from "./link-exchange.js";
 import type {
   SharedBackupStorage,
   SharedBackupTransport,
+  SharedDatasetDrivePermission,
   SharedDatasetFile,
   SharedExchangeFile,
   VersionedSharedDataset,
@@ -893,7 +894,31 @@ export class SharedBackupController<T> {
     role: Exclude<SharingRole, "owner">;
     emailAddress: string;
   }): Promise<SharedDatasetResult<T>> {
-    return this.changeParticipants(input.datasetId, (stored, value) => {
+    return this.serialized(async () => {
+      requireNonEmpty(input.datasetId, "datasetId");
+      requireNonEmpty(input.keyId, "keyId");
+      requireNonEmpty(input.emailAddress, "emailAddress");
+      const stored = await this.readDatasetById(input.datasetId);
+      const record = await this.requiredRegistry(input.datasetId);
+      await this.verifyHead(stored, record);
+      const identity = await this.options.identity();
+      const actor = sharedBackupParticipant(
+        stored.envelope,
+        identity.publicKey.keyId,
+      );
+      if (!actor || !canAdministerSharedBackup(actor.role)) {
+        throw new SyncKitError(
+          "authorization",
+          "Only a current owner or admin can change dataset access.",
+        );
+      }
+      const value = await decryptSharedBackupEnvelopeV1(
+        stored.envelope,
+        this.options.codec,
+        identity,
+        this.crypto(),
+        { trustedOwnerKeyId: record.trustedOwnerKeyId },
+      );
       const participants = participantInputs(stored.envelope);
       const participant = participants.find(
         (candidate) => candidate.publicKey.keyId === input.keyId,
@@ -905,53 +930,104 @@ export class SharedBackupController<T> {
         );
       }
       participant.role = input.role;
-      return Promise.resolve({
-        participants,
-        value,
-        afterWrite: async (updated, record) => {
-          const permission =
-            await this.options.transport.setDatasetPermission(
-              updated.fileId,
-              input.emailAddress,
-              input.role,
-              {
-                ...(record.participantPermissionIds?.[input.keyId]
-                  ? {
-                      existingDirectPermissionId:
-                        record.participantPermissionIds[input.keyId],
-                    }
-                  : {}),
-                ...(input.role === "viewer"
-                  ? { hasInheritedReadAccess: true }
-                  : {}),
-              },
-            );
-          const participantPermissionIds = {
-            ...record.participantPermissionIds,
-            ...(permission.permissionId
-              ? { [input.keyId]: permission.permissionId }
-              : {}),
-          };
-          await this.options.registry.set({
-            ...record,
-            participantPermissionIds,
-          });
+      const existingPermission = await this.findDirectDatasetPermission(
+        stored.fileId,
+        record.participantPermissionIds?.[input.keyId],
+        input.emailAddress,
+      );
+      const permission = await this.options.transport.setDatasetPermission(
+        stored.fileId,
+        input.emailAddress,
+        input.role,
+        {
+          ...(existingPermission
+            ? { existingDirectPermissionId: existingPermission.permissionId }
+            : {}),
+          ...(input.role === "viewer"
+            ? { hasInheritedReadAccess: true }
+            : {}),
         },
+      );
+      const participantPermissionIds = permission.permissionId
+        ? {
+            ...record.participantPermissionIds,
+            [input.keyId]: permission.permissionId,
+          }
+        : Object.fromEntries(
+            Object.entries(record.participantPermissionIds ?? {}).filter(
+              ([keyId]) => keyId !== input.keyId,
+            ),
+          );
+      const next = await createSharedBackupEnvelopeV1(
+        value,
+        this.options.codec,
+        identity,
+        {
+          appId: this.options.appId,
+          backupId: input.datasetId,
+          participants,
+          previous: stored.envelope,
+        },
+        this.cryptoOptions(),
+      );
+      const updated = await this.options.transport.writeDataset(stored, next);
+      await this.persistHead(updated, record.trustedOwnerKeyId, {
+        ...record,
+        participantPermissionIds,
       });
+      return result(updated, value, "updated");
     });
   }
 
   revokeDatasetKey(input: {
     datasetId: string;
     keyId: string;
+    emailAddress?: string;
   }): Promise<SharedDatasetResult<T>> {
-    return this.changeParticipants(input.datasetId, (stored, value) => {
+    return this.serialized(async () => {
+      const stored = await this.readDatasetById(input.datasetId);
+      const record = await this.requiredRegistry(input.datasetId);
+      await this.verifyHead(stored, record);
+      const identity = await this.options.identity();
+      const actor = sharedBackupParticipant(
+        stored.envelope,
+        identity.publicKey.keyId,
+      );
+      if (!actor || !canAdministerSharedBackup(actor.role)) {
+        throw new SyncKitError(
+          "authorization",
+          "Only a current owner or admin can change dataset access.",
+        );
+      }
+      const value = await decryptSharedBackupEnvelopeV1(
+        stored.envelope,
+        this.options.codec,
+        identity,
+        this.crypto(),
+        { trustedOwnerKeyId: record.trustedOwnerKeyId },
+      );
       const participant = sharedBackupParticipant(stored.envelope, input.keyId);
       if (!participant) {
-        throw new SyncKitError(
-          "not-found",
-          `Participant ${input.keyId} is not in this dataset.`,
+        const permission = await this.findDirectDatasetPermission(
+          stored.fileId,
+          record.participantPermissionIds?.[input.keyId],
+          input.emailAddress,
         );
+        if (permission) {
+          await this.options.transport.removeDatasetPermission(
+            stored.fileId,
+            permission.permissionId,
+          );
+        }
+        await this.options.registry.set({
+          ...record,
+          participantPermissionIds: Object.fromEntries(
+            Object.entries(record.participantPermissionIds ?? {}).filter(
+              ([keyId]) => keyId !== input.keyId,
+            ),
+          ),
+        });
+        return result(stored, value, "unchanged");
       }
       if (participant.role === "owner") {
         throw new SyncKitError(
@@ -959,32 +1035,69 @@ export class SharedBackupController<T> {
           "Owner transfer or removal is not supported by sharing v1.",
         );
       }
+      const permission = await this.findDirectDatasetPermission(
+        stored.fileId,
+        record.participantPermissionIds?.[input.keyId],
+        input.emailAddress,
+      );
+      if (permission) {
+        await this.options.transport.removeDatasetPermission(
+          stored.fileId,
+          permission.permissionId,
+        );
+      }
       const participants = participantInputs(stored.envelope).filter(
         (candidate) => candidate.publicKey.keyId !== input.keyId,
       );
-      return Promise.resolve({
-        participants,
+      const next = await createSharedBackupEnvelopeV1(
         value,
-        afterWrite: async (_updated, record) => {
-          const permissionId = record.participantPermissionIds?.[input.keyId];
-          if (permissionId) {
-            await this.options.transport.removeDatasetPermission(
-              stored.fileId,
-              permissionId,
-            );
-          }
-          const participantPermissionIds = Object.fromEntries(
+        this.options.codec,
+        identity,
+        {
+          appId: this.options.appId,
+          backupId: input.datasetId,
+          participants,
+          previous: stored.envelope,
+        },
+        this.cryptoOptions(),
+      );
+      const updated = await this.options.transport.writeDataset(stored, next);
+      await this.persistHead(
+        updated,
+        record.trustedOwnerKeyId,
+        {
+          ...record,
+          participantPermissionIds: Object.fromEntries(
             Object.entries(record.participantPermissionIds ?? {}).filter(
               ([keyId]) => keyId !== input.keyId,
             ),
-          );
-          await this.options.registry.set({
-            ...record,
-            participantPermissionIds,
-          });
+          ),
         },
-      });
+      );
+      return result(updated, value, "updated");
     });
+  }
+
+  private async findDirectDatasetPermission(
+    fileId: string,
+    permissionId?: string,
+    emailAddress?: string,
+  ): Promise<SharedDatasetDrivePermission | undefined> {
+    const directPermissions = (
+      await this.options.transport.listDatasetPermissions(fileId)
+    ).filter((permission) => !permission.inherited);
+    if (permissionId) {
+      const byId = directPermissions.find(
+        (permission) => permission.permissionId === permissionId,
+      );
+      if (byId) return byId;
+    }
+    const normalizedEmail = emailAddress?.trim().toLowerCase();
+    if (!normalizedEmail) return undefined;
+    return directPermissions.find(
+      (permission) =>
+        permission.emailAddress?.toLowerCase() === normalizedEmail,
+    );
   }
 
   rotateLocalKey(
@@ -1243,66 +1356,6 @@ export class SharedBackupController<T> {
         });
       }
       return { datasetId: input.datasetId, actions };
-    });
-  }
-
-  private changeParticipants(
-    datasetId: string,
-    change: (
-      stored: VersionedSharedDataset,
-      value: T,
-    ) => Promise<{
-      participants: SharedBackupParticipantInput[];
-      value: T;
-      afterWrite?: (
-        updated: VersionedSharedDataset,
-        record: SharedDatasetRegistryRecord,
-      ) => Promise<void>;
-    }>,
-  ): Promise<SharedDatasetResult<T>> {
-    return this.serialized(async () => {
-      const stored = await this.readDatasetById(datasetId);
-      const record = await this.requiredRegistry(datasetId);
-      await this.verifyHead(stored, record);
-      const identity = await this.options.identity();
-      const actor = sharedBackupParticipant(
-        stored.envelope,
-        identity.publicKey.keyId,
-      );
-      if (!actor || !canAdministerSharedBackup(actor.role)) {
-        throw new SyncKitError(
-          "authorization",
-          "Only a current owner or admin can change dataset access.",
-        );
-      }
-      const value = await decryptSharedBackupEnvelopeV1(
-        stored.envelope,
-        this.options.codec,
-        identity,
-        this.crypto(),
-        { trustedOwnerKeyId: record.trustedOwnerKeyId },
-      );
-      const changed = await change(stored, value);
-      const next = await createSharedBackupEnvelopeV1(
-        changed.value,
-        this.options.codec,
-        identity,
-        {
-          appId: this.options.appId,
-          backupId: datasetId,
-          participants: changed.participants,
-          previous: stored.envelope,
-        },
-        this.cryptoOptions(),
-      );
-      const updated = await this.options.transport.writeDataset(stored, next);
-      const nextRecord = await this.persistHead(
-        updated,
-        record.trustedOwnerKeyId,
-        record,
-      );
-      await changed.afterWrite?.(updated, nextRecord);
-      return result(updated, changed.value, "updated");
     });
   }
 

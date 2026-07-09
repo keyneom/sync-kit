@@ -68,7 +68,8 @@ class SharedBackupControllerTest {
         val owner = SharingCrypto.generateIdentity()
         val recipient = SharingCrypto.generateIdentity()
         val transport = MemorySharingTransport()
-        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        val ownerRegistry = MemorySharedBackupRegistry()
+        val ownerController = controller(owner, transport, ownerRegistry)
         val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
         val landing = "https://keyneom.github.io/easy-bc/"
 
@@ -110,6 +111,141 @@ class SharedBackupControllerTest {
         )
         assertEquals(listOf("owner", "recipient"), synced.value.items)
         assertEquals("updated", synced.outcome)
+    }
+
+    @Test
+    fun changesParticipantRoleAndDrivePermissionTogether() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerRegistry = MemorySharedBackupRegistry()
+        val ownerController = controller(owner, transport, ownerRegistry)
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        val invite = ownerController.inviteParticipantForLink(
+            emailAddress = "recipient@example.com",
+            requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+        )
+        val response = recipientController.submitKeyResponseFromInvitation(
+            invite.invitation,
+            invite.files,
+        )
+        ownerController.acceptKeyResponseFromPayload(
+            invitation = invite.invitation,
+            response = response,
+            recipientEmailAddress = "recipient@example.com",
+        )
+        val registryRecord = ownerRegistry.get("tasks") ?: error("Expected owner registry record.")
+        ownerRegistry.set(registryRecord.copy(participantPermissionIds = emptyMap()))
+
+        ownerController.setDatasetRole(
+            datasetId = "tasks",
+            keyId = recipient.publicKey.keyId,
+            role = SharingRole.VIEWER,
+            emailAddress = "recipient@example.com",
+        )
+
+        val stored = transport.readDataset("dataset-tasks")
+        assertEquals(
+            SharingRole.VIEWER,
+            sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId)?.role,
+        )
+        assertEquals(
+            "reader",
+            transport.listDatasetPermissions(stored.fileId).single().role,
+        )
+    }
+
+    @Test
+    fun revokesParticipantKeyAndTrackedDrivePermissionTogether() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerRegistry = MemorySharedBackupRegistry()
+        val ownerController = controller(owner, transport, ownerRegistry)
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        val invite = ownerController.inviteParticipantForLink(
+            emailAddress = "recipient@example.com",
+            requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+        )
+        val response = recipientController.submitKeyResponseFromInvitation(
+            invite.invitation,
+            invite.files,
+        )
+        ownerController.acceptKeyResponseFromPayload(
+            invitation = invite.invitation,
+            response = response,
+            recipientEmailAddress = "recipient@example.com",
+        )
+        val registryRecord = ownerRegistry.get("tasks") ?: error("Expected owner registry record.")
+        ownerRegistry.set(registryRecord.copy(participantPermissionIds = emptyMap()))
+
+        ownerController.revokeDatasetKey(
+            datasetId = "tasks",
+            keyId = recipient.publicKey.keyId,
+            emailAddress = "recipient@example.com",
+        )
+
+        val stored = transport.readDataset("dataset-tasks")
+        assertEquals(
+            null,
+            sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId),
+        )
+        assertEquals(emptyList<SharedDatasetDrivePermission>(), transport.listDatasetPermissions(stored.fileId))
+        assertEquals(
+            "unchanged",
+            ownerController.revokeDatasetKey(
+                datasetId = "tasks",
+                keyId = recipient.publicKey.keyId,
+            ).outcome,
+        )
+    }
+
+    @Test
+    fun removesDriveAccessBeforeWritingRevocationEnvelope() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        val invite = ownerController.inviteParticipantForLink(
+            emailAddress = "recipient@example.com",
+            requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+        )
+        val response = recipientController.submitKeyResponseFromInvitation(
+            invite.invitation,
+            invite.files,
+        )
+        ownerController.acceptKeyResponseFromPayload(
+            invitation = invite.invitation,
+            response = response,
+            recipientEmailAddress = "recipient@example.com",
+        )
+
+        transport.conflictNextWrite = true
+        val error = try {
+            ownerController.revokeDatasetKey(
+                datasetId = "tasks",
+                keyId = recipient.publicKey.keyId,
+                emailAddress = "recipient@example.com",
+            )
+            null
+        } catch (error: SyncKitError) {
+            error
+        }
+        assertEquals(SyncKitErrorCode.CONFLICT, error?.code)
+
+        val stored = transport.readDataset("dataset-tasks")
+        assertEquals(
+            SharingRole.WRITER,
+            sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId)?.role,
+        )
+        assertEquals(emptyList<SharedDatasetDrivePermission>(), transport.listDatasetPermissions(stored.fileId))
     }
 
     @Test
@@ -200,6 +336,7 @@ class SharedBackupControllerTest {
         private val invitations = mutableMapOf<String, SharingInvitationV1>()
         private val responses = mutableMapOf<String, SharingPublicKeyResponseV1>()
         private val permissions = mutableMapOf<String, MutableMap<String, SharedDatasetDrivePermission>>()
+        var conflictNextWrite = false
         private var counter = 0
 
         override suspend fun ensureStorage(): SharedBackupStorage = storage
@@ -233,6 +370,10 @@ class SharedBackupControllerTest {
             current: VersionedSharedDataset,
             envelope: SharedBackupEnvelopeV1,
         ): VersionedSharedDataset {
+            if (conflictNextWrite) {
+                conflictNextWrite = false
+                throw SyncKitError(SyncKitErrorCode.CONFLICT, "Conflict")
+            }
             val updated = current.copy(
                 envelope = envelope,
                 version = "\"${++counter}\"",
@@ -309,11 +450,14 @@ class SharedBackupControllerTest {
             existingDirectPermissionId: String?,
             hasInheritedReadAccess: Boolean,
         ): SharedDatasetPermission {
-            if (role == SharingRole.VIEWER && hasInheritedReadAccess) {
-                return SharedDatasetPermission(role = "reader")
+            val driveRole = if (role == SharingRole.VIEWER) "reader" else "writer"
+            if (existingDirectPermissionId == null &&
+                role == SharingRole.VIEWER &&
+                hasInheritedReadAccess
+            ) {
+                return SharedDatasetPermission(role = driveRole)
             }
             val permissionId = existingDirectPermissionId ?: "permission-$emailAddress"
-            val driveRole = if (role == SharingRole.VIEWER) "reader" else "writer"
             val filePermissions = permissions.getOrPut(fileId) { mutableMapOf() }
             filePermissions[permissionId] = SharedDatasetDrivePermission(
                 permissionId = permissionId,

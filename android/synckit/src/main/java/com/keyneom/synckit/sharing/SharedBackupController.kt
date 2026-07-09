@@ -740,6 +740,191 @@ class SharedBackupController<T>(
         DrivePermissionReconciliationResult(datasetId, actions)
     }
 
+    /**
+     * Changes one accepted participant's encrypted role and keeps its direct
+     * Drive file permission aligned with that role.
+     */
+    suspend fun setDatasetRole(
+        datasetId: String,
+        keyId: String,
+        role: SharingRole,
+        emailAddress: String,
+    ): SharedDatasetResult<T> = serialized {
+        requireNonEmpty(datasetId, "datasetId")
+        requireNonEmpty(keyId, "keyId")
+        requireNonEmpty(emailAddress, "emailAddress")
+        if (role == SharingRole.OWNER) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Owner transfer is not supported by sharing v1.",
+            )
+        }
+        val stored = readDatasetById(datasetId)
+        val record = requiredRegistry(datasetId)
+        verifyHead(stored, record)
+        val currentIdentity = identity()
+        val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+        if (actor == null || !canAdministerSharedBackup(actor.role)) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only a current owner or admin can change dataset access.",
+            )
+        }
+        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            codec,
+            currentIdentity,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        val participants = participantInputs(stored.envelope).map { participant ->
+            if (participant.publicKey.keyId == keyId) participant.copy(role = role) else participant
+        }
+        if (participants.none { it.publicKey.keyId == keyId }) {
+            throw SyncKitError(
+                SyncKitErrorCode.NOT_FOUND,
+                "Participant $keyId is not in this dataset.",
+            )
+        }
+        val existingPermission = findDirectDatasetPermission(
+            fileId = stored.fileId,
+            permissionId = record.participantPermissionIds?.get(keyId),
+            emailAddress = emailAddress,
+        )
+        val permission = transport.setDatasetPermission(
+            fileId = stored.fileId,
+            emailAddress = emailAddress,
+            role = role,
+            existingDirectPermissionId = existingPermission?.permissionId,
+            hasInheritedReadAccess = role == SharingRole.VIEWER,
+        )
+        val participantPermissionIds = record.participantPermissionIds.orEmpty().toMutableMap()
+        if (permission.permissionId != null) {
+            participantPermissionIds[keyId] = permission.permissionId
+        } else {
+            participantPermissionIds.remove(keyId)
+        }
+        val next = SharingCrypto.createSharedBackupEnvelopeV1(
+            value = value,
+            codec = codec,
+            identity = currentIdentity,
+            input = CreateSharedBackupEnvelopeInput(
+                appId = appId,
+                backupId = datasetId,
+                participants = participants,
+                previous = stored.envelope,
+            ),
+            options = cryptoOptions,
+        )
+        val updated = transport.writeDataset(stored, next)
+        persistHead(
+            updated,
+            record.trustedOwnerKeyId,
+            record.copy(participantPermissionIds = participantPermissionIds),
+        )
+        result(updated, value, "updated")
+    }
+
+    /**
+     * Removes a non-owner participant from new encrypted revisions and removes
+     * the tracked direct Drive file permission for that participant.
+     */
+    suspend fun revokeDatasetKey(
+        datasetId: String,
+        keyId: String,
+        emailAddress: String? = null,
+    ): SharedDatasetResult<T> = serialized {
+        requireNonEmpty(datasetId, "datasetId")
+        requireNonEmpty(keyId, "keyId")
+        val stored = readDatasetById(datasetId)
+        val record = requiredRegistry(datasetId)
+        verifyHead(stored, record)
+        val currentIdentity = identity()
+        val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+        if (actor == null || !canAdministerSharedBackup(actor.role)) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only a current owner or admin can change dataset access.",
+            )
+        }
+        val participant = sharedBackupParticipant(stored.envelope, keyId)
+        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            codec,
+            currentIdentity,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        if (participant == null) {
+            findDirectDatasetPermission(
+                fileId = stored.fileId,
+                permissionId = record.participantPermissionIds?.get(keyId),
+                emailAddress = emailAddress,
+            )?.let { permission ->
+                transport.removeDatasetPermission(stored.fileId, permission.permissionId)
+            }
+            registry.set(
+                record.copy(
+                    participantPermissionIds = record.participantPermissionIds.orEmpty()
+                        .filterKeys { it != keyId },
+                ),
+            )
+            return@serialized result(stored, value, "unchanged")
+        }
+        if (participant.role == SharingRole.OWNER) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Owner transfer or removal is not supported by sharing v1.",
+            )
+        }
+        findDirectDatasetPermission(
+            fileId = stored.fileId,
+            permissionId = record.participantPermissionIds?.get(keyId),
+            emailAddress = emailAddress,
+        )?.let { permission ->
+            transport.removeDatasetPermission(stored.fileId, permission.permissionId)
+        }
+        val participants = participantInputs(stored.envelope).filter {
+            it.publicKey.keyId != keyId
+        }
+        val next = SharingCrypto.createSharedBackupEnvelopeV1(
+            value = value,
+            codec = codec,
+            identity = currentIdentity,
+            input = CreateSharedBackupEnvelopeInput(
+                appId = appId,
+                backupId = datasetId,
+                participants = participants,
+                previous = stored.envelope,
+            ),
+            options = cryptoOptions,
+        )
+        val updated = transport.writeDataset(stored, next)
+        persistHead(
+            updated,
+            record.trustedOwnerKeyId,
+            record.copy(
+                participantPermissionIds = record.participantPermissionIds.orEmpty()
+                    .filterKeys { it != keyId },
+            ),
+        )
+        result(updated, value, "updated")
+    }
+
+    private suspend fun findDirectDatasetPermission(
+        fileId: String,
+        permissionId: String?,
+        emailAddress: String?,
+    ): SharedDatasetDrivePermission? {
+        val directPermissions = transport.listDatasetPermissions(fileId).filter { !it.inherited }
+        if (permissionId != null) {
+            directPermissions.find { it.permissionId == permissionId }?.let { return it }
+        }
+        val normalizedEmail = emailAddress?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+            ?: return null
+        return directPermissions.find {
+            it.emailAddress?.lowercase() == normalizedEmail
+        }
+    }
+
     private suspend fun readDatasetById(datasetId: String): VersionedSharedDataset {
         requireNonEmpty(datasetId, "datasetId")
         val record = registry.get(datasetId)
