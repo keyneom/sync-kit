@@ -637,3 +637,4 @@ export {
   type SharingJoinLinkV1,
   type SharingResponseLinkV1,
 } from "./link-exchange.js";
+export * from "./control.js";

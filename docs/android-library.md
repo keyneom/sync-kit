@@ -14,7 +14,7 @@ APIs allow.
 | --- | --- |
 | Group | `com.keyneom` |
 | Artifact | `sync-kit-android` |
-| Version | same as npm (currently `0.2.0-rc.1`) |
+| Version | release tag (`0.2.0-rc.11`); npm publication is independent |
 | Module | `android/synckit` |
 | Registry | [GitHub Packages](https://github.com/keyneom/sync-kit/packages) (`https://maven.pkg.github.com/keyneom/sync-kit`) |
 
@@ -53,7 +53,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.2.0-rc.1")
+implementation("com.keyneom:sync-kit-android:0.2.0-rc.11")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.

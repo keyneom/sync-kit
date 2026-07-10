@@ -132,6 +132,41 @@ Exit gate: one consumer completes owner/invite/response/grant/read/write/revoke
 flows using only per-file Drive access, and a second platform consumes the
 frozen wire fixtures before cross-platform release.
 
+## Phase S5.1: control datasets and topology cutover
+
+- [x] Add an encrypted, per-cohort control dataset with individually signed
+      membership, migration, acknowledgement, and close events.
+- [x] Require a control dataset to match the sharing envelope's pinned owner.
+- [x] Support one invitation that grants application datasets plus a
+      protocol-owned control dataset with different codecs.
+- [x] Make acknowledgement validation compare required target file IDs before
+      allowing an ordinary migration close.
+- [x] Document the initial multi-select Picker enrollment, hard-cutover
+      requirement, metadata tradeoffs, and consumer-owned payload transforms.
+- [ ] Validate the exact multi-select Picker and post-accept control-file flow
+      against live Google Drive with two accounts.
+- [ ] Add application-facing orchestration for creating target datasets from a
+      consumer-supplied topology transform; keep that transform and ACL policy
+      in the consumer.
+
+Exit gate: a consumer can enroll a control file in its first invitation, detect
+missed target-file selections, collect all required acknowledgements, and hold
+old-file retirement when any acknowledgement is absent.
+
+## Deferred: commit/reveal choices and verifiable multi-party randomness
+
+- [ ] Add canonical, domain-separated action/input commitments and signed
+      reveal verification.
+- [ ] Add deterministic multi-party randomness derivation with rejection
+      sampling for unbiased bounded results.
+- [ ] Model unrevealed contributions as an explicit blocked/abandoned round;
+      do not treat Drive timestamps as an enforceable timeout.
+- [ ] Add application-neutral round-status APIs while leaving game rules,
+      eligibility, user experience, and any forfeit policy to consumers.
+
+See [sharing-control-datasets.md](sharing-control-datasets.md) for the proposed
+protocol, fairness assumptions, and appropriate backend-free use cases.
+
 ## Phase S6: background change detection
 
 - [x] Document Tier A (Drive metadata) vs Tier B (local reminders) boundaries.

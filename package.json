@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.2.0-rc.10",
+  "version": "0.2.0-rc.11",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "keywords": [
@@ -57,6 +57,11 @@
       "types": "./dist/sharing/controller.d.ts",
       "import": "./dist/sharing/controller.js",
       "default": "./dist/sharing/controller.js"
+    },
+    "./sharing/control": {
+      "types": "./dist/sharing/control.d.ts",
+      "import": "./dist/sharing/control.js",
+      "default": "./dist/sharing/control.js"
     },
     "./sharing/web-passkey": {
       "types": "./dist/sharing/web-passkey.d.ts",

@@ -55,6 +55,33 @@ Clinic", or "Sarah's EasyBC".
 - Choosing whether email, display name, or other metadata appears in Drive
   folder names (with documented privacy tradeoffs).
 
+### Shared control datasets and topology changes
+
+`sync-kit` supplies an encrypted control-dataset codec and signed migration
+events. A control dataset is a normal shared dataset whose participants can all
+write coordination records even when they cannot write a particular data
+dataset. It carries accepted public keys, optional email/account provenance,
+Picker/decrypt acknowledgements, and hard-cutover migration state.
+
+The application must:
+
+1. Reserve and persist a stable control dataset ID for each coordination
+   cohort.
+2. Include that dataset as a `writer` grant in every new participant's initial
+   invitation, alongside all data datasets they should select.
+3. Require Picker selection of every signed expected file and compare the
+   returned IDs before treating setup as complete.
+4. After accepting a response, mirror accepted member contact/provenance into
+   the control directory with `control.synchronizeMembers(...)`.
+5. Define split/merge transforms, per-file codecs, and exact per-participant
+   target access. Announce target file IDs only after the target files exist.
+6. Keep the old topology read-only during a privacy-narrowing migration; close
+   it only after `migrationStatus()` has no required acknowledgements pending.
+
+Do not put consumer data, untrusted selected files, or executable content in
+the control dataset. The detailed flow is in
+[sharing-control-datasets.md](sharing-control-datasets.md).
+
 ## Why certain work stays in applications
 
 **Product shape varies.** EasyBC may distinguish clinic vs personal contexts;
@@ -235,9 +262,12 @@ Typical recipient join sequence:
 2. Run OAuth for the intended Google account (app + sync-kit auth provider).
 3. Construct transport with `selectedAppFolderId` from the URL (app).
 4. Unlock or create sharing identity (sync-kit web-passkey + app store).
-5. `listExchanges({ exchangeId? })` → `submitKeyResponse(invitationFileId)`
-   (sync-kit controller).
-6. Persist a new `AppSyncProfile` entry (app).
+5. Open multi-select Picker and select every signed invitation file, including
+   the control file; compare returned IDs to the expected list (app + Picker).
+6. `listExchanges({ exchangeId? })` → `submitKeyResponse(invitationFileId)`
+   (sync-kit controller), then return the response to the owner.
+7. After owner acceptance, open/decrypt each selected file and persist the new
+   `AppSyncProfile` entry (app).
 
 For invites, `inviteParticipant` already accepts `emailMessage`. The application
 builds the join URL; sync-kit may later offer a message formatter, not a
@@ -263,6 +293,8 @@ deployment-specific URL builder.
 | Background WorkManager poll (Android) | `@keyneom/sync-kit-android` — `SharingSyncWorker` |
 | Local date / stale-sync reminders | Application (Tier B) |
 | Merge conflicts and tombstones | Application codec |
+| Control-ledger signatures, roster events, Picker acknowledgement checks | `@keyneom/sync-kit/sharing/control` |
+| Dataset split/merge transform, target ACL policy, labels, and retirement UX | Application |
 | Passkey / OAuth prompts | Application triggers; sync-kit providers perform ceremonies |
 
 ## Anti-patterns

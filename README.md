@@ -121,6 +121,8 @@ Available exports:
 - `/sharing/controller` — headless multi-dataset orchestration, owner pinning,
   serialized writes, exchange processing, roles, revocation, Drive permission
   reconciliation, and optional IndexedDB registry persistence
+- `/sharing/control` — encrypted, signed coordination ledgers for Picker
+  enrollment, participant provenance, and hard-cutover migration acknowledgements
 - `/sharing/web-passkey` — passkey-encrypted sharing identities with
   non-extractable runtime keys and optional IndexedDB ciphertext storage
 - `/sharing/account-binding` — backendless Google ID-token and WebAuthn
@@ -209,9 +211,11 @@ frontend can execute the protocol directly against Google Drive; an
 application-owned server is neither a trust root nor a deployment requirement.
 
 Shared files use normal Google Drive storage with the per-file `drive.file`
-scope. A recipient can select the shared app folder once through Google Picker,
-after which the app reuses its ID for app-created children; broad access to
-Drive is not required. `appDataFolder` files cannot be shared.
+scope. A recipient must select every required shared data/control file through
+Google Picker; selecting the parent folder does not grant recursive child-file
+access. The app persists the folder ID for profile routing and compares Picker
+results to the signed expected file IDs; broad access to Drive is not required.
+`appDataFolder` files cannot be shared.
 
 New integrations can use `GoogleDriveFileSnapshotStore`, which defaults to an
 app-owned top-level folder:
@@ -235,6 +239,7 @@ sharing or limited-access subfolders.
 See the [protocol and threat model](docs/shared-backups.md),
 [authoritative implementation handoff](docs/sharing-implementation-handoff.md),
 [consumer responsibilities](docs/consumer-responsibilities.md), and
+[control dataset and topology migration guide](docs/sharing-control-datasets.md),
 [background notifications](docs/background-notifications.md). The phased gates
 remain in the [sharing execution plan](docs/sharing-execution-plan.md). The crypto and
 per-file transport, Picker, protected identity, account binding, signed

@@ -142,6 +142,20 @@ Validated on 2026-07-03 for the unpublished sharing review fixes:
 
 The live Google and external-consumer release gates remain open.
 
+Validated on 2026-07-09 for the control-dataset and hard-cutover work:
+
+- encrypted, per-cohort control state with individually signed member,
+  migration, acknowledgement, and close events;
+- pinned control-owner enforcement, expected-Picker-file acknowledgement
+  validation, and an owner-held close gate;
+- a mixed-codec invitation/accept path that grants a control dataset beside
+  ordinary application datasets in one response flow;
+- focused control-dataset tests, full lint/typecheck/test/build/package gate,
+  frozen fixtures, Java fixture verification, and JS/Kotlin parity checks.
+
+Live Google multi-select Picker and two-account post-accept control-file
+enrollment remain open release-validation gates.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive
@@ -214,6 +228,10 @@ The live Google and external-consumer release gates remain open.
 - [x] Add opt-in `IndexedDbAuthorizationCache`, `bindSharingPoll`, and SW
       integration guidance.
 - [x] Add Kotlin sharing fixture verification and Android sharing port (S7).
+- [x] Add an encrypted, signed control dataset for Picker enrollment,
+      participant provenance, and hard-cutover migration acknowledgements.
+- [x] Let one invitation accept a protocol-owned control codec beside
+      application-owned dataset codecs, with focused mixed-codec tests.
 - [ ] Validate OAuth, Picker, conditional writes, permissions, and account
       attestation against live Google services (`npm run live:drive`).
 - [ ] Integrate the complete flow into an external consumer from a packed

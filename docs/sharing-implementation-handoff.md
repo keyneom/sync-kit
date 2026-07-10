@@ -23,9 +23,10 @@ is open, and token renewal or passkey use may require user presence.
 - Keep `appDataFolder` as an explicit legacy/private-storage option.
 - Create one top-level folder per app automatically. Fallback name:
   `Sync Kit - <appId>`; consumers should pass a friendly app-specific name.
-- The owner sees no Picker. A recipient selects the shared app folder once;
-  persist its Drive folder ID and reuse it for app-created/tagged children.
-  Do not treat this as recursive authorization for arbitrary foreign files.
+- The owner sees no Picker. A recipient persists the shared app folder ID for
+  profile routing, but must Picker-select every required shared dataset/control
+  file; a folder selection is not recursive file authorization. Compare the
+  selected IDs with the signed invitation or control-migration record.
 - Expose headless APIs and typed state. Consumers own all UI.
 - Treat Drive file IDs and signed IDs as authoritative. Names are presentation.
   See [consumer-responsibilities.md](consumer-responsibilities.md) for profile
@@ -210,6 +211,11 @@ setDatasetRole
 revokeDatasetKey
 rotateLocalKey
 reconcileDrivePermissions
+createSharingControlDataset
+announceMigration
+acknowledgeMigration
+migrationStatus
+closeMigration
 ```
 
 Return typed operation state and actionable errors. Do not display Google UI
@@ -226,6 +232,12 @@ Implemented:
 - multi-dataset invitations and signed acceptance provenance;
 - `/sharing/controller` headless dataset, invitation, response, role, and
   revocation orchestration;
+- `/sharing/control` encrypted, merge-safe coordination ledgers with signed
+  member directory records, migration announcements, Picker/decrypt
+  acknowledgements, and owner-only close records;
+- mixed-codec invitation acceptance through `codecForDataset`, so a
+  protocol-owned control dataset can be granted beside application-owned data
+  datasets in one response flow;
 - join-link param parsing/building, invite email formatting, and invitation
   lookup helpers on `/sharing`;
 - `buildSyncKitFolderName`, `listAccessibleSyncKitAppFolders`, and
@@ -253,5 +265,10 @@ Release blockers:
   reconciliation;
 - live Google OAuth, Picker, and account-binding browser validation;
 - integration into an external consumer with its real UI and persistence.
+
+Control datasets coordinate a hard cutover but do not perform application
+payload transforms or delete old data. Consumers must follow
+`docs/sharing-control-datasets.md`, including the one-time Picker enrollment
+of an existing cohort before treating any destructive migration as safe.
 
 Do not publish the sharing surface as stable until these blockers are closed.

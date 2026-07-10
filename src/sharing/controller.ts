@@ -11,6 +11,7 @@ import {
   type SharingInvitationV1,
   type SharingPublicKeyResponseV1,
   type SharingRole,
+  type SharedBackupParticipantV1,
 } from "./index.js";
 import type { SharingDatasetFileV1 } from "./link-exchange.js";
 import type {
@@ -132,6 +133,13 @@ export type DrivePermissionReconciliationResult = {
 export type SharedBackupControllerOptions<T> = {
   appId: string;
   codec: SharedBackupControllerCodec<T>;
+  /**
+   * Optional codec override for a protocol-owned companion dataset such as a
+   * sharing control ledger. It lets one signed invitation accept several
+   * application datasets plus that ledger without treating the ledger as app
+   * payload. Ordinary create/load/sync calls continue to use `codec`.
+   */
+  codecForDataset?(datasetId: string): SharedBackupControllerCodec<unknown> | undefined;
   identity(): Promise<WebCryptoSharingIdentity>;
   transport: SharedBackupTransport;
   registry: SharedBackupRegistry;
@@ -179,6 +187,30 @@ export class SharedBackupController<T> {
 
   listDatasets(): Promise<SharedDatasetFile[]> {
     return this.options.transport.listDatasets();
+  }
+
+  /** Returns the locally pinned genesis owner for a previously trusted dataset. */
+  async getDatasetTrust(datasetId: string): Promise<{ trustedOwnerKeyId: string }> {
+    const record = await this.requiredRegistry(datasetId);
+    return { trustedOwnerKeyId: record.trustedOwnerKeyId };
+  }
+
+  /**
+   * Reads the verified cryptographic membership for a dataset. This is useful
+   * for a companion control ledger that mirrors key provenance and user-facing
+   * contact metadata without making application payloads authoritative.
+   */
+  async getDatasetParticipants(datasetId: string): Promise<{
+    trustedOwnerKeyId: string;
+    participants: SharedBackupParticipantV1[];
+  }> {
+    const stored = await this.readDatasetById(datasetId);
+    const record = await this.requiredRegistry(datasetId);
+    await this.verifyHead(stored, record);
+    return {
+      trustedOwnerKeyId: record.trustedOwnerKeyId,
+      participants: sharedBackupParticipants(stored.envelope),
+    };
   }
 
   createDataset(
@@ -618,13 +650,14 @@ export class SharedBackupController<T> {
     for (const grant of accepted) {
       try {
         const stored = await this.readDatasetById(grant.datasetId);
+        const codec = this.codecForDataset(grant.datasetId);
         const record =
           (await this.options.registry.get(grant.datasetId)) ??
           this.initialOwnerRecord(stored);
         await this.verifyHead(stored, record);
         const value = await decryptSharedBackupEnvelopeV1(
           stored.envelope,
-          this.options.codec,
+          codec,
           identity,
           this.crypto(),
           { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -637,7 +670,7 @@ export class SharedBackupController<T> {
         participants.push(grant.participant);
         const next = await createSharedBackupEnvelopeV1(
           value,
-          this.options.codec,
+          codec,
           identity,
           {
             appId: this.options.appId,
@@ -1476,6 +1509,11 @@ export class SharedBackupController<T> {
       );
     }
     return implementation;
+  }
+
+  private codecForDataset(datasetId: string): SharedBackupControllerCodec<unknown> {
+    return this.options.codecForDataset?.(datasetId) ??
+      this.options.codec;
   }
 
   private cryptoOptions(): WebCryptoSharingOptions {

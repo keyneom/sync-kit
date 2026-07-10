@@ -25,6 +25,12 @@ own participants and whole-file access policy:
 Applications that need different access to different data must split that data
 into separate backup files. Sharing v1 deliberately has no field-level policy.
 
+When a profile needs a writable coordination channel that is separate from its
+data files, use an encrypted shared control dataset. It records the signed
+membership directory, explicit Picker/decrypt acknowledgements, and
+hard-cutover migration status without giving every participant write access to
+the data. See [sharing-control-datasets.md](sharing-control-datasets.md).
+
 ### Required deployment property: no trusted app backend
 
 Sharing v1 must work in a static frontend with no application-owned trusted
