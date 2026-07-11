@@ -6,6 +6,7 @@ import com.keyneom.synckit.sharing.checkpoint.SharedDatasetHead
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -17,6 +18,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class SharedBackupControllerTest {
+    @Test
+    fun matchesFixedTypeScriptControlMergeAndUtf16OrderingVector() {
+        val fixture = checkNotNull(javaClass.classLoader?.getResourceAsStream("sharing-v1/control-merge.json"))
+            .bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
+        val codec = createSharingControlCodec()
+        val merged = codec.merge(
+            codec.parse(fixture["local"]!!),
+            codec.parse(fixture["remote"]!!),
+        )
+        assertEquals(
+            fixture["expectedEventIds"]!!.jsonArray.map { it.jsonPrimitive.content },
+            merged.events.map { it.eventId },
+        )
+    }
+
     @Test
     fun completesInviteResponseAcceptAndReadFlow() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
@@ -61,6 +77,132 @@ class SharedBackupControllerTest {
         )
         assertEquals(listOf("owner", "recipient"), synced.value.items)
         assertEquals("updated", synced.outcome)
+    }
+
+    @Test
+    fun mixedCodecInvitationAcceptsAndReencryptsAppAndControlDatasets() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerRegistry = MemorySharedBackupRegistry()
+        val recipientRegistry = MemorySharedBackupRegistry()
+        val controlCodec = createSharingControlCodec()
+        val ownerData = controller(owner, transport, ownerRegistry) { datasetId ->
+            controlCodec.takeIf { datasetId == "profile-control" }
+        }
+        val recipientData = controller(recipient, transport, recipientRegistry) { datasetId ->
+            controlCodec.takeIf { datasetId == "profile-control" }
+        }
+        val ownerControl = controlDataset(owner, transport, ownerRegistry, "owner")
+        val recipientControl = controlDataset(recipient, transport, recipientRegistry, "recipient")
+
+        val data = ownerData.createDataset("tasks", Payload(listOf("owner")))
+        ownerControl.create(SharingControlMemberMetadataV1(email = "owner@example.test"))
+        val invite = ownerData.inviteParticipantForLink(
+            emailAddress = "recipient@example.test",
+            requestedGrants = listOf(
+                SharingDatasetGrantV1("tasks", SharingRole.VIEWER),
+                SharingDatasetGrantV1("profile-control", SharingRole.WRITER),
+            ),
+        )
+        val response = recipientData.submitKeyResponseFromInvitation(invite.invitation, invite.files)
+        val accepted = ownerData.acceptKeyResponseFromPayload(
+            invite.invitation,
+            response,
+            "recipient@example.test",
+        )
+        assertEquals(listOf("accepted", "accepted"), accepted.map { it.status })
+        val cryptographicMember = ownerData.getDatasetParticipants("profile-control").participants
+            .single { it.keyId == recipient.publicKey.keyId }
+        assertEquals(invite.invitation.exchangeId, cryptographicMember.accepted?.exchangeId)
+        assertEquals(invite.invitation.recipientDrivePermissionId, cryptographicMember.accepted?.drivePermissionId)
+
+        ownerControl.synchronizeMembers(
+            mapOf(recipient.publicKey.keyId to SharingControlMemberMetadataV1(email = "recipient@example.test")),
+        )
+        assertEquals(
+            invite.invitation.recipientDrivePermissionId,
+            recipientControl.read().members[recipient.publicKey.keyId]?.drivePermissionId,
+        )
+        ownerControl.announceMigration(
+            SharingControlMigrationV1(
+                migrationId = "split-tasks",
+                sourceDatasetIds = listOf("tasks"),
+                targets = listOf(SharingControlMigrationTargetV1("tasks", data.fileId, data.revisionId)),
+                requiredAcks = listOf(
+                    SharingControlMigrationRequirementV1(recipient.publicKey.keyId, listOf(data.fileId)),
+                ),
+            ),
+        )
+        val unauthorizedMember = runCatching {
+            recipientControl.addMember(SharingControlMemberV1(SharingCrypto.generateIdentity().publicKey))
+        }.exceptionOrNull()
+        assertEquals(SyncKitErrorCode.AUTHORIZATION, (unauthorizedMember as SyncKitError).code)
+        val unauthorizedMigration = runCatching {
+            recipientControl.announceMigration(
+                SharingControlMigrationV1("unauthorized", emptyList(), emptyList(), emptyList()),
+            )
+        }.exceptionOrNull()
+        assertEquals(SyncKitErrorCode.AUTHORIZATION, (unauthorizedMigration as SyncKitError).code)
+        val missing = runCatching { recipientControl.acknowledgeMigration("split-tasks", emptyList()) }.exceptionOrNull()
+        assertEquals(SyncKitErrorCode.STATE, (missing as SyncKitError).code)
+        val unexpected = runCatching {
+            recipientControl.acknowledgeMigration("split-tasks", listOf(data.fileId, "other"))
+        }.exceptionOrNull()
+        assertEquals(SyncKitErrorCode.STATE, (unexpected as SyncKitError).code)
+        val premature = runCatching { ownerControl.closeMigration("split-tasks") }.exceptionOrNull()
+        assertEquals(SyncKitErrorCode.STATE, (premature as SyncKitError).code)
+
+        assertEquals(listOf("owner"), recipientData.loadDataset("tasks").value.items)
+        recipientControl.acknowledgeMigration("split-tasks", listOf(data.fileId))
+        ownerControl.closeMigration("split-tasks")
+        assertEquals(true, ownerControl.migrationStatus("split-tasks").closed)
+        assertEquals(recipient.publicKey.keyId, ownerControl.read().members[recipient.publicKey.keyId]?.publicKey?.keyId)
+
+        ownerControl.announceMigration(
+            SharingControlMigrationV1(
+                "forced-cutover",
+                listOf("tasks"),
+                listOf(SharingControlMigrationTargetV1("tasks", data.fileId)),
+                listOf(SharingControlMigrationRequirementV1(owner.publicKey.keyId, listOf(data.fileId))),
+            ),
+        )
+        val acknowledgementForAnotherKey = runCatching {
+            recipientControl.acknowledgeMigration("forced-cutover", listOf(data.fileId))
+        }.exceptionOrNull()
+        assertEquals(SyncKitErrorCode.AUTHORIZATION, (acknowledgementForAnotherKey as SyncKitError).code)
+        ownerControl.closeMigration("forced-cutover", force = true)
+        assertEquals(true, ownerControl.migrationStatus("forced-cutover").closed)
+    }
+
+    @Test
+    fun controlVerificationRejectsTamperingWrongOwnerAndConflictingEvents() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val registry = MemorySharedBackupRegistry()
+        val control = controlDataset(owner, transport, registry, "owner")
+        control.create(SharingControlMemberMetadataV1(email = "owner@example.test"))
+        val state = control.read().state
+        val genesis = state.events.single() as SharingControlMemberUpsertEventV1
+        val tampered = state.copy(events = listOf(genesis.copy(member = genesis.member.copy(email = "attacker@example.test"))))
+        assertEquals(
+            SyncKitErrorCode.CRYPTO,
+            (runCatching { verifySharingControlStateV1(tampered, owner.publicKey.keyId) }.exceptionOrNull() as SyncKitError).code,
+        )
+        assertEquals(
+            SyncKitErrorCode.AUTHORIZATION,
+            (runCatching { verifySharingControlStateV1(state, "repinned-owner") }.exceptionOrNull() as SyncKitError).code,
+        )
+        val conflicting = genesis.copy(createdAt = "2026-07-09T12:00:01Z")
+        assertEquals(
+            SyncKitErrorCode.CONFLICT,
+            (runCatching { mergeSharingControlStates(state, state.copy(events = listOf(conflicting))) }.exceptionOrNull() as SyncKitError).code,
+        )
+        val wrongProfile = state.copy(profileId = "other-profile")
+        assertEquals(
+            SyncKitErrorCode.COMPATIBILITY,
+            (runCatching { verifySharingControlStateV1(wrongProfile) }.exceptionOrNull() as SyncKitError).code,
+        )
     }
 
     @Test
@@ -299,9 +441,11 @@ class SharedBackupControllerTest {
         identity: SharingIdentity,
         transport: SharedBackupTransport,
         registry: SharedBackupRegistry,
+        codecForDataset: ((String) -> SharedBackupControllerCodec<*>?)? = null,
     ): SharedBackupController<Payload> = SharedBackupController(
         appId = "controller-test",
         codec = payloadCodec,
+        codecForDataset = codecForDataset,
         identity = { identity },
         transport = transport,
         registry = registry,
@@ -309,6 +453,30 @@ class SharedBackupControllerTest {
             now = { java.util.Date.from(java.time.Instant.parse("2026-07-01T12:00:00.000Z")) },
             randomUuid = { "generated-${++uuidCounter}" },
         ),
+    )
+
+    private fun controlDataset(
+        identity: SharingIdentity,
+        transport: SharedBackupTransport,
+        registry: SharedBackupRegistry,
+        prefix: String,
+    ): SharingControlDataset = SharingControlDataset(
+        controller = SharedBackupController(
+            appId = "controller-test",
+            codec = createSharingControlCodec(),
+            identity = { identity },
+            transport = transport,
+            registry = registry,
+            cryptoOptions = SharingCryptoOptions(
+                now = { java.util.Date.from(java.time.Instant.parse("2026-07-09T12:00:00.000Z")) },
+                randomUuid = { "$prefix-controller-${++uuidCounter}" },
+            ),
+        ),
+        datasetId = "profile-control",
+        profileId = "profile-1",
+        identity = { identity },
+        now = { java.time.Instant.parse("2026-07-09T12:00:00.000Z") },
+        randomUuid = { "$prefix-event-${++uuidCounter}" },
     )
 
     private data class Payload(val items: List<String>)

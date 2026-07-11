@@ -26,6 +26,15 @@ Engineering constraints:
 
 Platform parity:
 
+- Do not cut, tag, or publish a release that introduces a consumer-facing
+  sharing/sync protocol, persisted format, invitation, or controller behavior
+  on web without an interoperable Android implementation (or vice versa).
+  Platform-only facilities are acceptable only when they do not create or
+  mutate cross-platform state the other platform cannot consume. Any exception
+  requires the user's explicit approval for that specific release; record the
+  approved exception and its exact interoperability limit in the execution
+  checklist and release notes before tagging. Silence, schedule pressure, and
+  a green single-platform test suite are not approval.
 - Android is the reference implementation for consumer-facing behavior; the
   web package makes a best effort to match it (some capabilities, such as
   background sync, cannot match a native app).

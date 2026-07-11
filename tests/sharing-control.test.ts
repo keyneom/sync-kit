@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { SyncKitError } from "../src/core/errors.js";
 import {
   createSharingControlCodec,
@@ -47,6 +48,15 @@ const payloadCodec: SharedBackupControllerCodec<Payload> = {
 };
 
 describe("sharing control dataset", () => {
+  it("matches the fixed Kotlin merge and UTF-16 ordering vector", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("../fixtures/sharing-v1/control-merge.json", import.meta.url),
+      "utf8",
+    )) as { local: SharingControlStateV1; remote: SharingControlStateV1; expectedEventIds: string[] };
+    expect(createSharingControlCodec().merge(fixture.local, fixture.remote).events.map((event) => event.eventId))
+      .toEqual(fixture.expectedEventIds);
+  });
+
   it("enrolls the control file in a mixed-codec invitation and closes only after a verified Picker acknowledgement", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const recipient = await createWebCryptoSharingIdentity();
@@ -90,7 +100,9 @@ describe("sharing control dataset", () => {
         googleSubject: "recipient-sub",
       },
     });
-    await recipientControl.read();
+    const synchronized = await recipientControl.read();
+    expect(synchronized.members.get(recipient.publicKey.keyId)?.drivePermissionId)
+      .toBe(invitation.invitation.recipientDrivePermissionId);
     await ownerControl.announceMigration({
       migrationId: "split-primary",
       sourceDatasetIds: ["primary"],

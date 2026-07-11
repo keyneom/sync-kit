@@ -189,7 +189,10 @@ not.
   `/crypto`, `/snapshot`, and appData store paths. Published to
   [GitHub Packages](https://github.com/keyneom/sync-kit/packages). See
   [android-library.md](docs/android-library.md).
-- Shared backups (`/sharing`) are TypeScript-only for now.
+- Shared backups, mixed-codec invitations, and signed control datasets are
+  implemented on both npm and Android. Browser-only Picker UI remains an
+  adapter concern; Android may hand off to a web Picker grant page because SAF
+  grants do not authorize Drive API access.
 - React Native and other JavaScript-native runtimes can inject a
   `CryptoBackend<K>` backed by platform crypto.
 - Tauri applications can use `/core`, `/crypto`, and the low-level Google Drive

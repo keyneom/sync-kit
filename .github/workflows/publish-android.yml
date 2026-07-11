@@ -9,7 +9,7 @@ on:
       version:
         description: Maven version to publish (without leading v)
         required: true
-        default: 0.2.0-rc.11
+        default: 0.2.0-rc.12
 
 permissions:
   contents: read

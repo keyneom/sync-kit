@@ -1,0 +1,60 @@
+{
+  "provenance": "Synthetic TypeScript/Kotlin sharing-control merge and UTF-16 ordering vector",
+  "local": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-sharing-control",
+    "profileId": "fixture-profile",
+    "events": [
+      {
+        "schemaVersion": 1,
+        "kind": "sync-kit-sharing-control-event",
+        "eventId": "",
+        "profileId": "fixture-profile",
+        "actorKeyId": "fixture-key",
+        "sequence": 0,
+        "createdAt": "2026-07-09T12:00:00.000Z",
+        "type": "member-upsert",
+        "member": {
+          "publicKey": {
+            "keyId": "fixture-key",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "fixture-encryption-key",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "fixture-signing-key"
+          },
+          "email": "owner@example.test"
+        },
+        "signature": "fixture-signature-a"
+      }
+    ]
+  },
+  "remote": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-sharing-control",
+    "profileId": "fixture-profile",
+    "events": [
+      {
+        "schemaVersion": 1,
+        "kind": "sync-kit-sharing-control-event",
+        "eventId": "😀",
+        "profileId": "fixture-profile",
+        "actorKeyId": "fixture-key",
+        "sequence": 0,
+        "createdAt": "2026-07-09T12:00:01.000Z",
+        "type": "member-upsert",
+        "member": {
+          "publicKey": {
+            "keyId": "fixture-key",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "fixture-encryption-key",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "fixture-signing-key"
+          },
+          "email": "owner@example.test"
+        },
+        "signature": "fixture-signature-b"
+      }
+    ]
+  },
+  "expectedEventIds": ["😀", ""]
+}

@@ -387,6 +387,12 @@ export class SharingControlDataset {
           signatureAlgorithm: participant.signatureAlgorithm,
           signingPublicKey: participant.signingPublicKey,
         },
+        ...(participant.accepted?.googleSubject === undefined
+          ? {}
+          : { googleSubject: participant.accepted.googleSubject }),
+        ...(participant.accepted?.drivePermissionId === undefined
+          ? {}
+          : { drivePermissionId: participant.accepted.drivePermissionId }),
         ...details,
       };
       if (!current || canonicalJson(current) !== canonicalJson(member)) {

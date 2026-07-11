@@ -156,6 +156,19 @@ Validated on 2026-07-09 for the control-dataset and hard-cutover work:
 Live Google multi-select Picker and two-account post-accept control-file
 enrollment remain open release-validation gates.
 
+Validated on 2026-07-11 for Android control-dataset parity:
+
+- Kotlin control state/event models, exact wire parsing, canonical signing,
+  pinned-owner verification, deterministic event-union merge, and UTF-16
+  ordering;
+- owner-only membership/migration/close actions, participant self-acknowledgement,
+  exact Picker-file acknowledgement, and force-close semantics;
+- per-dataset codec selection across load/sync, invite acceptance, role changes,
+  and revocation, plus verified dataset trust and participant provenance APIs;
+- a fixed TypeScript/Kotlin control merge vector and an Android mixed-codec
+  invitation/response integration test covering one app dataset plus one
+  control dataset.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive

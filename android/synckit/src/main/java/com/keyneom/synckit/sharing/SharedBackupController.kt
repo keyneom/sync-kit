@@ -18,6 +18,13 @@ data class SharedDatasetResult<T>(
     val outcome: String,
 )
 
+data class DatasetTrust(val trustedOwnerKeyId: String)
+
+data class DatasetParticipants(
+    val trustedOwnerKeyId: String,
+    val participants: List<SharedBackupParticipantV1>,
+)
+
 data class SharingInvitationResult(
     val invitation: SharingInvitationV1,
     val invitationFileId: String,
@@ -72,6 +79,7 @@ data class InviteParticipantInput(
 class SharedBackupController<T>(
     private val appId: String,
     private val codec: SharedBackupControllerCodec<T>,
+    private val codecForDataset: ((String) -> SharedBackupControllerCodec<*>?)? = null,
     private val identity: suspend () -> SharingIdentity,
     private val transport: SharedBackupTransport,
     private val registry: SharedBackupRegistry,
@@ -91,15 +99,30 @@ class SharedBackupController<T>(
 
     suspend fun listDatasets(): List<SharedDatasetFile> = transport.listDatasets()
 
+    /** Returns the locally pinned genesis owner for a previously trusted dataset. */
+    suspend fun getDatasetTrust(datasetId: String): DatasetTrust {
+        val record = requiredRegistry(datasetId)
+        return DatasetTrust(record.trustedOwnerKeyId)
+    }
+
+    /** Returns verified cryptographic membership, including acceptance provenance. */
+    suspend fun getDatasetParticipants(datasetId: String): DatasetParticipants = serialized {
+        val stored = readDatasetById(datasetId)
+        val record = requiredRegistry(datasetId)
+        verifyHead(stored, record)
+        DatasetParticipants(record.trustedOwnerKeyId, sharedBackupParticipants(stored.envelope))
+    }
+
     suspend fun createDataset(datasetId: String, value: T): SharedDatasetResult<T> = serialized {
         requireNonEmpty(datasetId, "datasetId")
         if (transport.listDatasets().any { it.datasetId == datasetId }) {
             throw SyncKitError(SyncKitErrorCode.CONFLICT, "Dataset $datasetId already exists.")
         }
         val currentIdentity = identity()
+        val selectedCodec = codecFor(datasetId)
         val envelope = SharingCrypto.createSharedBackupEnvelopeV1(
             value = value,
-            codec = codec,
+            codec = selectedCodec,
             identity = currentIdentity,
             input = CreateSharedBackupEnvelopeInput(
                 appId = appId,
@@ -138,6 +161,7 @@ class SharedBackupController<T>(
             VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
         )
         val currentIdentity = identity()
+        val selectedCodec = codecFor(datasetId)
         if (requireOwned) {
             val self = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
             if (self == null || self.role != SharingRole.OWNER) {
@@ -149,7 +173,7 @@ class SharedBackupController<T>(
         }
         val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
             stored.envelope,
-            codec,
+            selectedCodec,
             currentIdentity,
             VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
         )
@@ -170,9 +194,10 @@ class SharedBackupController<T>(
         val stored = readDatasetById(datasetId)
         val record = requiredRegistry(datasetId)
         verifyHead(stored, record)
+        val selectedCodec = codecFor(datasetId)
         val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
             stored.envelope,
-            codec,
+            selectedCodec,
             identity(),
             VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
         )
@@ -185,9 +210,10 @@ class SharedBackupController<T>(
         val record = requiredRegistry(datasetId)
         val forked = verifyHead(stored, record, allowFork = true)
         val currentIdentity = identity()
+        val selectedCodec = codecFor(datasetId)
         val remoteValue = SharingCrypto.decryptSharedBackupEnvelopeV1(
             stored.envelope,
-            codec,
+            selectedCodec,
             currentIdentity,
             VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
         )
@@ -208,14 +234,14 @@ class SharedBackupController<T>(
                 )
             }
         }
-        val merged = codec.merge(localValue, remoteValue)
-        if (codec.fingerprint(merged) == codec.fingerprint(remoteValue)) {
+        val merged = selectedCodec.merge(localValue, remoteValue)
+        if (selectedCodec.fingerprint(merged) == selectedCodec.fingerprint(remoteValue)) {
             persistHead(stored, record.trustedOwnerKeyId, record)
             return@serialized result(stored, merged, "unchanged")
         }
         val next = SharingCrypto.createSharedBackupEnvelopeV1(
             value = merged,
-            codec = codec,
+            codec = selectedCodec,
             identity = currentIdentity,
             input = CreateSharedBackupEnvelopeInput(
                 appId = appId,
@@ -418,11 +444,12 @@ class SharedBackupController<T>(
         accepted.map { grant ->
             try {
                 val stored = readDatasetById(grant.datasetId)
+                val selectedCodec = codecFor(grant.datasetId)
                 val record = registry.get(grant.datasetId) ?: initialOwnerRecord(stored)
                 verifyHead(stored, record)
                 val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
                     stored.envelope,
-                    codec,
+                    selectedCodec,
                     currentIdentity,
                     VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
                 )
@@ -431,7 +458,7 @@ class SharedBackupController<T>(
                     grant.participant
                 val next = SharingCrypto.createSharedBackupEnvelopeV1(
                     value = value,
-                    codec = codec,
+                    codec = selectedCodec,
                     identity = currentIdentity,
                     input = CreateSharedBackupEnvelopeInput(
                         appId = appId,
@@ -763,6 +790,7 @@ class SharedBackupController<T>(
         val record = requiredRegistry(datasetId)
         verifyHead(stored, record)
         val currentIdentity = identity()
+        val selectedCodec = codecFor(datasetId)
         val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
         if (actor == null || !canAdministerSharedBackup(actor.role)) {
             throw SyncKitError(
@@ -772,7 +800,7 @@ class SharedBackupController<T>(
         }
         val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
             stored.envelope,
-            codec,
+            selectedCodec,
             currentIdentity,
             VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
         )
@@ -805,7 +833,7 @@ class SharedBackupController<T>(
         }
         val next = SharingCrypto.createSharedBackupEnvelopeV1(
             value = value,
-            codec = codec,
+            codec = selectedCodec,
             identity = currentIdentity,
             input = CreateSharedBackupEnvelopeInput(
                 appId = appId,
@@ -839,6 +867,7 @@ class SharedBackupController<T>(
         val record = requiredRegistry(datasetId)
         verifyHead(stored, record)
         val currentIdentity = identity()
+        val selectedCodec = codecFor(datasetId)
         val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
         if (actor == null || !canAdministerSharedBackup(actor.role)) {
             throw SyncKitError(
@@ -849,7 +878,7 @@ class SharedBackupController<T>(
         val participant = sharedBackupParticipant(stored.envelope, keyId)
         val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
             stored.envelope,
-            codec,
+            selectedCodec,
             currentIdentity,
             VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
         )
@@ -887,7 +916,7 @@ class SharedBackupController<T>(
         }
         val next = SharingCrypto.createSharedBackupEnvelopeV1(
             value = value,
-            codec = codec,
+            codec = selectedCodec,
             identity = currentIdentity,
             input = CreateSharedBackupEnvelopeInput(
                 appId = appId,
@@ -1019,6 +1048,10 @@ class SharedBackupController<T>(
 
     private suspend fun <R> serialized(block: suspend () -> R): R =
         mutex.withLock { block() }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun codecFor(datasetId: String): SharedBackupControllerCodec<T> =
+        (codecForDataset?.invoke(datasetId) ?: codec) as SharedBackupControllerCodec<T>
 
     private fun participantInputs(envelope: SharedBackupEnvelopeV1): List<SharedBackupParticipantInput> =
         sharedBackupParticipants(envelope).map { participant ->
