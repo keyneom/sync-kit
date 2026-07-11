@@ -60,7 +60,7 @@ object ProtectedSharingIdentityCrypto {
         wrappingKey: ByteArray,
         identity: SharingIdentity? = null,
         nonce: ByteArray = randomBytes(12),
-        credentialPublicKey: JsonObject? = null,
+        credentialPublicKey: JsonObject? = metadata.credentialPublicKey,
     ): ProtectedSharingIdentityResult {
         require(appId.isNotBlank()) { "appId must not be empty." }
         require(nonce.size == 12) { "AES-GCM nonce must be 12 bytes." }
@@ -178,6 +178,48 @@ object ProtectedSharingIdentityCrypto {
             )
         }
         return record
+    }
+
+    /** Credential material required to create an account-binding assertion. */
+    fun accountBindingCredential(record: ProtectedSharingIdentityV1): SharingAccountBindingCredential {
+        val parsed = parse(record)
+        val publicKey = parsed.credentialPublicKey ?: throw SyncKitError(
+            SyncKitErrorCode.STATE,
+            "This protected sharing identity predates credential public-key persistence and must be migrated.",
+        )
+        return SharingAccountBindingCredential(parsed.credentialId, publicKey)
+    }
+
+    /**
+     * Rewraps the exact existing sharing identity under a replacement passkey.
+     * Callers must persist the returned record atomically; the original record
+     * remains usable until that save succeeds.
+     */
+    fun rewrapWithReplacementCredential(
+        record: ProtectedSharingIdentityV1,
+        oldWrappingKey: ByteArray,
+        replacementMetadata: V1KeyMetadata,
+        replacementWrappingKey: ByteArray,
+    ): ProtectedSharingIdentityResult {
+        val publicKey = replacementMetadata.credentialPublicKey ?: throw SyncKitError(
+            SyncKitErrorCode.STATE,
+            "The replacement passkey registration did not expose its ES256 public key.",
+        )
+        val identity = unlock(parse(record), oldWrappingKey)
+        val replacement = create(
+            appId = record.appId,
+            metadata = replacementMetadata,
+            wrappingKey = replacementWrappingKey,
+            identity = identity,
+            credentialPublicKey = publicKey,
+        )
+        if (replacement.identity.publicKey.keyId != record.publicKey.keyId) {
+            throw SyncKitError(
+                SyncKitErrorCode.CRYPTO,
+                "Credential migration changed the protected sharing identity.",
+            )
+        }
+        return replacement
     }
 
     private fun importIdentity(

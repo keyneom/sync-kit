@@ -30,10 +30,11 @@ import kotlinx.serialization.json.put
  * Caches only the derived content key in process memory and coalesces
  * concurrent unlocks for the same envelope identity (matching the web provider).
  */
-open class AndroidPasskeyKeyProvider<T>(
+open class AndroidPasskeyKeyProvider<T> @JvmOverloads constructor(
     private val profile: V1CompatibilityProfile,
     private val rpId: String,
     private val envelopeCrypto: V1EnvelopeCrypto<T>,
+    private val registrationOrigins: Set<String> = emptySet(),
 ) : KeyProvider {
     private var cachedIdentity: String? = null
     private var cachedKey: ByteArray? = null
@@ -42,7 +43,8 @@ open class AndroidPasskeyKeyProvider<T>(
     override suspend fun create(activity: Activity, appId: String): CreatedKey {
         val prfInput = envelopeCrypto.randomBytes(profile.prfInputBytes)
         val kdfSalt = envelopeCrypto.randomBytes(profile.kdfSaltBytes)
-        val request = createRequest(prfInput)
+        val challenge = Base64Url.encode(envelopeCrypto.randomBytes(32))
+        val request = createRequest(prfInput, challenge)
         val response = CredentialManager.create(activity).createCredential(
             context = activity,
             request = CreatePublicKeyCredentialRequest(request.toString()),
@@ -60,7 +62,23 @@ open class AndroidPasskeyKeyProvider<T>(
         val secret = prfResultFromResponse(parsed)
             ?: unlockPrf(activity, credentialId, Base64Url.encode(prfInput))
         return try {
-            val metadata = V1KeyMetadata(credentialId, rpId, prfInput, kdfSalt)
+            val credentialPublicKey = if (registrationOrigins.isEmpty()) {
+                null
+            } else {
+                extractEs256CredentialPublicKey(
+                    response.registrationResponseJson,
+                    challenge,
+                    rpId,
+                    registrationOrigins,
+                )
+            }
+            val metadata = V1KeyMetadata(
+                credentialId,
+                rpId,
+                prfInput,
+                kdfSalt,
+                credentialPublicKey,
+            )
             val key = envelopeCrypto.deriveContentKey(secret, kdfSalt)
             try {
                 remember(metadata, key)
@@ -210,7 +228,7 @@ open class AndroidPasskeyKeyProvider<T>(
             )
     }
 
-    private fun createRequest(prfInput: ByteArray): JsonObject = buildJsonObject {
+    private fun createRequest(prfInput: ByteArray, challenge: String): JsonObject = buildJsonObject {
         put("rp", buildJsonObject {
             put("id", rpId)
             put("name", profile.passkey.rpName)
@@ -220,7 +238,7 @@ open class AndroidPasskeyKeyProvider<T>(
             put("name", profile.passkey.userName)
             put("displayName", profile.passkey.userDisplayName)
         })
-        put("challenge", Base64Url.encode(envelopeCrypto.randomBytes(32)))
+        put("challenge", challenge)
         put("pubKeyCredParams", buildJsonArray {
             add(buildJsonObject {
                 put("type", "public-key")

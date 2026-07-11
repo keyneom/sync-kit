@@ -1,5 +1,7 @@
 package com.keyneom.synckit.crypto
 
+import kotlinx.serialization.json.JsonObject
+
 const val V1_ALGORITHM = "AES-256-GCM+HKDF-SHA-256"
 
 enum class V1Compression {
@@ -46,11 +48,12 @@ data class V1CompatibilityProfile(
     }
 }
 
-data class V1KeyMetadata(
+data class V1KeyMetadata @JvmOverloads constructor(
     val credentialId: String,
     val rpId: String,
     val prfInput: ByteArray,
     val kdfSalt: ByteArray,
+    val credentialPublicKey: JsonObject? = null,
 ) {
     fun identity(): String =
         "$rpId\n$credentialId\n${Base64Url.encode(kdfSalt)}\n${Base64Url.encode(prfInput)}"

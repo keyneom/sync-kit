@@ -241,6 +241,18 @@ Validated on 2026-07-11 for Android control-dataset parity:
 - [x] Add opt-in `IndexedDbAuthorizationCache`, `bindSharingPoll`, and SW
       integration guidance.
 - [x] Add Kotlin sharing fixture verification and Android sharing port (S7).
+- [x] Add first-class Kotlin sharing account-binding creation and verification,
+      strict registration COSE/JWK extraction, exact Android APK origins,
+      bounded JWKS caching/rotation, controller-hook coverage, and
+      identity-preserving replacement-credential migration primitives.
+- [x] Match the canonical account-binding challenge in TypeScript and Kotlin
+      and test Google/WebAuthn signatures without live endpoints.
+- [ ] Validate Credential Manager registration/assertion on a real API 28+
+      Android device with Digital Asset Links and release/debug origin policy.
+- [ ] Wire EasyBC Android Google ID-token acquisition with the server/web OAuth
+      client ID, migrate existing protected identities without public keys, and
+      enable required account binding only after a real two-account web↔Android
+      exchange succeeds.
 - [x] Add an encrypted, signed control dataset for Picker enrollment,
       participant provenance, and hard-cutover migration acknowledgements.
 - [x] Let one invitation accept a protocol-owned control codec beside

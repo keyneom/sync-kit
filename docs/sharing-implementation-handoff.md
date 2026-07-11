@@ -105,8 +105,8 @@ folder. Treat that as a detectable availability limitation.
 Do not derive an asymmetric sharing key directly from passkey PRF bytes.
 Generate a sharing ECDH/signing identity and certify the binding:
 
-1. Hash the app ID, exchange ID, Google `sub`, passkey credential ID, and
-   sharing public keys.
+1. Hash the app ID, exchange ID, sharing-key ID (which fingerprints the sharing
+   public keys), and passkey credential ID.
 2. Use that hash as the WebAuthn assertion challenge.
 3. Bind the same hash into a verified Google ID-token nonce.
 4. Verify WebAuthn RP ID, origin, challenge, credential signature, Google JWT
@@ -127,6 +127,12 @@ through optional controller hooks. Required-mode acceptance rejects a missing
 binding or verifier. The verified response artifact is deleted before dataset
 updates so its raw Google ID token is not retained. Live browser validation
 against Google remains required before claiming the flow production-ready.
+
+The assertion proves control of the presented passkey, Google account, and
+sharing key in the same exchange. A recipient's credential public key is
+self-presented during first contact; it is not a pre-existing remote trust
+anchor. Consumers that need continuity across later exchanges must pin the
+verified Google `sub`, credential, or both as explicit application policy.
 
 ## Authoritative keys and dataset writes
 

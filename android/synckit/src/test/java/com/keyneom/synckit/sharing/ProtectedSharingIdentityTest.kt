@@ -5,6 +5,8 @@ import com.keyneom.synckit.crypto.SyncKitJson
 import com.keyneom.synckit.crypto.V1KeyMetadata
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -69,6 +71,74 @@ class ProtectedSharingIdentityTest {
             ProtectedSharingIdentityCrypto.unlock(wrapped.record, wrongKey)
         }
         assertTrue("Expected unlock with the wrong key to fail", failed.isFailure)
+    }
+
+    @Test
+    fun replacementCredentialPreservesSharingKeyId() {
+        val oldKey = ByteArray(32) { it.toByte() }
+        val oldMetadata = V1KeyMetadata(
+            "old-credential",
+            "example.test",
+            ByteArray(32) { 1 },
+            ByteArray(32) { 2 },
+        )
+        val original = ProtectedSharingIdentityCrypto.create("fixture-app", oldMetadata, oldKey)
+        val credentialJwk = buildJsonObject {
+            put("kty", "EC")
+            put("crv", "P-256")
+            put("x", Base64Url.encode(ByteArray(32) { 3 }))
+            put("y", Base64Url.encode(ByteArray(32) { 4 }))
+        }
+        val replacementKey = ByteArray(32) { (it + 7).toByte() }
+        val replacementMetadata = V1KeyMetadata(
+            "replacement-credential",
+            "example.test",
+            ByteArray(32) { 5 },
+            ByteArray(32) { 6 },
+            credentialJwk,
+        )
+
+        val replacement = ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential(
+            original.record,
+            oldKey,
+            replacementMetadata,
+            replacementKey,
+        )
+
+        assertEquals(original.record.publicKey.keyId, replacement.record.publicKey.keyId)
+        assertEquals("replacement-credential", replacement.record.credentialId)
+        assertEquals(credentialJwk, ProtectedSharingIdentityCrypto.accountBindingCredential(replacement.record).credentialPublicKey)
+        assertEquals(
+            original.record.publicKey.keyId,
+            ProtectedSharingIdentityCrypto.unlock(replacement.record, replacementKey).publicKey.keyId,
+        )
+        assertEquals(
+            original.record.publicKey.keyId,
+            ProtectedSharingIdentityCrypto.unlock(original.record, oldKey).publicKey.keyId,
+        )
+    }
+
+    @Test
+    fun failedReplacementLeavesOriginalIdentityUsable() {
+        val oldKey = ByteArray(32) { it.toByte() }
+        val original = ProtectedSharingIdentityCrypto.create(
+            "fixture-app",
+            V1KeyMetadata("old", "example.test", ByteArray(32) { 1 }, ByteArray(32) { 2 }),
+            oldKey,
+        )
+        val failed = runCatching {
+            ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential(
+                original.record,
+                oldKey,
+                V1KeyMetadata("new", "example.test", ByteArray(32) { 3 }, ByteArray(32) { 4 }),
+                ByteArray(32) { 5 },
+            )
+        }
+        assertTrue(failed.isFailure)
+        assertEquals(
+            original.record.publicKey.keyId,
+            ProtectedSharingIdentityCrypto.unlock(original.record, oldKey).publicKey.keyId,
+        )
     }
 
     /** Proves both imported private keys correspond to the record's public keys. */

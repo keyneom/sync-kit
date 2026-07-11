@@ -8,8 +8,89 @@ import type {
 } from "./index.js";
 
 const GOOGLE_CERTS = "https://www.googleapis.com/oauth2/v3/certs";
+const DEFAULT_JWKS_TTL_MS = 5 * 60_000;
+const MAX_JWKS_TTL_MS = 24 * 60 * 60_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+type GoogleJwk = JsonWebKey & { kid?: string };
+
+export class GoogleJwksCache {
+  private keys: GoogleJwk[] | undefined;
+  private expiresAt = 0;
+  private pending: Promise<GoogleJwk[]> | undefined;
+
+  async key(
+    kid: string,
+    fetchImplementation: typeof fetch,
+    now: () => number = Date.now,
+  ): Promise<GoogleJwk | undefined> {
+    let keys = await this.load(fetchImplementation, now, false);
+    let key = keys.find((candidate) => candidate.kid === kid);
+    if (!key) {
+      keys = await this.load(fetchImplementation, now, true);
+      key = keys.find((candidate) => candidate.kid === kid);
+    }
+    return key;
+  }
+
+  clear(): void {
+    this.keys = undefined;
+    this.expiresAt = 0;
+    this.pending = undefined;
+  }
+
+  private async load(
+    fetchImplementation: typeof fetch,
+    now: () => number,
+    forceRefresh: boolean,
+  ): Promise<GoogleJwk[]> {
+    const current = now();
+    if (!forceRefresh && this.keys && current < this.expiresAt) {
+      return this.keys;
+    }
+    if (!forceRefresh && this.pending) return this.pending;
+    const request = this.fetchKeys(fetchImplementation, current);
+    if (!forceRefresh) this.pending = request;
+    try {
+      return await request;
+    } finally {
+      if (this.pending === request) this.pending = undefined;
+    }
+  }
+
+  private async fetchKeys(
+    fetchImplementation: typeof fetch,
+    now: number,
+  ): Promise<GoogleJwk[]> {
+    const response = await fetchImplementation(GOOGLE_CERTS);
+    if (!response.ok) {
+      throw new SyncKitError(
+        "provider",
+        `Google signing keys could not be loaded (${response.status}).`,
+        { status: response.status },
+      );
+    }
+    const keySet = (await response.json()) as { keys?: GoogleJwk[] };
+    if (!Array.isArray(keySet.keys)) {
+      throw new SyncKitError(
+        "compatibility",
+        "The Google signing-key response is malformed.",
+      );
+    }
+    const maxAge = response.headers
+      .get("cache-control")
+      ?.match(/(?:^|,)\s*max-age=(\d+)/i)?.[1];
+    const requestedTtl = maxAge
+      ? Number.parseInt(maxAge, 10) * 1_000
+      : DEFAULT_JWKS_TTL_MS;
+    this.keys = keySet.keys;
+    this.expiresAt = now + Math.min(requestedTtl, MAX_JWKS_TTL_MS);
+    return this.keys;
+  }
+}
+
+const defaultJwksCaches = new WeakMap<typeof fetch, GoogleJwksCache>();
 
 export type SharingAccountBindingContext = {
   appId: string;
@@ -108,8 +189,10 @@ export async function verifySharingAccountBindingV1(
     allowedOrigins: string[];
     requireUserVerification?: boolean;
     fetch?: typeof fetch;
+    jwksCache?: GoogleJwksCache;
     crypto?: Crypto;
     now?: () => number;
+    clockSkewSeconds?: number;
   },
 ): Promise<VerifiedGoogleAccount> {
   const cryptoImplementation = options.crypto ?? globalThis.crypto;
@@ -137,8 +220,12 @@ export async function verifySharingAccountBindingV1(
     audience: options.googleAudience,
     nonce: expectedChallenge,
     ...(options.fetch ? { fetch: options.fetch } : {}),
+    ...(options.jwksCache ? { jwksCache: options.jwksCache } : {}),
     crypto: cryptoImplementation,
     ...(options.now ? { now: options.now } : {}),
+    ...(options.clockSkewSeconds !== undefined
+      ? { clockSkewSeconds: options.clockSkewSeconds }
+      : {}),
   });
 }
 
@@ -294,6 +381,7 @@ export async function verifyPasskeyAssertion(
   if (
     publicKey.kty !== "EC" ||
     publicKey.crv !== "P-256" ||
+    (publicKey.alg !== undefined && publicKey.alg !== "ES256") ||
     !publicKey.x ||
     !publicKey.y
   ) {
@@ -336,8 +424,10 @@ export async function verifyGoogleIdToken(
     audience: string;
     nonce: string;
     fetch?: typeof fetch;
+    jwksCache?: GoogleJwksCache;
     crypto?: Crypto;
     now?: () => number;
+    clockSkewSeconds?: number;
   },
 ): Promise<VerifiedGoogleAccount> {
   const cryptoImplementation = options.crypto ?? globalThis.crypto;
@@ -374,22 +464,30 @@ export async function verifyGoogleIdToken(
       "Fetch is required to verify Google identity tokens.",
     );
   }
-  const response = await fetchImplementation(GOOGLE_CERTS);
-  if (!response.ok) {
-    throw new SyncKitError(
-      "provider",
-      `Google signing keys could not be loaded (${response.status}).`,
-      { status: response.status },
-    );
+  let cache = options.jwksCache ?? defaultJwksCaches.get(fetchImplementation);
+  if (!cache) {
+    cache = new GoogleJwksCache();
+    defaultJwksCaches.set(fetchImplementation, cache);
   }
-  const keySet = (await response.json()) as {
-    keys?: (JsonWebKey & { kid?: string })[];
-  };
-  const jwk = keySet.keys?.find((key) => key.kid === header.kid);
+  const jwk = await cache.key(
+    header.kid,
+    fetchImplementation,
+    options.now ?? Date.now,
+  );
   if (!jwk) {
     throw new SyncKitError(
       "authorization",
       "The Google ID token signing key is unknown.",
+    );
+  }
+  if (
+    jwk.kty !== "RSA" ||
+    (jwk.alg !== undefined && jwk.alg !== "RS256") ||
+    (jwk.use !== undefined && jwk.use !== "sig")
+  ) {
+    throw new SyncKitError(
+      "compatibility",
+      "The Google signing key is not an RS256 verification key.",
     );
   }
   const key = await cryptoImplementation.subtle.importKey(
@@ -412,6 +510,13 @@ export async function verifyGoogleIdToken(
     );
   }
   const nowSeconds = Math.floor((options.now?.() ?? Date.now()) / 1_000);
+  const clockSkewSeconds = options.clockSkewSeconds ?? 60;
+  if (!Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
+    throw new SyncKitError(
+      "configuration",
+      "clockSkewSeconds must be a non-negative number.",
+    );
+  }
   const audiences = Array.isArray(claims.aud)
     ? claims.aud
     : [claims.aud];
@@ -420,7 +525,11 @@ export async function verifyGoogleIdToken(
       claims.iss !== "accounts.google.com") ||
     !audiences.includes(options.audience) ||
     typeof claims.exp !== "number" ||
-    claims.exp <= nowSeconds ||
+    claims.exp <= nowSeconds - clockSkewSeconds ||
+    typeof claims.iat !== "number" ||
+    claims.iat > nowSeconds + clockSkewSeconds ||
+    (audiences.length > 1 && claims.azp !== options.audience) ||
+    (claims.azp !== undefined && claims.azp !== options.audience) ||
     claims.nonce !== options.nonce ||
     typeof claims.sub !== "string" ||
     !claims.sub

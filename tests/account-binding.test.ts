@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFile } from "node:fs/promises";
+import type { SharingAccountBindingV1 } from "../src/sharing/index.js";
 import { bytesToBase64Url } from "../src/crypto/base64url.js";
 import {
   createSharingAccountBindingChallenge,
   createSharingAccountBindingV1,
+  GoogleJwksCache,
+  verifyGoogleIdToken,
+  verifyPasskeyAssertion,
   verifySharingAccountBindingV1,
 } from "../src/sharing/account-binding.js";
 
@@ -83,6 +88,7 @@ describe("backendless Google/passkey account binding", () => {
       email: "recipient@example.com",
       email_verified: true,
       nonce: challenge,
+      iat: 1_899_999_900,
       exp: 2_000_000_000,
     });
     const googleSignature = new Uint8Array(
@@ -126,7 +132,220 @@ describe("backendless Google/passkey account binding", () => {
       email: "recipient@example.com",
     });
   });
+
+  it("matches the Kotlin golden challenge", async () => {
+    await expect(
+      createSharingAccountBindingChallenge({
+        appId: "fixture-app",
+        exchangeId: "exchange-1",
+        sharingKeyId: bytesToBase64Url(new Uint8Array(32).fill(9)),
+        credentialId: "Y3JlZGVudGlhbC0x",
+      }),
+    ).resolves.toBe("F0Pvn8fvoDOa12henhD0jhdyLzQdMdOcEdrjSwu7-lU");
+  });
+
+  it("verifies the shared TS-Kotlin golden binding", async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL("../fixtures/sharing-v1/account-binding.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      context: Parameters<typeof verifySharingAccountBindingV1>[1];
+      verification: {
+        googleAudience: string;
+        rpId: string;
+        allowedOrigins: string[];
+        nowMillis: number;
+      };
+      jwks: { keys: JsonWebKey[] };
+      binding: SharingAccountBindingV1;
+    };
+    await expect(
+      verifySharingAccountBindingV1(fixture.binding, fixture.context, {
+        googleAudience: fixture.verification.googleAudience,
+        rpId: fixture.verification.rpId,
+        allowedOrigins: fixture.verification.allowedOrigins,
+        fetch: vi.fn().mockResolvedValue(Response.json(fixture.jwks)),
+        jwksCache: new GoogleJwksCache(),
+        now: () => fixture.verification.nowMillis,
+      }),
+    ).resolves.toMatchObject({ subject: "google-subject" });
+  });
+
+  it("rejects altered exchange context and WebAuthn policy failures", async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL("../fixtures/sharing-v1/account-binding.json", import.meta.url),
+        "utf8",
+      ),
+    ) as {
+      context: Parameters<typeof verifySharingAccountBindingV1>[1];
+      binding: SharingAccountBindingV1;
+    };
+    for (const field of ["appId", "exchangeId", "sharingKeyId", "credentialId"] as const) {
+      await expect(
+        verifySharingAccountBindingV1(
+          fixture.binding,
+          { ...fixture.context, [field]: `${fixture.context[field]}-altered` },
+          {
+            googleAudience: "google-client-id",
+            rpId: "example.test",
+            allowedOrigins: ["android:apk-key-hash:fixture-release"],
+            fetch: vi.fn(),
+          },
+        ),
+      ).rejects.toMatchObject({ code: "authorization" });
+    }
+    await expect(
+      verifyPasskeyAssertion(fixture.binding.passkey, {
+        challenge: fixture.binding.challenge,
+        rpId: "other.test",
+        allowedOrigins: ["android:apk-key-hash:fixture-release"],
+      }),
+    ).rejects.toMatchObject({ code: "authorization" });
+    await expect(
+      verifyPasskeyAssertion(fixture.binding.passkey, {
+        challenge: fixture.binding.challenge,
+        rpId: "example.test",
+        allowedOrigins: ["android:apk-key-hash:debug"],
+      }),
+    ).rejects.toMatchObject({ code: "authorization" });
+    const missingUv = structuredClone(fixture.binding.passkey);
+    const authData = Buffer.from(missingUv.authenticatorData, "base64url");
+    authData[32] = 0x01;
+    missingUv.authenticatorData = authData.toString("base64url");
+    await expect(
+      verifyPasskeyAssertion(missingUv, {
+        challenge: fixture.binding.challenge,
+        rpId: "example.test",
+        allowedOrigins: ["android:apk-key-hash:fixture-release"],
+      }),
+    ).rejects.toThrow("lacks user verification");
+    const invalidSignature = structuredClone(fixture.binding.passkey);
+    invalidSignature.signature = "MAQCAQECAQE";
+    await expect(
+      verifyPasskeyAssertion(invalidSignature, {
+        challenge: fixture.binding.challenge,
+        rpId: "example.test",
+        allowedOrigins: ["android:apk-key-hash:fixture-release"],
+      }),
+    ).rejects.toMatchObject({ code: "compatibility" });
+  });
+
+  it("caches JWKS and refreshes once for an unknown kid", async () => {
+    const { token, jwk } = await googleToken({ kid: "rotated-key" });
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json(
+          { keys: [] },
+          { headers: { "cache-control": "public, max-age=3600" } },
+        ),
+      )
+      .mockResolvedValue(
+        Response.json(
+          { keys: [jwk] },
+          { headers: { "cache-control": "public, max-age=3600" } },
+        ),
+      );
+    const cache = new GoogleJwksCache();
+
+    await expect(
+      verifyGoogleIdToken(token, {
+        audience: "google-client-id",
+        nonce: "nonce-1",
+        fetch,
+        jwksCache: cache,
+        now: () => 1_900_000_000_000,
+      }),
+    ).resolves.toMatchObject({ subject: "google-subject" });
+    await verifyGoogleIdToken(token, {
+      audience: "google-client-id",
+      nonce: "nonce-1",
+      fetch,
+      jwksCache: cache,
+      now: () => 1_900_000_000_000,
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a multi-audience token without matching azp", async () => {
+    const { token, jwk } = await googleToken({
+      kid: "fixture-key",
+      aud: ["google-client-id", "another-client"],
+    });
+    await expect(
+      verifyGoogleIdToken(token, {
+        audience: "google-client-id",
+        nonce: "nonce-1",
+        fetch: vi.fn().mockResolvedValue(Response.json({ keys: [jwk] })),
+        jwksCache: new GoogleJwksCache(),
+        now: () => 1_900_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: "authorization" });
+  });
+
+  it.each([
+    ["issuer", { iss: "https://attacker.example" }],
+    ["audience", { aud: "wrong-client" }],
+    ["nonce", { nonce: "wrong-nonce" }],
+    ["expiration", { exp: 1_800_000_000 }],
+  ])("rejects a Google token with the wrong %s", async (_label, claims) => {
+    const { token, jwk } = await googleToken({ kid: "fixture-key", claims });
+    await expect(
+      verifyGoogleIdToken(token, {
+        audience: "google-client-id",
+        nonce: "nonce-1",
+        fetch: vi.fn().mockResolvedValue(Response.json({ keys: [jwk] })),
+        jwksCache: new GoogleJwksCache(),
+        now: () => 1_900_000_000_000,
+      }),
+    ).rejects.toMatchObject({ code: "authorization" });
+  });
 });
+
+async function googleToken(options: {
+  kid: string;
+  aud?: string | string[];
+  claims?: Record<string, unknown>;
+}): Promise<{ token: string; jwk: JsonWebKey & { kid: string } }> {
+  const keys = await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: Uint8Array.of(1, 0, 1),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  );
+  const jwk = {
+    ...(await crypto.subtle.exportKey("jwk", keys.publicKey)),
+    kid: options.kid,
+  };
+  const header = encodeJwt({ alg: "RS256", kid: options.kid });
+  const payload = encodeJwt({
+    iss: "https://accounts.google.com",
+    aud: options.aud ?? "google-client-id",
+    sub: "google-subject",
+    nonce: "nonce-1",
+    iat: 1_899_999_900,
+    exp: 2_000_000_000,
+    ...options.claims,
+  });
+  const signature = new Uint8Array(
+    await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      keys.privateKey,
+      encoder.encode(`${header}.${payload}`),
+    ),
+  );
+  return {
+    token: `${header}.${payload}.${bytesToBase64Url(signature)}`,
+    jwk,
+  };
+}
 
 function encodeJwt(value: unknown): string {
   return bytesToBase64Url(encoder.encode(JSON.stringify(value)));

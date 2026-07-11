@@ -1,0 +1,47 @@
+{
+  "context": {
+    "appId": "fixture-app",
+    "exchangeId": "exchange-1",
+    "sharingKeyId": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+    "credentialId": "Y3JlZGVudGlhbC0x"
+  },
+  "verification": {
+    "googleAudience": "google-client-id",
+    "rpId": "example.test",
+    "allowedOrigins": ["android:apk-key-hash:fixture-release"],
+    "nowMillis": 1900000000000
+  },
+  "jwks": {
+    "keys": [
+      {
+        "key_ops": ["verify"],
+        "ext": true,
+        "alg": "RS256",
+        "kty": "RSA",
+        "n": "y4GaahC4WcqZ9tqZMrSRZJR9J8_DU3VrJJRTB3pZBKsz9FPtHoRwqzN2RxUsE7Y_VIwXEf-IA2FrZqh6Ap5QPXOPVb06dGJ3kj8OA6j7pOp3ltfefXhC5ObdwMpxDuZyjy24Dqt91Guv63iwWtOZmgjz-iGylJ0eCkz-eG-mzrQGKKXgXazUuyv7R1e1HSJr7AtUFfZ1M_GC-4yLNfkfgVgSBnOYT6qN5z5c81QH29treKtqmt8XPHjFVdKfe--roopJWdeFCAeP6S6nVDu7hfmrgFjhjKI1KaTM7pTu2QVhKx1MNgsFO3YDXCBwm-UcEYZGh8s0740uVEsnz7QfcQ",
+        "e": "AQAB",
+        "kid": "fixture-google-key"
+      }
+    ]
+  },
+  "binding": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-sharing-account-binding",
+    "challenge": "F0Pvn8fvoDOa12henhD0jhdyLzQdMdOcEdrjSwu7-lU",
+    "googleIdToken": "eyJhbGciOiJSUzI1NiIsImtpZCI6ImZpeHR1cmUtZ29vZ2xlLWtleSJ9.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJhdWQiOiJnb29nbGUtY2xpZW50LWlkIiwic3ViIjoiZ29vZ2xlLXN1YmplY3QiLCJlbWFpbCI6InJlY2lwaWVudEBleGFtcGxlLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJub25jZSI6IkYwUHZuOGZ2b0RPYTEyaGVuaEQwamhkeUx6UWRNZE9jRWRyalN3dTctbFUiLCJpYXQiOjE4OTk5OTk5MDAsImV4cCI6MjAwMDAwMDAwMH0.Vm4aG6KnLc8FX9vjeD61w898Jq4zOVaK6ZQcuKrZoI0eRbYq3h6lD5vz-bDhJxXct8Clu6R0K1YavixMbX9ELuho-LAYaLTJLOnqUQKRk1pkF6hpzEaY1oBDippBzwR4zDYnD6hXg5BQy2nv16rL9JIeEymj2YEeuZQmVpLVDj4-tFoF9YDPVjgmMY7EbJNRMQUMrdQUghS2nnZyfaHgN4o_XNYyQeRUgcg_9pPm3ecYgKdTRQRgu6eyRoKfwvl9ZwU6p49o9iRGqwIQsNv-mB7WBcQkt858kJROcn_wpkiMOXL_Td46QwMoYnxX9dK2uhSTxfo3u1PDFw6DWZRUAA",
+    "passkey": {
+      "credentialId": "Y3JlZGVudGlhbC0x",
+      "credentialPublicKey": {
+        "key_ops": ["verify"],
+        "ext": true,
+        "kty": "EC",
+        "x": "riHfgpSHe2zYWqYy_IARMJ7_BNVL8m2ucXrh-bhRask",
+        "y": "CY9u1q5UuNDxh3CAQxQBNAvv5dEAJ76n2X1lAZhgttM",
+        "crv": "P-256"
+      },
+      "authenticatorData": "myY_vLWJhTE3sz3cr6W8xUA0ZOrU2nZtD4GTSL-NRywFAAAAAA",
+      "clientDataJSON": "eyJ0eXBlIjoid2ViYXV0aG4uZ2V0IiwiY2hhbGxlbmdlIjoiRjBQdm44ZnZvRE9hMTJoZW5oRDBqaGR5THpRZE1kT2NFZHJqU3d1Ny1sVSIsIm9yaWdpbiI6ImFuZHJvaWQ6YXBrLWtleS1oYXNoOmZpeHR1cmUtcmVsZWFzZSJ9",
+      "signature": "MEQCIFPUe01-0qBijoNpn50aJJtpssoIlYGZGFByeVojRcaYAiAWYlTB3_fz3aXulz2eSDcasgylcu_Kitzl0gFj6wI-yA"
+    }
+  }
+}

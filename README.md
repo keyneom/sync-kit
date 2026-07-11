@@ -193,6 +193,10 @@ not.
   implemented on both npm and Android. Browser-only Picker UI remains an
   adapter concern; Android may hand off to a web Picker grant page because SAF
   grants do not authorize Drive API access.
+- Google/passkey sharing account bindings are implemented on both npm and
+  Android. Consumers own RP ID, exact web/APK origin allowlists, Google OAuth
+  audience, UI, and migration timing; real-device Credential Manager and live
+  two-account validation remain consumer release gates.
 - React Native and other JavaScript-native runtimes can inject a
   `CryptoBackend<K>` backed by platform crypto.
 - Tauri applications can use `/core`, `/crypto`, and the low-level Google Drive

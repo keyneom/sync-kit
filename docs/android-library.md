@@ -14,7 +14,7 @@ APIs allow.
 | --- | --- |
 | Group | `com.keyneom` |
 | Artifact | `sync-kit-android` |
-| Version | release tag (`0.2.0-rc.12`); npm publication is independent |
+| Version | release tag (`0.2.0-rc.13`); npm publication is independent |
 | Module | `android/synckit` |
 | Registry | [GitHub Packages](https://github.com/keyneom/sync-kit/packages) (`https://maven.pkg.github.com/keyneom/sync-kit`) |
 
@@ -53,7 +53,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.2.0-rc.12")
+implementation("com.keyneom:sync-kit-android:0.2.0-rc.13")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.
@@ -111,6 +111,8 @@ See [consumer-responsibilities.md](./consumer-responsibilities.md) and
 | `stores.GoogleDriveSharedBackupTransport` | app folder, exchanges, datasets |
 | `sharing.SharingChangeDetector` | metadata-only Tier A polling |
 | `sharing.work.SharingSyncWorker` | WorkManager skeleton (detect only) |
+| `sharing.SharingAccountBindings` | TS-compatible challenge, Credential Manager assertion, WebAuthn/JWT verification |
+| `sharing.CachingGoogleJwksProvider` | bounded Google JWKS cache with unknown-`kid` refresh |
 
 ### Application-owned
 
@@ -119,6 +121,37 @@ See [consumer-responsibilities.md](./consumer-responsibilities.md) and
 - OAuth refresh token storage (EncryptedSharedPreferences / AccountManager)
 - Folder picker / join deep-link intents
 - Profile switcher UI
+- RP ID, exact web/APK origin allowlist, Google server/web OAuth client ID,
+  and Google sign-in UI
+
+## Account binding
+
+Pass the consumer-owned RP/origin/audience policy into the library and wire
+the existing controller callbacks to `SharingAccountBindings.createBackendless`
+and `SharingAccountBindings.verify`. The Google acquisition callback must
+request an ID token for the server/web OAuth client ID and use the supplied
+challenge as its nonce; an Android-package OAuth client ID is not automatically
+the correct audience.
+
+Android Credential Manager assertions use an origin of the form
+`android:apk-key-hash:<unpadded-base64url-sha256-certificate>`. Build exact
+values with `androidApkKeyHashOrigin`, `androidApkKeyHashOriginFromSha256`, or
+`androidApkKeyHashOriginFromHexSha256`. Production configuration normally
+allows the production web origin and release signing certificate. Add a debug
+certificate origin only to development/test configuration. Matching is exact;
+wildcards, prefixes, package names, and substring matching are not supported.
+
+Configure `AndroidPasskeyKeyProvider(registrationOrigins = ...)` when creating
+protected sharing identities. It validates registration client data,
+authenticator flags, RP hash, credential ID, and the ES256/P-256 COSE key before
+persisting `credentialPublicKey`. Existing records without that field cannot
+recover it from a later assertion. Unlock the old record, register a replacement
+passkey, and call `ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential`;
+persist the returned record atomically only after the replacement registration
+succeeds. The sharing key ID is preserved.
+
+The library's general minimum remains API 26, but consumer passkey flows must
+gate Credential Manager passkey use to Android 9 / API 28 or newer.
 
 ## Background sync
 
@@ -142,6 +175,8 @@ Web Tier A is limited to ~one hour access-token lifetime; see
 
 - Private v1: `fixtures/v1/` + `npm run parity:check`
 - Sharing v1: `fixtures/sharing-v1/` + Kotlin unit tests + `npm run parity:sharing:check`
+- Account binding: shared golden challenge plus TS/Kotlin signature, JWKS,
+  COSE/JWK, origin, controller, and migration tests
 
 ## Tests
 
@@ -155,3 +190,8 @@ Cross-platform private snapshot parity:
 ```sh
 npm run parity:check
 ```
+
+Unit tests do not prove Android Credential Manager behavior. Before enabling
+`requireAccountBinding` in a consumer, validate registration and assertion on a
+real API 28+ device, including Digital Asset Links, release APK origin, Google
+nonce/audience behavior, and a real web-to-Android two-account exchange.

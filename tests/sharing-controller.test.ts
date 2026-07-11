@@ -6,6 +6,7 @@ import {
 } from "../src/sharing/controller.js";
 import type {
   SharedBackupEnvelopeV1,
+  SharingAccountBindingV1,
   SharingInvitationV1,
   SharingPublicKeyResponseV1,
   SharingRole,
@@ -94,6 +95,67 @@ describe("shared-backup controller", () => {
       value: { items: ["owner", "recipient"] },
       outcome: "updated",
     });
+  });
+
+  it("creates, requires, and verifies account binding during acceptance", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const binding: SharingAccountBindingV1 = {
+      schemaVersion: 1,
+      kind: "sync-kit-sharing-account-binding",
+      challenge: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      googleIdToken: "fixture.jwt.token",
+      passkey: {
+        credentialId: "Y3JlZGVudGlhbC0x",
+        credentialPublicKey: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+        authenticatorData: "AQ",
+        clientDataJSON: "AQ",
+        signature: "AQ",
+      },
+    };
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+      {
+        requireAccountBinding: true,
+        verifyAccountBinding: async (received, context) => {
+          expect(received).toEqual(binding);
+          expect(context).toMatchObject({
+            appId: "fixture-app",
+            sharingKeyId: recipient.publicKey.keyId,
+            credentialId: "Y3JlZGVudGlhbC0x",
+          });
+          return { subject: "google-subject" };
+        },
+      },
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+      { createAccountBinding: async () => binding },
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const submitted = await recipientController.submitKeyResponse(invited.invitationFileId);
+
+    await ownerController.acceptKeyResponse({
+      invitation: invited.invitation,
+      responseFileId: submitted.responseFileId,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    const participants = await ownerController.getDatasetParticipants("tasks");
+    expect(
+      participants.participants.find(
+        (participant) => participant.keyId === recipient.publicKey.keyId,
+      )?.accepted?.googleSubject,
+    ).toBe("google-subject");
   });
 
   it("completes a link-carried invite, response, and acceptance flow", async () => {
