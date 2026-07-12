@@ -67,6 +67,16 @@ interface SharedBackupTransport {
         SyncKitErrorCode.STATE,
         "This transport does not support deleting datasets.",
     )
+
+    /**
+     * Move a dataset file to the provider's trash instead of deleting it.
+     * The recovery-safe disposal used when a topology migration closes and
+     * retires its source file (docs/sharing-control-datasets.md).
+     */
+    suspend fun trashDataset(fileId: String): Unit = throw SyncKitError(
+        SyncKitErrorCode.STATE,
+        "This transport does not support trashing datasets.",
+    )
     suspend fun grantExchangeAccess(
         emailAddress: String,
         sendNotificationEmail: Boolean? = null,

@@ -190,6 +190,21 @@ class SharedBackupController<T>(
         registry.delete(datasetId)
     }
 
+    /**
+     * Move a dataset file to the provider's trash and forget its local
+     * record. The recovery-safe disposal for a topology migration's retired
+     * source file: the owner can still restore it during the provider's
+     * grace window, but it stops resolving as a live dataset
+     * (docs/sharing-control-datasets.md, hard-cutover step 5).
+     */
+    suspend fun trashDataset(datasetId: String): Unit = serialized {
+        requireNonEmpty(datasetId, "datasetId")
+        val fileId = registry.get(datasetId)?.fileId
+            ?: transport.listDatasets().find { it.datasetId == datasetId }?.fileId
+        if (fileId != null) transport.trashDataset(fileId)
+        registry.delete(datasetId)
+    }
+
     suspend fun loadDataset(datasetId: String): SharedDatasetResult<T> = serialized {
         val stored = readDatasetById(datasetId)
         val record = requiredRegistry(datasetId)
@@ -771,6 +786,92 @@ class SharedBackupController<T>(
      * Changes one accepted participant's encrypted role and keeps its direct
      * Drive file permission aligned with that role.
      */
+    /**
+     * Grant a dataset to a participant whose sharing public key this identity
+     * already holds — no invitation/response exchange. This is how a topology
+     * migration "shares each target with its intended recipients"
+     * (docs/sharing-control-datasets.md, hard-cutover step 2), and how an
+     * owner adds a dataset to someone who joined before that dataset existed:
+     * the content key is wrapped to the participant's existing public key and
+     * the file is per-email shared on the transport.
+     *
+     * Upsert semantics: re-running with the same participant updates their
+     * role instead of failing, so interrupted migrations can simply run the
+     * grant phase again.
+     */
+    suspend fun addDatasetParticipant(
+        datasetId: String,
+        publicKey: SharingPublicKeyV1,
+        role: SharingRole,
+        emailAddress: String,
+    ): SharedDatasetResult<T> = serialized {
+        requireNonEmpty(datasetId, "datasetId")
+        requireNonEmpty(publicKey.keyId, "participant keyId")
+        requireNonEmpty(emailAddress, "emailAddress")
+        if (role == SharingRole.OWNER) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Owner transfer is not supported by sharing v1.",
+            )
+        }
+        val stored = readDatasetById(datasetId)
+        val record = requiredRegistry(datasetId)
+        verifyHead(stored, record)
+        val currentIdentity = identity()
+        val selectedCodec = codecFor(datasetId)
+        val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+        if (actor == null || !canAdministerSharedBackup(actor.role)) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only a current owner or admin can grant dataset access.",
+            )
+        }
+        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            selectedCodec,
+            currentIdentity,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        val participants = participantInputs(stored.envelope)
+            .filter { it.publicKey.keyId != publicKey.keyId } +
+            SharedBackupParticipantInput(publicKey = publicKey, role = role)
+        val existingPermission = findDirectDatasetPermission(
+            fileId = stored.fileId,
+            permissionId = record.participantPermissionIds?.get(publicKey.keyId),
+            emailAddress = emailAddress,
+        )
+        val permission = transport.setDatasetPermission(
+            fileId = stored.fileId,
+            emailAddress = emailAddress,
+            role = role,
+            existingDirectPermissionId = existingPermission?.permissionId,
+            hasInheritedReadAccess = false,
+        )
+        val participantPermissionIds = record.participantPermissionIds.orEmpty().toMutableMap()
+        if (permission.permissionId != null) {
+            participantPermissionIds[publicKey.keyId] = permission.permissionId
+        }
+        val next = SharingCrypto.createSharedBackupEnvelopeV1(
+            value = value,
+            codec = selectedCodec,
+            identity = currentIdentity,
+            input = CreateSharedBackupEnvelopeInput(
+                appId = appId,
+                backupId = datasetId,
+                participants = participants,
+                previous = stored.envelope,
+            ),
+            options = cryptoOptions,
+        )
+        val updated = transport.writeDataset(stored, next)
+        persistHead(
+            updated,
+            record.trustedOwnerKeyId,
+            record.copy(participantPermissionIds = participantPermissionIds),
+        )
+        result(updated, value, "updated")
+    }
+
     suspend fun setDatasetRole(
         datasetId: String,
         keyId: String,

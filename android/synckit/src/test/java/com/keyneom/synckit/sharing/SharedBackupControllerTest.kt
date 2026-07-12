@@ -437,6 +437,105 @@ class SharedBackupControllerTest {
         assertEquals(null, registry.get("tasks"))
     }
 
+    @Test
+    fun trashDatasetMovesTheFileToTrashAndForgetsTheRecord() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val registry = MemorySharedBackupRegistry()
+        val ownerController = controller(owner, transport, registry)
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        ownerController.trashDataset("tasks")
+
+        assertEquals(emptyList<SharedDatasetFile>(), ownerController.listDatasets())
+        assertEquals(null, registry.get("tasks"))
+        assertEquals(setOf("dataset-tasks"), transport.trashed)
+    }
+
+    @Test
+    fun addDatasetParticipantGrantsAccessToKnownPublicKeyWithoutExchange() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        ownerController.addDatasetParticipant(
+            datasetId = "tasks",
+            publicKey = recipient.publicKey,
+            role = SharingRole.VIEWER,
+            emailAddress = "recipient@example.com",
+        )
+
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+        val adopted = recipientController.adoptDataset("tasks")
+        assertEquals(listOf("owner"), adopted.value.items)
+        val stored = transport.readDataset("dataset-tasks")
+        assertEquals(
+            SharingRole.VIEWER,
+            sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId)?.role,
+        )
+    }
+
+    @Test
+    fun addDatasetParticipantUpsertsRoleWhenKeyAlreadyGranted() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        ownerController.addDatasetParticipant(
+            datasetId = "tasks",
+            publicKey = recipient.publicKey,
+            role = SharingRole.VIEWER,
+            emailAddress = "recipient@example.com",
+        )
+
+        ownerController.addDatasetParticipant(
+            datasetId = "tasks",
+            publicKey = recipient.publicKey,
+            role = SharingRole.WRITER,
+            emailAddress = "recipient@example.com",
+        )
+
+        val stored = transport.readDataset("dataset-tasks")
+        val granted = sharedBackupParticipants(stored.envelope)
+            .filter { it.keyId == recipient.publicKey.keyId }
+        assertEquals(1, granted.size)
+        assertEquals(SharingRole.WRITER, granted.single().role)
+    }
+
+    @Test
+    fun addDatasetParticipantRejectsNonAdministeringActor() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val stranger = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        ownerController.addDatasetParticipant(
+            datasetId = "tasks",
+            publicKey = recipient.publicKey,
+            role = SharingRole.VIEWER,
+            emailAddress = "recipient@example.com",
+        )
+
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+        recipientController.adoptDataset("tasks")
+        val error = try {
+            recipientController.addDatasetParticipant(
+                datasetId = "tasks",
+                publicKey = stranger.publicKey,
+                role = SharingRole.VIEWER,
+                emailAddress = "stranger@example.com",
+            )
+            null
+        } catch (error: SyncKitError) {
+            error
+        }
+        assertEquals(SyncKitErrorCode.AUTHORIZATION, error?.code)
+    }
+
     private fun controller(
         identity: SharingIdentity,
         transport: SharedBackupTransport,
@@ -552,6 +651,12 @@ class SharedBackupControllerTest {
 
         override suspend fun deleteDataset(fileId: String) {
             datasets.remove(fileId)
+        }
+
+        val trashed = mutableSetOf<String>()
+        override suspend fun trashDataset(fileId: String) {
+            datasets.remove(fileId)
+            trashed.add(fileId)
         }
 
         override suspend fun grantExchangeAccess(

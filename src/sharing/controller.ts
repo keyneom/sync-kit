@@ -321,6 +321,34 @@ export class SharedBackupController<T> {
     });
   }
 
+  /**
+   * Move a dataset file to the provider's trash and forget its local record.
+   * The recovery-safe disposal for a topology migration's retired source
+   * file: the owner can still restore it during the provider's grace window,
+   * but it stops resolving as a live dataset
+   * (docs/sharing-control-datasets.md, hard-cutover step 5).
+   */
+  trashDataset(datasetId: string): Promise<void> {
+    return this.serialized(async () => {
+      requireNonEmpty(datasetId, "datasetId");
+      const fileId =
+        (await this.options.registry.get(datasetId))?.fileId ??
+        (await this.options.transport.listDatasets()).find(
+          (candidate) => candidate.datasetId === datasetId,
+        )?.fileId;
+      if (fileId) {
+        if (!this.options.transport.trashDataset) {
+          throw new SyncKitError(
+            "state",
+            "This transport does not support trashing datasets.",
+          );
+        }
+        await this.options.transport.trashDataset(fileId);
+      }
+      await this.options.registry.delete(datasetId);
+    });
+  }
+
   loadDataset(datasetId: string): Promise<SharedDatasetResult<T>> {
     return this.serialized(async () => {
       const stored = await this.readDatasetById(datasetId);
@@ -918,6 +946,100 @@ export class SharedBackupController<T> {
         identity,
         input.recipientEmailAddress,
       );
+    });
+  }
+
+  /**
+   * Grant a dataset to a participant whose sharing public key this identity
+   * already holds — no invitation/response exchange. This is how a topology
+   * migration "shares each target with its intended recipients"
+   * (docs/sharing-control-datasets.md, hard-cutover step 2), and how an
+   * owner adds a dataset to someone who joined before that dataset existed:
+   * the content key is wrapped to the participant's existing public key and
+   * the file is per-email shared on the transport.
+   *
+   * Upsert semantics: re-running with the same participant updates their
+   * role instead of failing, so interrupted migrations can simply run the
+   * grant phase again.
+   */
+  addDatasetParticipant(input: {
+    datasetId: string;
+    participant: {
+      publicKey: SharedBackupParticipantInput["publicKey"];
+      role: Exclude<SharingRole, "owner">;
+    };
+    emailAddress: string;
+  }): Promise<SharedDatasetResult<T>> {
+    return this.serialized(async () => {
+      requireNonEmpty(input.datasetId, "datasetId");
+      requireNonEmpty(input.emailAddress, "emailAddress");
+      requireNonEmpty(input.participant.publicKey.keyId, "participant keyId");
+      const stored = await this.readDatasetById(input.datasetId);
+      const record = await this.requiredRegistry(input.datasetId);
+      await this.verifyHead(stored, record);
+      const identity = await this.options.identity();
+      const actor = sharedBackupParticipant(
+        stored.envelope,
+        identity.publicKey.keyId,
+      );
+      if (!actor || !canAdministerSharedBackup(actor.role)) {
+        throw new SyncKitError(
+          "authorization",
+          "Only a current owner or admin can grant dataset access.",
+        );
+      }
+      const value = await decryptSharedBackupEnvelopeV1(
+        stored.envelope,
+        this.options.codec,
+        identity,
+        this.crypto(),
+        { trustedOwnerKeyId: record.trustedOwnerKeyId },
+      );
+      const participants = participantInputs(stored.envelope).filter(
+        (candidate) =>
+          candidate.publicKey.keyId !== input.participant.publicKey.keyId,
+      );
+      participants.push({
+        publicKey: input.participant.publicKey,
+        role: input.participant.role,
+      });
+      const next = await createSharedBackupEnvelopeV1(
+        value,
+        this.options.codec,
+        identity,
+        {
+          appId: this.options.appId,
+          backupId: input.datasetId,
+          participants,
+          previous: stored.envelope,
+        },
+        this.cryptoOptions(),
+      );
+      const updated = await this.options.transport.writeDataset(stored, next);
+      const existingPermission = await this.findDirectDatasetPermission(
+        stored.fileId,
+        record.participantPermissionIds?.[input.participant.publicKey.keyId],
+        input.emailAddress,
+      );
+      const permission = await this.options.transport.setDatasetPermission(
+        stored.fileId,
+        input.emailAddress,
+        input.participant.role,
+        existingPermission
+          ? { existingDirectPermissionId: existingPermission.permissionId }
+          : {},
+      );
+      const participantPermissionIds = permission.permissionId
+        ? {
+            ...record.participantPermissionIds,
+            [input.participant.publicKey.keyId]: permission.permissionId,
+          }
+        : record.participantPermissionIds;
+      await this.persistHead(updated, record.trustedOwnerKeyId, {
+        ...record,
+        ...(participantPermissionIds ? { participantPermissionIds } : {}),
+      });
+      return result(updated, value, "updated");
     });
   }
 

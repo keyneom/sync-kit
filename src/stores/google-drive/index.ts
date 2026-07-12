@@ -779,6 +779,18 @@ export class GoogleDriveFileStore {
     );
   }
 
+  async trash(fileId: string, authorization: Authorization): Promise<void> {
+    await this.request(
+      `${DRIVE_API}/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
+      authorization,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trashed: true }),
+      },
+    );
+  }
+
   async delete(fileId: string, authorization: Authorization): Promise<void> {
     await this.request(
       `${DRIVE_API}/${encodeURIComponent(fileId)}?supportsAllDrives=true`,

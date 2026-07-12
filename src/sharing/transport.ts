@@ -70,6 +70,13 @@ export interface SharedBackupTransport {
   ): Promise<VersionedSharedDataset>;
   /** Optional: delete a dataset file. Required for controller.deleteDataset. */
   deleteDataset?(fileId: string): Promise<void>;
+  /**
+   * Optional: move a dataset file to the provider's trash instead of
+   * deleting it. Required for controller.trashDataset — the recovery-safe
+   * disposal used when a topology migration closes and retires its source
+   * file (docs/sharing-control-datasets.md).
+   */
+  trashDataset?(fileId: string): Promise<void>;
   grantExchangeAccess(
     emailAddress: string,
     options?: { sendNotificationEmail?: boolean; emailMessage?: string },

@@ -11,7 +11,10 @@ import type {
   SharingPublicKeyResponseV1,
   SharingRole,
 } from "../src/sharing/index.js";
-import { sharedBackupParticipant } from "../src/sharing/index.js";
+import {
+  sharedBackupParticipant,
+  sharedBackupParticipants,
+} from "../src/sharing/index.js";
 import type {
   SharedBackupStorage,
   SharedBackupTransport,
@@ -767,6 +770,127 @@ describe("shared-backup controller adoption", () => {
     expect(await ownerController.listDatasets()).toEqual([]);
     expect(await registry.get("tasks")).toBeNull();
   });
+
+  it("trashDataset moves the file to the provider trash and forgets the record", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const ownerController = controller(owner, transport, registry);
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+
+    await ownerController.trashDataset("tasks");
+
+    expect(await ownerController.listDatasets()).toEqual([]);
+    expect(await registry.get("tasks")).toBeNull();
+    expect(transport.trashed.has("dataset-tasks")).toBe(true);
+  });
+
+  it("addDatasetParticipant grants access to a known public key without an exchange", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+
+    await ownerController.addDatasetParticipant({
+      datasetId: "tasks",
+      participant: { publicKey: recipient.publicKey, role: "viewer" },
+      emailAddress: "recipient@example.com",
+    });
+
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    const adopted = await recipientController.adoptDataset("tasks");
+    expect(adopted.value.items).toEqual(["owner"]);
+    const stored = await transport.readDataset("dataset-tasks");
+    const self = sharedBackupParticipant(
+      stored.envelope,
+      recipient.publicKey.keyId,
+    );
+    expect(self?.role).toBe("viewer");
+    // The dataset file was per-email shared on the transport.
+    const permissions = transport.permissions.get("dataset-tasks");
+    expect(
+      [...(permissions?.values() ?? [])].some(
+        (permission) => permission.emailAddress === "recipient@example.com",
+      ),
+    ).toBe(true);
+  });
+
+  it("addDatasetParticipant upserts the role when the key is already granted", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    await ownerController.addDatasetParticipant({
+      datasetId: "tasks",
+      participant: { publicKey: recipient.publicKey, role: "viewer" },
+      emailAddress: "recipient@example.com",
+    });
+
+    await ownerController.addDatasetParticipant({
+      datasetId: "tasks",
+      participant: { publicKey: recipient.publicKey, role: "writer" },
+      emailAddress: "recipient@example.com",
+    });
+
+    const stored = await transport.readDataset("dataset-tasks");
+    const granted = sharedBackupParticipant(
+      stored.envelope,
+      recipient.publicKey.keyId,
+    );
+    expect(granted?.role).toBe("writer");
+    // Exactly one participant entry for the key — upsert, not duplicate.
+    expect(
+      sharedBackupParticipants(stored.envelope).filter(
+        (participant) => participant.keyId === recipient.publicKey.keyId,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("addDatasetParticipant rejects a non-administering actor", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const stranger = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    await ownerController.addDatasetParticipant({
+      datasetId: "tasks",
+      participant: { publicKey: recipient.publicKey, role: "viewer" },
+      emailAddress: "recipient@example.com",
+    });
+
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await recipientController.adoptDataset("tasks");
+    await expect(
+      recipientController.addDatasetParticipant({
+        datasetId: "tasks",
+        participant: { publicKey: stranger.publicKey, role: "viewer" },
+        emailAddress: "stranger@example.com",
+      }),
+    ).rejects.toThrow(/owner or admin/);
+  });
 });
 
 function controller(
@@ -858,6 +982,12 @@ class MemorySharingTransport implements SharedBackupTransport {
 
   async deleteDataset(fileId: string): Promise<void> {
     this.datasets.delete(fileId);
+  }
+
+  readonly trashed = new Set<string>();
+  async trashDataset(fileId: string): Promise<void> {
+    this.datasets.delete(fileId);
+    this.trashed.add(fileId);
   }
 
   async writeDataset(

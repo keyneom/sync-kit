@@ -358,6 +358,10 @@ class GoogleDriveSharedBackupTransport(
         drive.delete(fileId, authorize())
     }
 
+    override suspend fun trashDataset(fileId: String) {
+        drive.trash(fileId, authorize())
+    }
+
     override suspend fun deleteExchange(fileId: String) {
         drive.delete(fileId, authorize())
     }

@@ -424,6 +424,20 @@ open class GoogleDriveFileStore(
             )
         }
 
+    suspend fun trash(fileId: String, authorization: Authorization) =
+        withContext(Dispatchers.IO) {
+            val body = buildJsonObject { put("trashed", true) }
+            request(
+                "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}?supportsAllDrives=true",
+                authorization.accessToken,
+                method = "POST",
+                contentType = "application/json",
+                body = SyncKitJson.instance.encodeToString(JsonObject.serializer(), body)
+                    .toByteArray(Charsets.UTF_8),
+                extraHeaders = mapOf("X-HTTP-Method-Override" to "PATCH"),
+            )
+        }
+
     protected open fun request(
         url: String,
         accessToken: String,
