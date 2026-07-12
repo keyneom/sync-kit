@@ -176,6 +176,35 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun addDatasetParticipantUsesTheMixedCodecControlDataset() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerRegistry = MemorySharedBackupRegistry()
+        val recipientRegistry = MemorySharedBackupRegistry()
+        val controlCodec = createSharingControlCodec()
+        val ownerData = controller(owner, transport, ownerRegistry) { datasetId ->
+            controlCodec.takeIf { datasetId == "profile-control" }
+        }
+        val recipientData = controller(recipient, transport, recipientRegistry) { datasetId ->
+            controlCodec.takeIf { datasetId == "profile-control" }
+        }
+        val ownerControl = controlDataset(owner, transport, ownerRegistry, "owner-direct")
+        val recipientControl = controlDataset(recipient, transport, recipientRegistry, "recipient-direct")
+        ownerControl.create(SharingControlMemberMetadataV1(email = "owner@example.test"))
+
+        ownerData.addDatasetParticipant(
+            datasetId = "profile-control",
+            publicKey = recipient.publicKey,
+            role = SharingRole.WRITER,
+            emailAddress = "recipient@example.test",
+        )
+
+        recipientData.adoptDataset("profile-control")
+        assertEquals(owner.publicKey.keyId, recipientControl.read().ownerKeyId)
+    }
+
+    @Test
     fun controlVerificationRejectsTamperingWrongOwnerAndConflictingEvents() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val transport = MemorySharingTransport()
@@ -463,7 +492,7 @@ class SharedBackupControllerTest {
         ownerController.addDatasetParticipant(
             datasetId = "tasks",
             publicKey = recipient.publicKey,
-            role = SharingRole.VIEWER,
+            role = SharingRole.WRITER,
             emailAddress = "recipient@example.com",
         )
 
@@ -472,8 +501,62 @@ class SharedBackupControllerTest {
         assertEquals(listOf("owner"), adopted.value.items)
         val stored = transport.readDataset("dataset-tasks")
         assertEquals(
-            SharingRole.VIEWER,
+            SharingRole.WRITER,
             sharedBackupParticipant(stored.envelope, recipient.publicKey.keyId)?.role,
+        )
+    }
+
+    @Test
+    fun addDatasetParticipantReusesInheritedReadAccessForViewers() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        ownerController.addDatasetParticipant(
+            datasetId = "tasks",
+            publicKey = recipient.publicKey,
+            role = SharingRole.VIEWER,
+            emailAddress = "recipient@example.com",
+        )
+
+        assertEquals(emptyList<SharedDatasetDrivePermission>(), transport.listDatasetPermissions("dataset-tasks"))
+        assertEquals(
+            SharingRole.VIEWER,
+            sharedBackupParticipant(
+                transport.readDataset("dataset-tasks").envelope,
+                recipient.publicKey.keyId,
+            )?.role,
+        )
+    }
+
+    @Test
+    fun addDatasetParticipantDoesNotGrantDriveAclWhenSignedWriteFails() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        transport.conflictNextWrite = true
+
+        val error = runCatching {
+            ownerController.addDatasetParticipant(
+                datasetId = "tasks",
+                publicKey = recipient.publicKey,
+                role = SharingRole.WRITER,
+                emailAddress = "recipient@example.com",
+            )
+        }.exceptionOrNull()
+
+        assertEquals(SyncKitErrorCode.CONFLICT, (error as? SyncKitError)?.code)
+        assertEquals(emptyList<SharedDatasetDrivePermission>(), transport.listDatasetPermissions("dataset-tasks"))
+        assertEquals(
+            null,
+            sharedBackupParticipant(
+                transport.readDataset("dataset-tasks").envelope,
+                recipient.publicKey.keyId,
+            ),
         )
     }
 

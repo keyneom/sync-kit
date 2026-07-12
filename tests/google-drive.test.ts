@@ -462,6 +462,21 @@ describe("Google Drive per-file sharing", () => {
     );
   });
 
+  it("moves a file to trash with a metadata PATCH", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const drive = new GoogleDriveFileStore({ fetch });
+
+    await drive.trash("retired-dataset", authorization);
+
+    expect(fetch.mock.calls[0]?.[0]).toContain(
+      "/retired-dataset?supportsAllDrives=true",
+    );
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+      method: "PATCH",
+      body: '{"trashed":true}',
+    });
+  });
+
   it("creates a user-visible file and shares only that file", async () => {
     const fetch = vi
       .fn()

@@ -10,5 +10,6 @@ coverage/
 # Android library
 android/local.properties
 android/.gradle/
+android/.kotlin/
 android/**/build/
 android/.idea/

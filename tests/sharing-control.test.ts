@@ -137,6 +137,32 @@ describe("sharing control dataset", () => {
     });
   });
 
+  it("adds an existing participant directly to a mixed-codec control dataset", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new ControlTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const controlCodec = createSharingControlCodec();
+    const ownerData = payloadController(owner, transport, ownerRegistry, controlCodec);
+    const ownerControl = controlDataset(owner, transport, ownerRegistry, controlCodec, "owner-direct");
+    await ownerControl.create({ email: "owner@example.test" });
+
+    await ownerData.addDatasetParticipant({
+      datasetId: CONTROL_DATASET_ID,
+      participant: { publicKey: recipient.publicKey, role: "writer" },
+      emailAddress: "recipient@example.test",
+    });
+
+    await expect(ownerControl.read()).resolves.toMatchObject({
+      ownerKeyId: owner.publicKey.keyId,
+    });
+    await expect(ownerData.getDatasetParticipants(CONTROL_DATASET_ID)).resolves.toMatchObject({
+      participants: expect.arrayContaining([
+        expect.objectContaining({ keyId: recipient.publicKey.keyId, role: "writer" }),
+      ]),
+    });
+  });
+
   it("rejects a state whose signed control event has been tampered with", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const transport = new ControlTransport();

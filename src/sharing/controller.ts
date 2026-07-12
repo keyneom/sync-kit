@@ -678,74 +678,24 @@ export class SharedBackupController<T> {
     for (const grant of accepted) {
       try {
         const stored = await this.readDatasetById(grant.datasetId);
-        const codec = this.codecForDataset(grant.datasetId);
         const record =
           (await this.options.registry.get(grant.datasetId)) ??
           this.initialOwnerRecord(stored);
         await this.verifyHead(stored, record);
-        const value = await decryptSharedBackupEnvelopeV1(
-          stored.envelope,
-          codec,
-          identity,
-          this.crypto(),
-          { trustedOwnerKeyId: record.trustedOwnerKeyId },
-        );
-        const participants = participantInputs(stored.envelope).filter(
-          (participant) =>
-            participant.publicKey.keyId !==
-            grant.participant.publicKey.keyId,
-        );
-        participants.push(grant.participant);
-        const next = await createSharedBackupEnvelopeV1(
-          value,
-          codec,
-          identity,
-          {
-            appId: this.options.appId,
-            backupId: grant.datasetId,
-            participants,
-            previous: stored.envelope,
-          },
-          this.cryptoOptions(),
-        );
-        const updated = await this.options.transport.writeDataset(
-          stored,
-          next,
-        );
-        const permission =
-          await this.options.transport.setDatasetPermission(
-            stored.fileId,
-            recipientEmailAddress,
-            grant.participant.role === "owner"
-              ? "admin"
-              : grant.participant.role,
-            {
-              hasInheritedReadAccess: true,
-            },
-          );
-        const participantPermissionIds = {
-          ...record.participantPermissionIds,
-          ...(permission.permissionId
-            ? {
-                [grant.participant.publicKey.keyId]:
-                  permission.permissionId,
-              }
-            : {}),
-        };
-        const nextRecord: SharedDatasetRegistryRecord = {
-          ...record,
-          fileId: updated.fileId,
-          lastRevisionId: updated.envelope.revisionId,
-          participantPermissionIds,
-        };
-        await this.options.registry.set(nextRecord);
+        const { updated, permissionId } =
+          await this.upsertDatasetParticipant({
+            datasetId: grant.datasetId,
+            participant: grant.participant,
+            emailAddress: recipientEmailAddress,
+            identity,
+            stored,
+            record,
+          });
         results.push({
           datasetId: grant.datasetId,
           fileId: updated.fileId,
           revisionId: updated.envelope.revisionId,
-          ...(permission.permissionId
-            ? { permissionId: permission.permissionId }
-            : {}),
+          ...(permissionId ? { permissionId } : {}),
           status: "accepted",
         });
       } catch (error) {
@@ -988,58 +938,15 @@ export class SharedBackupController<T> {
           "Only a current owner or admin can grant dataset access.",
         );
       }
-      const value = await decryptSharedBackupEnvelopeV1(
-        stored.envelope,
-        this.options.codec,
+      const { updated, value } = await this.upsertDatasetParticipant({
+        datasetId: input.datasetId,
+        participant: input.participant,
+        emailAddress: input.emailAddress,
         identity,
-        this.crypto(),
-        { trustedOwnerKeyId: record.trustedOwnerKeyId },
-      );
-      const participants = participantInputs(stored.envelope).filter(
-        (candidate) =>
-          candidate.publicKey.keyId !== input.participant.publicKey.keyId,
-      );
-      participants.push({
-        publicKey: input.participant.publicKey,
-        role: input.participant.role,
+        stored,
+        record,
       });
-      const next = await createSharedBackupEnvelopeV1(
-        value,
-        this.options.codec,
-        identity,
-        {
-          appId: this.options.appId,
-          backupId: input.datasetId,
-          participants,
-          previous: stored.envelope,
-        },
-        this.cryptoOptions(),
-      );
-      const updated = await this.options.transport.writeDataset(stored, next);
-      const existingPermission = await this.findDirectDatasetPermission(
-        stored.fileId,
-        record.participantPermissionIds?.[input.participant.publicKey.keyId],
-        input.emailAddress,
-      );
-      const permission = await this.options.transport.setDatasetPermission(
-        stored.fileId,
-        input.emailAddress,
-        input.participant.role,
-        existingPermission
-          ? { existingDirectPermissionId: existingPermission.permissionId }
-          : {},
-      );
-      const participantPermissionIds = permission.permissionId
-        ? {
-            ...record.participantPermissionIds,
-            [input.participant.publicKey.keyId]: permission.permissionId,
-          }
-        : record.participantPermissionIds;
-      await this.persistHead(updated, record.trustedOwnerKeyId, {
-        ...record,
-        ...(participantPermissionIds ? { participantPermissionIds } : {}),
-      });
-      return result(updated, value, "updated");
+      return result(updated, value as T, "updated");
     });
   }
 
@@ -1253,6 +1160,98 @@ export class SharedBackupController<T> {
       (permission) =>
         permission.emailAddress?.toLowerCase() === normalizedEmail,
     );
+  }
+
+  /**
+   * Common participant upsert used by both verified invitation acceptance and
+   * direct grants to already-known keys. Build and publish the signed envelope
+   * before changing the provider ACL so a failed crypto/write step cannot
+   * leave an untracked writer permission behind.
+   */
+  private async upsertDatasetParticipant(input: {
+    datasetId: string;
+    participant: SharedBackupParticipantInput;
+    emailAddress: string;
+    identity: WebCryptoSharingIdentity;
+    stored: VersionedSharedDataset;
+    record: SharedDatasetRegistryRecord;
+  }): Promise<{
+    updated: VersionedSharedDataset;
+    value: unknown;
+    permissionId?: string;
+  }> {
+    const codec = this.codecForDataset(input.datasetId);
+    const value = await decryptSharedBackupEnvelopeV1(
+      input.stored.envelope,
+      codec,
+      input.identity,
+      this.crypto(),
+      { trustedOwnerKeyId: input.record.trustedOwnerKeyId },
+    );
+    const participants = participantInputs(input.stored.envelope).filter(
+      (candidate) =>
+        candidate.publicKey.keyId !== input.participant.publicKey.keyId,
+    );
+    participants.push(input.participant);
+    const next = await createSharedBackupEnvelopeV1(
+      value,
+      codec,
+      input.identity,
+      {
+        appId: this.options.appId,
+        backupId: input.datasetId,
+        participants,
+        previous: input.stored.envelope,
+      },
+      this.cryptoOptions(),
+    );
+    const updated = await this.options.transport.writeDataset(
+      input.stored,
+      next,
+    );
+    const existingPermission = await this.findDirectDatasetPermission(
+      input.stored.fileId,
+      input.record.participantPermissionIds?.[
+        input.participant.publicKey.keyId
+      ],
+      input.emailAddress,
+    );
+    const driveRole =
+      input.participant.role === "owner" ? "admin" : input.participant.role;
+    const permission = await this.options.transport.setDatasetPermission(
+      input.stored.fileId,
+      input.emailAddress,
+      driveRole,
+      {
+        ...(existingPermission
+          ? { existingDirectPermissionId: existingPermission.permissionId }
+          : {}),
+        ...(driveRole === "viewer"
+          ? { hasInheritedReadAccess: true }
+          : {}),
+      },
+    );
+    const participantPermissionIds = permission.permissionId
+      ? {
+          ...input.record.participantPermissionIds,
+          [input.participant.publicKey.keyId]: permission.permissionId,
+        }
+      : Object.fromEntries(
+          Object.entries(input.record.participantPermissionIds ?? {}).filter(
+            ([keyId]) => keyId !== input.participant.publicKey.keyId,
+          ),
+        );
+    await this.persistHead(updated, input.record.trustedOwnerKeyId, {
+      ...input.record,
+      participantPermissionIds,
+    });
+    return {
+      updated,
+      value,
+      ...(permission.permissionId
+        ? { permissionId: permission.permissionId }
+        : {}),
+    };
   }
 
   rotateLocalKey(

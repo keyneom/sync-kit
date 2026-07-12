@@ -197,6 +197,20 @@ class GoogleDriveSharedBackupTransportTest {
     }
 
     @Test
+    fun trashDatasetUsesMetadataPatchOverride() = runBlocking {
+        server.enqueue(json("{}"))
+
+        transport().trashDataset("retired-dataset")
+
+        val request = server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("No trash request was issued.")
+        assertTrue(request.path.orEmpty().contains("/retired-dataset?supportsAllDrives=true"))
+        assertEquals("POST", request.method)
+        assertEquals("PATCH", request.getHeader("X-HTTP-Method-Override"))
+        assertEquals("{\"trashed\":true}", request.body.readUtf8())
+    }
+
+    @Test
     fun writeDatasetFallsBackToV3WhenV2Unavailable() = runBlocking {
         val first = envelope()
         val next = envelope(revisionId = "revision-2", previous = first)

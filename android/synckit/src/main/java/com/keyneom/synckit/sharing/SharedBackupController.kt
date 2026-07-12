@@ -89,6 +89,12 @@ class SharedBackupController<T>(
     private val requireAccountBinding: Boolean = false,
     private val resolveFork: (suspend (ForkContext<T>) -> String)? = null,
 ) {
+    private data class ParticipantUpsertResult<T>(
+        val updated: VersionedSharedDataset,
+        val value: T,
+        val permissionId: String?,
+    )
+
     init {
         require(appId.isNotBlank()) { "appId must not be empty." }
     }
@@ -459,55 +465,21 @@ class SharedBackupController<T>(
         accepted.map { grant ->
             try {
                 val stored = readDatasetById(grant.datasetId)
-                val selectedCodec = codecFor(grant.datasetId)
                 val record = registry.get(grant.datasetId) ?: initialOwnerRecord(stored)
                 verifyHead(stored, record)
-                val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
-                    stored.envelope,
-                    selectedCodec,
-                    currentIdentity,
-                    VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
-                )
-                val participants = participantInputs(stored.envelope)
-                    .filter { it.publicKey.keyId != grant.participant.publicKey.keyId } +
-                    grant.participant
-                val next = SharingCrypto.createSharedBackupEnvelopeV1(
-                    value = value,
-                    codec = selectedCodec,
-                    identity = currentIdentity,
-                    input = CreateSharedBackupEnvelopeInput(
-                        appId = appId,
-                        backupId = grant.datasetId,
-                        participants = participants,
-                        previous = stored.envelope,
-                    ),
-                    options = cryptoOptions,
-                )
-                val updated = transport.writeDataset(stored, next)
-                val permission = transport.setDatasetPermission(
-                    fileId = stored.fileId,
+                val upserted = upsertDatasetParticipant(
+                    datasetId = grant.datasetId,
+                    participant = grant.participant,
                     emailAddress = recipientEmailAddress,
-                    role = grant.participant.role,
-                    hasInheritedReadAccess = true,
-                )
-                val participantPermissionIds = buildMap {
-                    record.participantPermissionIds?.let { putAll(it) }
-                    permission.permissionId?.let {
-                        put(grant.participant.publicKey.keyId, it)
-                    }
-                }
-                registry.set(
-                    record.copy(
-                        fileId = updated.fileId,
-                        lastRevisionId = updated.envelope.revisionId,
-                        participantPermissionIds = participantPermissionIds,
-                    ),
+                    currentIdentity = currentIdentity,
+                    stored = stored,
+                    record = record,
                 )
                 AcceptedDatasetResult(
                     datasetId = grant.datasetId,
-                    fileId = updated.fileId,
-                    revisionId = updated.envelope.revisionId,
-                    permissionId = permission.permissionId,
+                    fileId = upserted.updated.fileId,
+                    revisionId = upserted.updated.envelope.revisionId,
+                    permissionId = upserted.permissionId,
                     status = "accepted",
                 )
             } catch (error: Throwable) {
@@ -818,7 +790,6 @@ class SharedBackupController<T>(
         val record = requiredRegistry(datasetId)
         verifyHead(stored, record)
         val currentIdentity = identity()
-        val selectedCodec = codecFor(datasetId)
         val actor = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
         if (actor == null || !canAdministerSharedBackup(actor.role)) {
             throw SyncKitError(
@@ -826,50 +797,15 @@ class SharedBackupController<T>(
                 "Only a current owner or admin can grant dataset access.",
             )
         }
-        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
-            stored.envelope,
-            selectedCodec,
-            currentIdentity,
-            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
-        )
-        val participants = participantInputs(stored.envelope)
-            .filter { it.publicKey.keyId != publicKey.keyId } +
-            SharedBackupParticipantInput(publicKey = publicKey, role = role)
-        val existingPermission = findDirectDatasetPermission(
-            fileId = stored.fileId,
-            permissionId = record.participantPermissionIds?.get(publicKey.keyId),
+        val upserted = upsertDatasetParticipant(
+            datasetId = datasetId,
+            participant = SharedBackupParticipantInput(publicKey = publicKey, role = role),
             emailAddress = emailAddress,
+            currentIdentity = currentIdentity,
+            stored = stored,
+            record = record,
         )
-        val permission = transport.setDatasetPermission(
-            fileId = stored.fileId,
-            emailAddress = emailAddress,
-            role = role,
-            existingDirectPermissionId = existingPermission?.permissionId,
-            hasInheritedReadAccess = false,
-        )
-        val participantPermissionIds = record.participantPermissionIds.orEmpty().toMutableMap()
-        if (permission.permissionId != null) {
-            participantPermissionIds[publicKey.keyId] = permission.permissionId
-        }
-        val next = SharingCrypto.createSharedBackupEnvelopeV1(
-            value = value,
-            codec = selectedCodec,
-            identity = currentIdentity,
-            input = CreateSharedBackupEnvelopeInput(
-                appId = appId,
-                backupId = datasetId,
-                participants = participants,
-                previous = stored.envelope,
-            ),
-            options = cryptoOptions,
-        )
-        val updated = transport.writeDataset(stored, next)
-        persistHead(
-            updated,
-            record.trustedOwnerKeyId,
-            record.copy(participantPermissionIds = participantPermissionIds),
-        )
-        result(updated, value, "updated")
+        result(upserted.updated, upserted.value, "updated")
     }
 
     suspend fun setDatasetRole(
@@ -1053,6 +989,68 @@ class SharedBackupController<T>(
         return directPermissions.find {
             it.emailAddress?.lowercase() == normalizedEmail
         }
+    }
+
+    /**
+     * Common participant upsert used by verified invitation acceptance and
+     * direct grants to already-known keys. The signed envelope is created and
+     * published before changing the provider ACL, preventing a failed crypto
+     * or conditional-write step from leaving an untracked writer permission.
+     */
+    private suspend fun upsertDatasetParticipant(
+        datasetId: String,
+        participant: SharedBackupParticipantInput,
+        emailAddress: String,
+        currentIdentity: SharingIdentity,
+        stored: VersionedSharedDataset,
+        record: SharedDatasetRegistryRecord,
+    ): ParticipantUpsertResult<T> {
+        val selectedCodec = codecFor(datasetId)
+        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            selectedCodec,
+            currentIdentity,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        val participants = participantInputs(stored.envelope)
+            .filter { it.publicKey.keyId != participant.publicKey.keyId } + participant
+        val next = SharingCrypto.createSharedBackupEnvelopeV1(
+            value = value,
+            codec = selectedCodec,
+            identity = currentIdentity,
+            input = CreateSharedBackupEnvelopeInput(
+                appId = appId,
+                backupId = datasetId,
+                participants = participants,
+                previous = stored.envelope,
+            ),
+            options = cryptoOptions,
+        )
+        val updated = transport.writeDataset(stored, next)
+        val existingPermission = findDirectDatasetPermission(
+            fileId = stored.fileId,
+            permissionId = record.participantPermissionIds?.get(participant.publicKey.keyId),
+            emailAddress = emailAddress,
+        )
+        val permission = transport.setDatasetPermission(
+            fileId = stored.fileId,
+            emailAddress = emailAddress,
+            role = participant.role,
+            existingDirectPermissionId = existingPermission?.permissionId,
+            hasInheritedReadAccess = participant.role == SharingRole.VIEWER,
+        )
+        val participantPermissionIds = record.participantPermissionIds.orEmpty().toMutableMap()
+        if (permission.permissionId != null) {
+            participantPermissionIds[participant.publicKey.keyId] = permission.permissionId
+        } else {
+            participantPermissionIds.remove(participant.publicKey.keyId)
+        }
+        persistHead(
+            updated,
+            record.trustedOwnerKeyId,
+            record.copy(participantPermissionIds = participantPermissionIds),
+        )
+        return ParticipantUpsertResult(updated, value, permission.permissionId)
     }
 
     private suspend fun readDatasetById(datasetId: String): VersionedSharedDataset {

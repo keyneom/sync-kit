@@ -169,6 +169,22 @@ Validated on 2026-07-11 for Android control-dataset parity:
   invitation/response integration test covering one app dataset plus one
   control dataset.
 
+Validated on 2026-07-12 for the `0.2.0-rc.15` participant-grant correction:
+
+- TypeScript and Kotlin direct known-key grants now share the established
+  participant-upsert behavior used by verified invitation acceptance;
+- mixed-codec control datasets select their per-dataset codec on both
+  platforms, including the hard-cutover path used by EasyBC web and Android;
+- signed envelope creation and conditional publication complete before Drive
+  ACL changes, so failed writes do not leave untracked writer permissions;
+- viewer grants reuse inherited reader access instead of creating redundant
+  direct permissions;
+- mocked web and Android Drive transports verify recovery-safe trash requests;
+- the authoritative repository gate passed unchanged fixtures, the native
+  Java verifier, the complete Android unit suite, JS/Kotlin parity checks,
+  lint, strict typecheck, 135 TypeScript tests, build, and packed npm/pnpm
+  consumer imports.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive

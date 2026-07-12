@@ -213,8 +213,10 @@ inviteParticipant
 listExchanges
 submitKeyResponse
 acceptKeyResponse
+addDatasetParticipant
 setDatasetRole
 revokeDatasetKey
+trashDataset
 rotateLocalKey
 reconcileDrivePermissions
 createSharingControlDataset
@@ -244,6 +246,10 @@ Implemented:
 - mixed-codec invitation acceptance through `codecForDataset`, so a
   protocol-owned control dataset can be granted beside application-owned data
   datasets in one response flow;
+- direct known-key participant grants through the same mixed-codec participant
+  upsert path, with signed-envelope publication before Drive ACL changes and
+  inherited reader reuse;
+- recoverable provider-trash disposal for retired migration source datasets;
 - join-link param parsing/building, invite email formatting, and invitation
   lookup helpers on `/sharing`;
 - `buildSyncKitFolderName`, `listAccessibleSyncKitAppFolders`, and

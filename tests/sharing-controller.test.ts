@@ -798,7 +798,7 @@ describe("shared-backup controller adoption", () => {
 
     await ownerController.addDatasetParticipant({
       datasetId: "tasks",
-      participant: { publicKey: recipient.publicKey, role: "viewer" },
+      participant: { publicKey: recipient.publicKey, role: "writer" },
       emailAddress: "recipient@example.com",
     });
 
@@ -814,7 +814,7 @@ describe("shared-backup controller adoption", () => {
       stored.envelope,
       recipient.publicKey.keyId,
     );
-    expect(self?.role).toBe("viewer");
+    expect(self?.role).toBe("writer");
     // The dataset file was per-email shared on the transport.
     const permissions = transport.permissions.get("dataset-tasks");
     expect(
@@ -822,6 +822,61 @@ describe("shared-backup controller adoption", () => {
         (permission) => permission.emailAddress === "recipient@example.com",
       ),
     ).toBe(true);
+  });
+
+  it("addDatasetParticipant reuses inherited read access for viewers", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+
+    await ownerController.addDatasetParticipant({
+      datasetId: "tasks",
+      participant: { publicKey: recipient.publicKey, role: "viewer" },
+      emailAddress: "recipient@example.com",
+    });
+
+    expect(transport.permissions.get("dataset-tasks")).toBeUndefined();
+    expect(
+      sharedBackupParticipant(
+        (await transport.readDataset("dataset-tasks")).envelope,
+        recipient.publicKey.keyId,
+      )?.role,
+    ).toBe("viewer");
+  });
+
+  it("addDatasetParticipant does not grant a Drive ACL when the signed write fails", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    transport.conflictNextWrite = true;
+
+    await expect(
+      ownerController.addDatasetParticipant({
+        datasetId: "tasks",
+        participant: { publicKey: recipient.publicKey, role: "writer" },
+        emailAddress: "recipient@example.com",
+      }),
+    ).rejects.toThrow(/Conflict/);
+
+    expect(transport.permissions.get("dataset-tasks")).toBeUndefined();
+    expect(
+      sharedBackupParticipant(
+        (await transport.readDataset("dataset-tasks")).envelope,
+        recipient.publicKey.keyId,
+      ),
+    ).toBeNull();
   });
 
   it("addDatasetParticipant upserts the role when the key is already granted", async () => {
