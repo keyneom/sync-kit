@@ -34,6 +34,41 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun normalizesSetLikeMigrationArraysBeforeSigning() = runBlocking {
+        val fixture = checkNotNull(
+            javaClass.classLoader?.getResourceAsStream("sharing-v1/control-signing-normalization.json"),
+        ).bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
+        fun strings(name: String) = fixture.getValue(name).jsonArray.map { it.jsonPrimitive.content }
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val registry = MemorySharedBackupRegistry()
+        val control = controlDataset(owner, transport, registry, "normalization")
+        control.create()
+        control.addMember(SharingControlMemberV1(recipient.publicKey))
+
+        control.announceMigration(
+            SharingControlMigrationV1(
+                migrationId = "normalize-before-signing",
+                sourceDatasetIds = strings("sourceDatasetIds"),
+                targets = strings("targetFileIds").mapIndexed { index, fileId ->
+                    SharingControlMigrationTargetV1("target-$index", fileId)
+                },
+                requiredAcks = listOf(
+                    SharingControlMigrationRequirementV1(
+                        recipient.publicKey.keyId,
+                        strings("targetFileIds"),
+                    ),
+                ),
+            ),
+        )
+
+        val migration = control.read().migrations.getValue("normalize-before-signing")
+        assertEquals(strings("expectedSourceDatasetIds"), migration.sourceDatasetIds)
+        assertEquals(strings("expectedTargetFileIds"), migration.requiredAcks.single().targetFileIds)
+    }
+
+    @Test
     fun completesInviteResponseAcceptAndReadFlow() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val recipient = SharingCrypto.generateIdentity()

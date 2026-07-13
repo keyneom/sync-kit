@@ -1,0 +1,7 @@
+{
+  "provenance": "Synthetic TypeScript/Kotlin control-event signing normalization vector",
+  "sourceDatasetIds": ["source-z", "source-a"],
+  "targetFileIds": ["file-z", "file-a"],
+  "expectedSourceDatasetIds": ["source-a", "source-z"],
+  "expectedTargetFileIds": ["file-a", "file-z"]
+}

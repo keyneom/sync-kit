@@ -402,9 +402,12 @@ class SharingControlDataset(
         forced: Boolean? = null,
     ): SharingControlEventV1 {
         val base = ControlEventBase(randomUuid(), profileId, current.publicKey.keyId, sequence, now().toString())
-        val unsigned = controlEventJson(base, type, member, migration, migrationId, openedFileIds, forced, null)
+        val normalized = parseSharingControlEventV1(
+            controlEventJson(base, type, member, migration, migrationId, openedFileIds, forced, "unsigned"),
+        )
+        val unsigned = eventToJson(normalized, includeSignature = false)
         val signature = Base64Url.encode(SharingEcKeys.sign(current.signingPrivateKey, CanonicalJson.encodeAad(unsigned)))
-        return parseSharingControlEventV1(controlEventJson(base, type, member, migration, migrationId, openedFileIds, forced, signature))
+        return parseSharingControlEventV1(JsonObject(unsigned + ("signature" to JsonPrimitive(signature))))
     }
 
     private fun requireOwner(verified: VerifiedSharingControlStateV1, current: SharingIdentity) {

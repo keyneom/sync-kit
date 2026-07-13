@@ -57,6 +57,44 @@ describe("sharing control dataset", () => {
       .toEqual(fixture.expectedEventIds);
   });
 
+  it("normalizes set-like migration arrays before signing", async () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("../fixtures/sharing-v1/control-signing-normalization.json", import.meta.url),
+      "utf8",
+    )) as {
+      sourceDatasetIds: string[];
+      targetFileIds: string[];
+      expectedSourceDatasetIds: string[];
+      expectedTargetFileIds: string[];
+    };
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new ControlTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const codec = createSharingControlCodec();
+    const control = controlDataset(owner, transport, registry, codec, "normalization");
+    await control.create();
+    await control.addMember({ publicKey: recipient.publicKey });
+
+    await control.announceMigration({
+      migrationId: "normalize-before-signing",
+      sourceDatasetIds: fixture.sourceDatasetIds,
+      targets: fixture.targetFileIds.map((fileId, index) => ({
+        datasetId: `target-${index}`,
+        fileId,
+      })),
+      requiredAcks: [{
+        keyId: recipient.publicKey.keyId,
+        targetFileIds: fixture.targetFileIds,
+      }],
+      mode: "hard-cutover",
+    });
+
+    const migration = (await control.read()).migrations.get("normalize-before-signing");
+    expect(migration?.sourceDatasetIds).toEqual(fixture.expectedSourceDatasetIds);
+    expect(migration?.requiredAcks[0]?.targetFileIds).toEqual(fixture.expectedTargetFileIds);
+  });
+
   it("enrolls the control file in a mixed-codec invitation and closes only after a verified Picker acknowledgement", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const recipient = await createWebCryptoSharingIdentity();

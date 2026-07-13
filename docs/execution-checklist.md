@@ -185,6 +185,14 @@ Validated on 2026-07-12 for the `0.2.0-rc.15` participant-grant correction:
   lint, strict typecheck, 135 TypeScript tests, build, and packed npm/pnpm
   consumer imports.
 
+Validated on 2026-07-12 for the `0.2.0-rc.16` control-event signing correction:
+
+- TypeScript and Kotlin normalize set-like v1 control-event arrays before
+  signing and persist the same representation covered by the signature;
+- a shared fixture deliberately reverses source dataset and target file IDs,
+  and both runtimes verify the resulting signed migration announcement;
+- no compatibility verifier for pre-release malformed events is retained.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive

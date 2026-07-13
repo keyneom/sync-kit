@@ -505,7 +505,7 @@ export class SharingControlDataset {
     identity: WebCryptoSharingIdentity,
     sequence: number,
   ): Promise<SharingControlEventV1> {
-    const unsigned = {
+    const candidate = {
       schemaVersion: 1 as const,
       kind: SHARING_CONTROL_EVENT_KIND,
       eventId: this.randomUUID(),
@@ -515,6 +515,11 @@ export class SharingControlDataset {
       createdAt: this.now().toISOString(),
       ...event,
     };
+    const { signature: placeholder, ...unsigned } = parseSharingControlEventV1({
+      ...candidate,
+      signature: "unsigned",
+    });
+    void placeholder;
     const signature = new Uint8Array(
       await this.crypto().subtle.sign(
         { name: "ECDSA", hash: "SHA-256" },
@@ -522,7 +527,7 @@ export class SharingControlDataset {
         copyBuffer(canonicalAad(unsigned)),
       ),
     );
-    return parseSharingControlEventV1({ ...unsigned, signature: bytesToBase64Url(signature) });
+    return { ...unsigned, signature: bytesToBase64Url(signature) };
   }
 
   private now(): Date {
