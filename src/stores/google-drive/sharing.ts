@@ -25,6 +25,7 @@ import type {
 } from "../../sharing/transport.js";
 import {
   assertDriveFileProvenance,
+  defaultSyncKitAppFolderName,
   DriveV2UnavailableError,
   ensureGoogleDriveSyncKitFolder,
   GoogleDriveFileStore,
@@ -36,6 +37,62 @@ import {
 } from "./index.js";
 
 const SHARING_PROTOCOL = "sharing-v1";
+
+export type AccessibleSyncKitDataset = {
+  datasetId: string;
+  fileId: string;
+  name: string;
+  appFolderId?: string;
+  canEdit?: boolean;
+  modifiedTime?: string;
+};
+
+export type ListAccessibleSyncKitDatasetsOptions = {
+  appId: string;
+  authorization: Authorization;
+  drive?: GoogleDriveFileStore;
+};
+
+/**
+ * Lists every managed sharing dataset already visible to the current
+ * `drive.file` grant, including files whose parent app-root is not listable.
+ * Malformed managed files are skipped so one damaged file cannot hide the
+ * healthy discovery set.
+ */
+export async function listAccessibleSyncKitDatasets(
+  options: ListAccessibleSyncKitDatasetsOptions,
+): Promise<AccessibleSyncKitDataset[]> {
+  if (!options.appId.trim()) throw new TypeError("appId must not be empty.");
+  const drive = options.drive ?? new GoogleDriveFileStore();
+  const byFileId = new Map<string, AccessibleSyncKitDataset>();
+  let pageToken: string | undefined;
+  do {
+    const page = await drive.list(options.authorization, {
+      appProperties: sharingProperties(options.appId, "dataset"),
+      ...(pageToken ? { pageToken } : {}),
+    });
+    for (const file of page.files) {
+      if (byFileId.has(file.fileId) || !isManagedDataset(file, options.appId)) {
+        continue;
+      }
+      const datasetId = file.appProperties?.[SYNC_KIT_DATASET_ID_PROPERTY]?.trim();
+      if (!datasetId) continue;
+      const appFolderId = file.parents?.[0]?.trim();
+      byFileId.set(file.fileId, {
+        datasetId,
+        fileId: file.fileId,
+        name: file.name,
+        ...(appFolderId ? { appFolderId } : {}),
+        ...(file.capabilities?.canEdit === undefined
+          ? {}
+          : { canEdit: file.capabilities.canEdit }),
+        ...(file.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
+      });
+    }
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return [...byFileId.values()].sort(compareAccessibleDatasets);
+}
 
 export type GoogleDriveSharedBackupTransportOptions = {
   appId: string;
@@ -73,9 +130,10 @@ export class GoogleDriveSharedBackupTransport
 
   async listDatasets(): Promise<SharedDatasetFile[]> {
     const authorization = await this.authorize();
-    const storage = await this.ensureStorage();
+    const appFolderId = await this.resolveAppFolderForRead(authorization);
+    if (!appFolderId) return [];
     const files = await this.listAll(authorization, {
-      parentId: storage.appFolderId,
+      parentId: appFolderId,
       appProperties: this.properties("dataset"),
     });
     return files.map((file) => ({
@@ -500,9 +558,10 @@ export class GoogleDriveSharedBackupTransport
 
   async listDatasetHeads(): Promise<SharedDatasetHead[]> {
     const authorization = await this.authorize();
-    const storage = await this.ensureStorage();
+    const appFolderId = await this.resolveAppFolderForRead(authorization);
+    if (!appFolderId) return [];
     const files = await this.listAll(authorization, {
-      parentId: storage.appFolderId,
+      parentId: appFolderId,
       appProperties: this.properties("dataset"),
     });
     return files.map((file) => ({
@@ -550,6 +609,32 @@ export class GoogleDriveSharedBackupTransport
     return { appFolderId, exchangesFolderId };
   }
 
+  private async resolveAppFolderForRead(
+    authorization: Authorization,
+  ): Promise<string | null> {
+    if (this.options.selectedAppFolderId) {
+      return this.options.selectedAppFolderId;
+    }
+    const expectedName =
+      this.options.folderName ?? defaultSyncKitAppFolderName(this.options.appId);
+    const files = await this.listAll(authorization, {
+      ...(this.options.parentFolderId
+        ? { parentId: this.options.parentFolderId }
+        : {}),
+      appProperties: {
+        [SYNC_KIT_APP_ID_PROPERTY]: this.options.appId,
+        [SYNC_KIT_KIND_PROPERTY]: "app-root",
+      },
+    });
+    return (
+      files.find(
+        (file) =>
+          file.name === expectedName &&
+          file.mimeType === "application/vnd.google-apps.folder",
+      )?.fileId ?? null
+    );
+  }
+
   private async listAll(
     authorization: Authorization,
     options: Parameters<GoogleDriveFileStore["list"]>[1],
@@ -568,11 +653,7 @@ export class GoogleDriveSharedBackupTransport
   }
 
   private properties(kind: string): Record<string, string> {
-    return {
-      [SYNC_KIT_APP_ID_PROPERTY]: this.options.appId,
-      [SYNC_KIT_PROTOCOL_PROPERTY]: SHARING_PROTOCOL,
-      [SYNC_KIT_KIND_PROPERTY]: kind,
-    };
+    return sharingProperties(this.options.appId, kind);
   }
 
   private assertManagedFile(file: DriveFileMetadata, kind: string): void {
@@ -606,6 +687,37 @@ export class GoogleDriveSharedBackupTransport
   private authorize(): Promise<Authorization> {
     return this.options.authorizationProvider.authorize();
   }
+}
+
+function sharingProperties(appId: string, kind: string): Record<string, string> {
+  return {
+    [SYNC_KIT_APP_ID_PROPERTY]: appId,
+    [SYNC_KIT_PROTOCOL_PROPERTY]: SHARING_PROTOCOL,
+    [SYNC_KIT_KIND_PROPERTY]: kind,
+  };
+}
+
+function isManagedDataset(file: DriveFileMetadata, appId: string): boolean {
+  return (
+    file.appProperties?.[SYNC_KIT_APP_ID_PROPERTY] === appId &&
+    file.appProperties?.[SYNC_KIT_PROTOCOL_PROPERTY] === SHARING_PROTOCOL &&
+    file.appProperties?.[SYNC_KIT_KIND_PROPERTY] === "dataset"
+  );
+}
+
+function compareAccessibleDatasets(
+  left: AccessibleSyncKitDataset,
+  right: AccessibleSyncKitDataset,
+): number {
+  return (
+    compareUtf16CodeUnits(left.appFolderId ?? "", right.appFolderId ?? "") ||
+    compareUtf16CodeUnits(left.datasetId, right.datasetId) ||
+    compareUtf16CodeUnits(left.fileId, right.fileId)
+  );
+}
+
+function compareUtf16CodeUnits(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function requiredProperty(

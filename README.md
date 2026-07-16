@@ -137,7 +137,8 @@ Available exports:
   wrapper, normal-Drive folder/per-file stores, folder-name helpers, and
   accessible app-folder discovery
 - `/stores/google-drive/sharing` — managed app/exchange folders, conditional
-  dataset writes, provenance checks, and per-dataset permissions
+  dataset writes, provenance checks, per-dataset permissions, and read-only
+  discovery of every managed dataset visible to the current `drive.file` grant
 - `/stores/google-drive/picker` — explicit folder Picker and Drive Open-with
   state parsing
 

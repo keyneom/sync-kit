@@ -47,8 +47,8 @@ class GoogleDriveSharedBackupTransport(
 
     override suspend fun listDatasets(): List<SharedDatasetFile> {
         val authorization = authorize()
-        val storage = ensureStorage()
-        val files = listAll(authorization, storage.appFolderId, properties("dataset"))
+        val appFolderId = resolveAppFolderForRead(authorization) ?: return emptyList()
+        val files = listAll(authorization, appFolderId, properties("dataset"))
         return files.map { file ->
             SharedDatasetFile(
                 datasetId = requiredProperty(file, SYNC_KIT_DATASET_ID_PROPERTY, "dataset"),
@@ -412,8 +412,8 @@ class GoogleDriveSharedBackupTransport(
 
     override suspend fun listDatasetHeads(): List<SharedDatasetHead> {
         val authorization = authorize()
-        val storage = ensureStorage()
-        val files = listAll(authorization, storage.appFolderId, properties("dataset"))
+        val appFolderId = resolveAppFolderForRead(authorization) ?: return emptyList()
+        val files = listAll(authorization, appFolderId, properties("dataset"))
         return files.map { file ->
             SharedDatasetHead(
                 datasetId = requiredProperty(file, SYNC_KIT_DATASET_ID_PROPERTY, "dataset"),
@@ -454,9 +454,24 @@ class GoogleDriveSharedBackupTransport(
         return SharedBackupStorage(appFolderId, exchangesFolderId)
     }
 
+    private suspend fun resolveAppFolderForRead(authorization: Authorization): String? {
+        selectedAppFolderId?.let { return it }
+        val expectedName = folderName ?: defaultSyncKitAppFolderName(appId)
+        return listAll(
+            authorization = authorization,
+            parentId = parentFolderId,
+            appProperties = mapOf(
+                SYNC_KIT_APP_ID_PROPERTY to appId,
+                SYNC_KIT_KIND_PROPERTY to "app-root",
+            ),
+        ).find {
+            it.name == expectedName && it.mimeType == DRIVE_FOLDER_MIME_TYPE
+        }?.fileId
+    }
+
     private suspend fun listAll(
         authorization: Authorization,
-        parentId: String,
+        parentId: String?,
         appProperties: Map<String, String>,
     ): List<DriveFileMetadata> {
         val files = mutableListOf<DriveFileMetadata>()
@@ -474,11 +489,7 @@ class GoogleDriveSharedBackupTransport(
         return files
     }
 
-    private fun properties(kind: String): Map<String, String> = mapOf(
-        SYNC_KIT_APP_ID_PROPERTY to appId,
-        SYNC_KIT_PROTOCOL_PROPERTY to SHARING_PROTOCOL,
-        SYNC_KIT_KIND_PROPERTY to kind,
-    )
+    private fun properties(kind: String): Map<String, String> = sharingProperties(appId, kind)
 
     private fun assertManagedFile(file: DriveFileMetadata, kind: String) {
         if (

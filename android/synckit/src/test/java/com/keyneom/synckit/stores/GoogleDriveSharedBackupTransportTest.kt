@@ -120,6 +120,41 @@ class GoogleDriveSharedBackupTransportTest {
     }
 
     @Test
+    fun listDatasetsIsReadOnlyForSelectedAppFolder() = runBlocking {
+        server.enqueue(json("""{"files":[]}"""))
+
+        assertEquals(emptyList<com.keyneom.synckit.sharing.SharedDatasetFile>(), transport().listDatasets())
+
+        val request = server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("No Drive list request was issued.")
+        assertEquals("GET", request.method)
+        assertTrue(request.requestUrl?.queryParameter("q").orEmpty().contains("'app-folder' in parents"))
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun listDatasetsDoesNotCreateStorageWhenAppRootIsMissing() = runBlocking {
+        server.enqueue(json("""{"files":[]}"""))
+        val origin = server.url("/").toString().trimEnd('/')
+        val transport = GoogleDriveSharedBackupTransport(
+            appId = "fixture-app",
+            authorizationProvider = object : AuthorizationProvider {
+                override suspend fun authorize(): Authorization = Authorization("token")
+            },
+            drive = GoogleDriveFileStore(
+                GoogleDriveStoreOptions(apiOrigin = origin, uploadOrigin = origin),
+            ),
+        )
+
+        assertEquals(emptyList<com.keyneom.synckit.sharing.SharedDatasetFile>(), transport.listDatasets())
+
+        val request = server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("No Drive list request was issued.")
+        assertEquals("GET", request.method)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun createDatasetDeletesOrphanWhenReadBackFails() = runBlocking {
         // ensureStorage (selectedAppFolderId set): exchanges folder lookup only.
         server.enqueue(json("""{"files":[{"id":"exchanges","name":"exchanges"}]}"""))

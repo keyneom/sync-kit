@@ -1,0 +1,136 @@
+{
+  "appId": "fixture-app",
+  "pages": [
+    {
+      "files": [
+        {
+          "id": "file-parentless",
+          "name": "orphan.sync-kit.json",
+          "modifiedTime": "2026-07-16T10:00:00.000Z",
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "orphan"
+          },
+          "capabilities": { "canEdit": false }
+        },
+        {
+          "id": "file-duplicate",
+          "name": "zeta.sync-kit.json",
+          "parents": ["folder-"],
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "zeta"
+          },
+          "capabilities": { "canEdit": true }
+        },
+        {
+          "id": "file-malformed",
+          "name": "malformed.sync-kit.json",
+          "parents": ["folder-a"],
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "  "
+          }
+        },
+        {
+          "id": "file-other-app",
+          "name": "other.sync-kit.json",
+          "parents": ["folder-a"],
+          "appProperties": {
+            "sync-kit-app-id": "other-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "other"
+          }
+        }
+      ],
+      "nextPageToken": "page-2"
+    },
+    {
+      "files": [
+        {
+          "id": "file-duplicate",
+          "name": "duplicate-must-not-win.sync-kit.json",
+          "parents": ["folder-a"],
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "duplicate-must-not-win"
+          }
+        },
+        {
+          "id": "file-emoji",
+          "name": "alpha.sync-kit.json",
+          "parents": ["folder-😀"],
+          "modifiedTime": "2026-07-16T11:00:00.000Z",
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "alpha"
+          }
+        },
+        {
+          "id": "file-owned",
+          "name": "owned.sync-kit.json",
+          "parents": ["folder-a", "ignored-second-parent"],
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "dataset",
+            "sync-kit-dataset-id": "owned"
+          },
+          "capabilities": { "canEdit": true }
+        },
+        {
+          "id": "file-control",
+          "name": "control.sync-kit.json",
+          "parents": ["folder-a"],
+          "appProperties": {
+            "sync-kit-app-id": "fixture-app",
+            "sync-kit-protocol": "sharing-v1",
+            "sync-kit-kind": "control",
+            "sync-kit-dataset-id": "control"
+          }
+        }
+      ]
+    }
+  ],
+  "expected": [
+    {
+      "datasetId": "orphan",
+      "fileId": "file-parentless",
+      "name": "orphan.sync-kit.json",
+      "canEdit": false,
+      "modifiedTime": "2026-07-16T10:00:00.000Z"
+    },
+    {
+      "datasetId": "owned",
+      "fileId": "file-owned",
+      "name": "owned.sync-kit.json",
+      "appFolderId": "folder-a",
+      "canEdit": true
+    },
+    {
+      "datasetId": "alpha",
+      "fileId": "file-emoji",
+      "name": "alpha.sync-kit.json",
+      "appFolderId": "folder-😀",
+      "modifiedTime": "2026-07-16T11:00:00.000Z"
+    },
+    {
+      "datasetId": "zeta",
+      "fileId": "file-duplicate",
+      "name": "zeta.sync-kit.json",
+      "appFolderId": "folder-",
+      "canEdit": true
+    }
+  ]
+}

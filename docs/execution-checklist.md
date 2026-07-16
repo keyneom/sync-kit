@@ -193,6 +193,22 @@ Validated on 2026-07-12 for the `0.2.0-rc.16` control-event signing correction:
   and both runtimes verify the resulting signed migration announcement;
 - no compatibility verifier for pre-release malformed events is retained.
 
+Validated on 2026-07-16 for `0.2.0-rc.17` accessible `drive.file` dataset
+discovery:
+
+- TypeScript and Kotlin enumerate every managed sharing dataset already granted
+  to the token even when its parent app-root is not listable;
+- both runtimes exhaust Drive pages, skip malformed/unrelated metadata,
+  deduplicate by file ID, and sort by app-folder ID, dataset ID, then file ID
+  using matching UTF-16 ordering from one shared fixture;
+- `listDatasets()` and metadata-head listing resolve existing storage without
+  creating an app-root or `exchanges` folder;
+- `npm run check` passed the unchanged compatibility fixtures, complete Android
+  unit suite, private/sharing parity gates, lint, strict typecheck, 140
+  TypeScript tests, build, and packed npm/pnpm consumer imports;
+- the release remains gated on normal consumer validation rather than a
+  package-owned interactive emulator harness.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive
