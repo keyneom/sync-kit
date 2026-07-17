@@ -199,7 +199,13 @@ class GoogleDriveSharedBackupTransport(
             }
             return
         }
-        if (head.headRevisionId != null && head.headRevisionId != currentVersion) {
+        if (head.headRevisionId == null) {
+            throw SyncKitError(
+                SyncKitErrorCode.STATE,
+                "Google Drive did not expose headRevisionId for a safe dataset write.",
+            )
+        }
+        if (head.headRevisionId != currentVersion) {
             throw SyncKitError(
                 SyncKitErrorCode.CONFLICT,
                 "The Drive dataset changed after it was last read.",

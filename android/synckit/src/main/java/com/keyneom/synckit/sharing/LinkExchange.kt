@@ -3,13 +3,19 @@ package com.keyneom.synckit.sharing
 import com.keyneom.synckit.core.SyncKitError
 import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.crypto.Base64Url
+import com.keyneom.synckit.crypto.CanonicalJson
 import com.keyneom.synckit.crypto.SyncKitJson
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.net.URI
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 /**
  * Link-carried key exchange (Kotlin parity with src/sharing/link-exchange.ts).
@@ -23,6 +29,11 @@ const val SHARING_JOIN_INVITATION_PARAM = "sk-inv"
 const val SHARING_JOIN_FILES_PARAM = "sk-files"
 const val SHARING_RESPONSE_MARKER_PARAM = "sk-resp"
 const val SHARING_RESPONSE_PAYLOAD_PARAM = "sk-kr"
+private const val SHARING_LINK_PERMISSION_PREFIX = "link:"
+
+/** Legacy unbound marker retained for source compatibility; new links reject it. */
+@Deprecated("Use createSharingLinkPermissionIdV1(files)")
+const val SHARING_LINK_PERMISSION_ID = "link"
 
 /** A dataset file the recipient is granted, so the Picker can offer it by id. */
 @Serializable
@@ -46,14 +57,6 @@ data class SharingLinkInvite(
     val invitation: SharingInvitationV1,
     val files: List<SharingDatasetFileV1>,
 )
-
-/**
- * Placeholder recipient permission id for the link-carried exchange (no Drive
- * exchange grant). Set identically on the invitation and passed to accept so the
- * anti-substitution equality check passes; provenance comes from the response
- * signature, not a Drive permission.
- */
-const val SHARING_LINK_PERMISSION_ID = "link"
 
 // --- payload encode/decode (signed structs unchanged; only transported) ---
 
@@ -80,10 +83,7 @@ fun decodeSharingPublicKeyResponseV1(encoded: String): SharingPublicKeyResponseV
     )
 
 fun encodeSharingDatasetFilesV1(files: List<SharingDatasetFileV1>): String {
-    if (files.isEmpty()) {
-        throw SyncKitError(SyncKitErrorCode.COMPATIBILITY, "A join link needs at least one dataset file.")
-    }
-    return encodeJson(files.map(::normalizeDatasetFile), ListSerializer(SharingDatasetFileV1.serializer()))
+    return encodeJson(normalizedDatasetFiles(files), ListSerializer(SharingDatasetFileV1.serializer()))
 }
 
 fun decodeSharingDatasetFilesV1(encoded: String): List<SharingDatasetFileV1> {
@@ -91,7 +91,63 @@ fun decodeSharingDatasetFilesV1(encoded: String): List<SharingDatasetFileV1> {
     if (files.isEmpty()) {
         throw SyncKitError(SyncKitErrorCode.COMPATIBILITY, "The join link dataset file list is malformed.")
     }
-    return files.map(::normalizeDatasetFile)
+    return normalizedDatasetFiles(files)
+}
+
+/** Binds the file manifest into the invitation's signed permission field. */
+fun createSharingLinkPermissionIdV1(files: List<SharingDatasetFileV1>): String {
+    val normalized = normalizedDatasetFiles(files)
+    val payload = buildJsonArray {
+        normalized.forEach { file ->
+            add(
+                buildJsonObject {
+                    put("datasetId", file.datasetId)
+                    put("fileId", file.fileId)
+                    put(
+                        "role",
+                        when (file.role) {
+                            SharingRole.ADMIN -> "admin"
+                            SharingRole.WRITER -> "writer"
+                            SharingRole.VIEWER -> "viewer"
+                            SharingRole.OWNER -> error("Owner is not a supported link grant role.")
+                        },
+                    )
+                },
+            )
+        }
+    }
+    val digest = MessageDigest.getInstance("SHA-256").digest(CanonicalJson.encodeAad(payload))
+    return SHARING_LINK_PERMISSION_PREFIX + Base64Url.encode(digest)
+}
+
+/** Verifies exact signed-grant/file-manifest correspondence before registry use. */
+fun verifySharingLinkDatasetFilesV1(
+    invitation: SharingInvitationV1,
+    files: List<SharingDatasetFileV1>,
+): List<SharingDatasetFileV1> {
+    val normalized = normalizedDatasetFiles(files)
+    val grants = invitation.requestedGrants.sortedWith { left, right ->
+        CanonicalJson.compareUtf16CodeUnits(left.datasetId, right.datasetId)
+    }
+    if (
+        normalized.size != grants.size ||
+        normalized.indices.any { index ->
+            normalized[index].datasetId != grants[index].datasetId ||
+                normalized[index].role != grants[index].role
+        }
+    ) {
+        throw SyncKitError(
+            SyncKitErrorCode.AUTHORIZATION,
+            "The sharing link file manifest does not exactly match its signed grants.",
+        )
+    }
+    if (invitation.recipientDrivePermissionId != createSharingLinkPermissionIdV1(normalized)) {
+        throw SyncKitError(
+            SyncKitErrorCode.AUTHORIZATION,
+            "The sharing link file manifest is not authenticated by its invitation.",
+        )
+    }
+    return normalized
 }
 
 // --- link builders / parsers ---
@@ -174,6 +230,22 @@ private fun normalizeDatasetFile(file: SharingDatasetFileV1): SharingDatasetFile
         throw SyncKitError(SyncKitErrorCode.COMPATIBILITY, "A dataset file has an unsupported role: owner.")
     }
     return file
+}
+
+private fun normalizedDatasetFiles(files: List<SharingDatasetFileV1>): List<SharingDatasetFileV1> {
+    if (files.isEmpty()) {
+        throw SyncKitError(SyncKitErrorCode.COMPATIBILITY, "A join link needs at least one dataset file.")
+    }
+    val normalized = files.map(::normalizeDatasetFile).sortedWith { left, right ->
+        CanonicalJson.compareUtf16CodeUnits(left.datasetId, right.datasetId)
+    }
+    normalized.zipWithNext().firstOrNull { (left, right) -> left.datasetId == right.datasetId }?.let {
+        throw SyncKitError(
+            SyncKitErrorCode.COMPATIBILITY,
+            "Duplicate dataset file ${it.first.datasetId}.",
+        )
+    }
+    return normalized
 }
 
 private fun appendQueryParams(landingUrl: String, params: Map<String, String>): String {

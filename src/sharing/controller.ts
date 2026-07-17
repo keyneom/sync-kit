@@ -13,7 +13,11 @@ import {
   type SharingRole,
   type SharedBackupParticipantV1,
 } from "./index.js";
-import type { SharingDatasetFileV1 } from "./link-exchange.js";
+import {
+  createSharingLinkPermissionIdV1,
+  verifySharingLinkDatasetFilesV1,
+  type SharingDatasetFileV1,
+} from "./link-exchange.js";
 import type {
   SharedBackupStorage,
   SharedBackupTransport,
@@ -36,14 +40,6 @@ import {
 } from "./web-crypto.js";
 import { formatSharingInviteEmailMessage, appendSharingJoinParams } from "./join.js";
 export { IndexedDbSharedBackupRegistry } from "./registry-indexeddb.js";
-
-/**
- * Placeholder recipient permission id for the link-carried exchange, which has
- * no Drive exchange grant. Set identically on the invitation and passed to
- * accept, so the anti-substitution equality check passes; account provenance in
- * this flow comes from the response signature, not a Drive permission.
- */
-const SHARING_LINK_PERMISSION_ID = "link";
 
 export type SharedBackupControllerCodec<T> = SharedBackupCodec<T> & {
   merge(local: T, remote: T): T;
@@ -307,20 +303,17 @@ export class SharedBackupController<T> {
   deleteDataset(datasetId: string): Promise<void> {
     return this.serialized(async () => {
       requireNonEmpty(datasetId, "datasetId");
-      const fileId =
-        (await this.options.registry.get(datasetId))?.fileId ??
-        (await this.options.transport.listDatasets()).find(
-          (candidate) => candidate.datasetId === datasetId,
-        )?.fileId;
-      if (fileId) {
-        if (!this.options.transport.deleteDataset) {
-          throw new SyncKitError(
-            "state",
-            "This transport does not support deleting datasets.",
-          );
-        }
-        await this.options.transport.deleteDataset(fileId);
+      const stored = await this.readDatasetById(datasetId);
+      const record = await this.requiredRegistry(datasetId);
+      await this.verifyHead(stored, record);
+      await this.requireDatasetOwner(stored);
+      if (!this.options.transport.deleteDataset) {
+        throw new SyncKitError(
+          "state",
+          "This transport does not support deleting datasets.",
+        );
       }
+      await this.options.transport.deleteDataset(stored.fileId);
       await this.options.registry.delete(datasetId);
     });
   }
@@ -335,22 +328,35 @@ export class SharedBackupController<T> {
   trashDataset(datasetId: string): Promise<void> {
     return this.serialized(async () => {
       requireNonEmpty(datasetId, "datasetId");
-      const fileId =
-        (await this.options.registry.get(datasetId))?.fileId ??
-        (await this.options.transport.listDatasets()).find(
-          (candidate) => candidate.datasetId === datasetId,
-        )?.fileId;
-      if (fileId) {
-        if (!this.options.transport.trashDataset) {
-          throw new SyncKitError(
-            "state",
-            "This transport does not support trashing datasets.",
-          );
-        }
-        await this.options.transport.trashDataset(fileId);
+      const stored = await this.readDatasetById(datasetId);
+      const record = await this.requiredRegistry(datasetId);
+      await this.verifyHead(stored, record);
+      await this.requireDatasetOwner(stored);
+      if (!this.options.transport.trashDataset) {
+        throw new SyncKitError(
+          "state",
+          "This transport does not support trashing datasets.",
+        );
       }
+      await this.options.transport.trashDataset(stored.fileId);
       await this.options.registry.delete(datasetId);
     });
+  }
+
+  private async requireDatasetOwner(
+    stored: VersionedSharedDataset,
+  ): Promise<void> {
+    const currentIdentity = await this.options.identity();
+    const participant = sharedBackupParticipant(
+      stored.envelope,
+      currentIdentity.publicKey.keyId,
+    );
+    if (participant?.role !== "owner") {
+      throw new SyncKitError(
+        "authorization",
+        `Only the cryptographic owner may dispose of dataset ${stored.datasetId}.`,
+      );
+    }
   }
 
   loadDataset(datasetId: string): Promise<SharedDatasetResult<T>> {
@@ -616,6 +622,7 @@ export class SharedBackupController<T> {
     recipientEmailAddress: string;
   }): Promise<AcceptedDatasetResult[]> {
     return this.serialized(async () => {
+      this.requireConfiguredAccountBindingVerifier();
       const identity = await this.options.identity();
       const responseFile = await this.options.transport.readKeyResponse(
         input.responseFileId,
@@ -637,16 +644,6 @@ export class SharedBackupController<T> {
               credentialId: binding.passkey.credentialId,
             })
           : undefined;
-      if (
-        binding &&
-        this.options.requireAccountBinding &&
-        !this.options.verifyAccountBinding
-      ) {
-        throw new SyncKitError(
-          "configuration",
-          "Account binding is required but no verifier is configured.",
-        );
-      }
       const accepted = await acceptSharingPublicKeyResponseV1(
         input.invitation,
         responseFile.response,
@@ -755,7 +752,7 @@ export class SharedBackupController<T> {
         await this.options.transport.setDatasetPermission(
           stored.fileId,
           input.emailAddress,
-          grant.role,
+          "viewer",
           { hasInheritedReadAccess: false },
         );
         files.push({
@@ -780,7 +777,8 @@ export class SharedBackupController<T> {
         {
           appId: this.options.appId,
           appFolderId: storage.appFolderId,
-          recipientDrivePermissionId: SHARING_LINK_PERMISSION_ID,
+          recipientDrivePermissionId:
+            await createSharingLinkPermissionIdV1(files, this.crypto()),
           requestedGrants: input.requestedGrants,
           trustedOwnerKeyId,
           ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
@@ -813,6 +811,11 @@ export class SharedBackupController<T> {
           "The invitation belongs to another app.",
         );
       }
+      const verifiedFiles = await verifySharingLinkDatasetFilesV1(
+        verified,
+        datasetFiles,
+        this.crypto(),
+      );
       const identity = await this.options.identity();
       const accountBinding = await this.options.createAccountBinding?.({
         appId: this.options.appId,
@@ -829,7 +832,7 @@ export class SharedBackupController<T> {
         this.cryptoOptions(),
       );
       const fileById = new Map(
-        datasetFiles.map((file) => [file.datasetId, file.fileId]),
+        verifiedFiles.map((file) => [file.datasetId, file.fileId]),
       );
       for (const grant of verified.requestedGrants) {
         const existing = await this.options.registry.get(grant.datasetId);
@@ -870,6 +873,7 @@ export class SharedBackupController<T> {
     recipientEmailAddress: string;
   }): Promise<AcceptedDatasetResult[]> {
     return this.serialized(async () => {
+      this.requireConfiguredAccountBindingVerifier();
       const identity = await this.options.identity();
       const binding = input.response.accountBinding;
       if (this.options.requireAccountBinding && !binding) {
@@ -903,6 +907,18 @@ export class SharedBackupController<T> {
         input.recipientEmailAddress,
       );
     });
+  }
+
+  private requireConfiguredAccountBindingVerifier(): void {
+    if (
+      this.options.requireAccountBinding &&
+      !this.options.verifyAccountBinding
+    ) {
+      throw new SyncKitError(
+        "configuration",
+        "Account binding is required but no verifier is configured.",
+      );
+    }
   }
 
   /**

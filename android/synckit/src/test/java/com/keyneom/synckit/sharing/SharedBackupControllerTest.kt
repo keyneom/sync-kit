@@ -116,6 +116,65 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun rejectsEveryRequiredBindingAcceptancePathWithoutAVerifier() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val binding = fixtureAccountBinding()
+        val ownerController = controller(
+            owner,
+            transport,
+            MemorySharedBackupRegistry(),
+            requireAccountBinding = true,
+        )
+        val recipientController = controller(
+            recipient,
+            transport,
+            MemorySharedBackupRegistry(),
+            createAccountBinding = { binding },
+        )
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        val driveInvite = ownerController.inviteParticipant(
+            InviteParticipantInput(
+                emailAddress = "recipient@example.com",
+                requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+            ),
+        )
+        val driveResponse = recipientController.submitKeyResponse(driveInvite.invitationFileId)
+        val driveError = runCatching {
+            ownerController.acceptKeyResponse(
+                driveInvite.invitation,
+                driveResponse.first,
+                "recipient@example.com",
+            )
+        }.exceptionOrNull() as SyncKitError
+        assertEquals(SyncKitErrorCode.CONFIGURATION, driveError.code)
+
+        val linkInvite = ownerController.inviteParticipantForLink(
+            emailAddress = "recipient@example.com",
+            requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+        )
+        val linkResponse = recipientController.submitKeyResponseFromInvitation(
+            linkInvite.invitation,
+            linkInvite.files,
+        )
+        val linkError = runCatching {
+            ownerController.acceptKeyResponseFromPayload(
+                linkInvite.invitation,
+                linkResponse,
+                "recipient@example.com",
+            )
+        }.exceptionOrNull() as SyncKitError
+        assertEquals(SyncKitErrorCode.CONFIGURATION, linkError.code)
+
+        assertEquals(
+            listOf(owner.publicKey.keyId),
+            ownerController.getDatasetParticipants("tasks").participants.map { it.keyId },
+        )
+    }
+
+    @Test
     fun mixedCodecInvitationAcceptsAndReencryptsAppAndControlDatasets() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val recipient = SharingCrypto.generateIdentity()
@@ -359,6 +418,7 @@ class SharedBackupControllerTest {
         )
         assertEquals(1, invite.files.size)
         assertEquals("tasks", invite.files[0].datasetId)
+        assertEquals("reader", transport.listDatasetPermissions("dataset-tasks").single().role)
         val joinLink = buildSharingJoinLinkV1(landing, invite.invitation, invite.files)
 
         // Recipient: parse link, produce a response link. No Drive exchange read.
@@ -378,6 +438,7 @@ class SharedBackupControllerTest {
         )
         assertEquals(1, accepted.size)
         assertEquals("accepted", accepted[0].status)
+        assertEquals("writer", transport.listDatasetPermissions("dataset-tasks").single().role)
 
         // Recipient can now read and write the dataset — no exchange files touched.
         val loaded = recipientController.loadDataset("tasks")
@@ -388,6 +449,72 @@ class SharedBackupControllerTest {
         )
         assertEquals(listOf("owner", "recipient"), synced.value.items)
         assertEquals("updated", synced.outcome)
+    }
+
+    @Test
+    fun keepsLinkGrantsReadOnlyUntilVerifiedAcceptance() = runBlocking {
+        for (role in listOf(SharingRole.VIEWER, SharingRole.WRITER, SharingRole.ADMIN)) {
+            val owner = SharingCrypto.generateIdentity()
+            val recipient = SharingCrypto.generateIdentity()
+            val transport = MemorySharingTransport()
+            val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+            val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+            ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+            val invite = ownerController.inviteParticipantForLink(
+                emailAddress = "recipient@example.com",
+                requestedGrants = listOf(SharingDatasetGrantV1("tasks", role)),
+            )
+            assertEquals("reader", transport.listDatasetPermissions("dataset-tasks").single().role)
+
+            val response = recipientController.submitKeyResponseFromInvitation(
+                invite.invitation,
+                invite.files,
+            )
+            ownerController.acceptKeyResponseFromPayload(
+                invite.invitation,
+                response,
+                "recipient@example.com",
+            )
+
+            assertEquals(
+                if (role == SharingRole.VIEWER) "reader" else "writer",
+                transport.listDatasetPermissions("dataset-tasks").single().role,
+            )
+        }
+    }
+
+    @Test
+    fun rejectsUnauthenticatedOrAmbiguousLinkFilesBeforeRegistryWrites() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+        val invite = ownerController.inviteParticipantForLink(
+            emailAddress = "recipient@example.com",
+            requestedGrants = listOf(SharingDatasetGrantV1("tasks", SharingRole.WRITER)),
+        )
+        val valid = invite.files.single()
+        val invalidManifests = listOf(
+            emptyList(),
+            listOf(valid, SharingDatasetFileV1("extra", "dataset-extra", SharingRole.VIEWER)),
+            listOf(valid, valid),
+            listOf(valid.copy(role = SharingRole.VIEWER)),
+            listOf(valid.copy(fileId = "attacker-selected-file")),
+        )
+
+        for (files in invalidManifests) {
+            val registry = MemorySharedBackupRegistry()
+            val recipientController = controller(recipient, transport, registry)
+            assertTrue(
+                runCatching {
+                    recipientController.submitKeyResponseFromInvitation(invite.invitation, files)
+                }.exceptionOrNull() is SyncKitError,
+            )
+            assertEquals(null, registry.get("tasks"))
+            assertEquals(null, registry.get("extra"))
+        }
     }
 
     @Test
@@ -588,6 +715,46 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun rejectsDatasetDisposalByNonOwnerRoles() = runBlocking {
+        for (role in listOf(SharingRole.VIEWER, SharingRole.WRITER, SharingRole.ADMIN)) {
+            for (operation in listOf("delete", "trash")) {
+                val owner = SharingCrypto.generateIdentity()
+                val recipient = SharingCrypto.generateIdentity()
+                val transport = MemorySharingTransport()
+                val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+                val recipientRegistry = MemorySharedBackupRegistry()
+                val recipientController = controller(recipient, transport, recipientRegistry)
+                ownerController.createDataset("tasks", Payload(listOf("owner")))
+                val invite = ownerController.inviteParticipantForLink(
+                    emailAddress = "recipient@example.com",
+                    requestedGrants = listOf(SharingDatasetGrantV1("tasks", role)),
+                )
+                val response = recipientController.submitKeyResponseFromInvitation(
+                    invite.invitation,
+                    invite.files,
+                )
+                ownerController.acceptKeyResponseFromPayload(
+                    invite.invitation,
+                    response,
+                    "recipient@example.com",
+                )
+
+                val error = runCatching {
+                    if (operation == "delete") {
+                        recipientController.deleteDataset("tasks")
+                    } else {
+                        recipientController.trashDataset("tasks")
+                    }
+                }.exceptionOrNull() as SyncKitError
+
+                assertEquals(SyncKitErrorCode.AUTHORIZATION, error.code)
+                assertEquals("tasks", transport.readDataset("dataset-tasks").datasetId)
+                assertTrue(recipientRegistry.get("tasks") != null)
+            }
+        }
+    }
+
+    @Test
     fun addDatasetParticipantGrantsAccessToKnownPublicKeyWithoutExchange() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val recipient = SharingCrypto.generateIdentity()
@@ -729,6 +896,9 @@ class SharedBackupControllerTest {
         identity: SharingIdentity,
         transport: SharedBackupTransport,
         registry: SharedBackupRegistry,
+        createAccountBinding: (suspend (AccountBindingContext) -> SharingAccountBindingV1)? = null,
+        verifyAccountBinding: (suspend (SharingAccountBindingV1, VerifiedAccountBindingContext) -> VerifiedAccount)? = null,
+        requireAccountBinding: Boolean = false,
         codecForDataset: ((String) -> SharedBackupControllerCodec<*>?)? = null,
     ): SharedBackupController<Payload> = SharedBackupController(
         appId = "controller-test",
@@ -737,9 +907,31 @@ class SharedBackupControllerTest {
         identity = { identity },
         transport = transport,
         registry = registry,
+        createAccountBinding = createAccountBinding,
+        verifyAccountBinding = verifyAccountBinding,
+        requireAccountBinding = requireAccountBinding,
         cryptoOptions = SharingCryptoOptions(
             now = { java.util.Date.from(java.time.Instant.parse("2026-07-01T12:00:00.000Z")) },
             randomUuid = { "generated-${++uuidCounter}" },
+        ),
+    )
+
+    private fun fixtureAccountBinding(): SharingAccountBindingV1 = SharingAccountBindingV1(
+        schemaVersion = 1,
+        kind = "sync-kit-sharing-account-binding",
+        challenge = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        googleIdToken = "fixture.jwt.token",
+        passkey = SharingPasskeyAssertionV1(
+            credentialId = "Y3JlZGVudGlhbC0x",
+            credentialPublicKey = buildJsonObject {
+                put("kty", "EC")
+                put("crv", "P-256")
+                put("x", "x")
+                put("y", "y")
+            },
+            authenticatorData = "AQ",
+            clientDataJSON = "AQ",
+            signature = "AQ",
         ),
     )
 

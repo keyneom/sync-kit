@@ -14,6 +14,7 @@ import {
 import {
   buildSharingJoinLinkV1,
   buildSharingResponseLinkV1,
+  createSharingLinkPermissionIdV1,
   encodeSharingInvitationV1,
   encodeSharingPublicKeyResponseV1,
 } from "../dist/sharing/index.js";
@@ -24,11 +25,16 @@ const landing = "https://keyneom.github.io/easy-bc/";
 const owner = await createWebCryptoSharingIdentity();
 const recipient = await createWebCryptoSharingIdentity();
 
+const files = [
+  { datasetId: "primary", fileId: "file-primary", role: "viewer" },
+  { datasetId: "secondary", fileId: "file-secondary", role: "writer" },
+];
+
 const invitation = await createSharingInvitationV1(owner, {
   appId: "easy-bc",
   appFolderId: "app-folder-1",
   exchangeId: "exchange-1",
-  recipientDrivePermissionId: "link",
+  recipientDrivePermissionId: await createSharingLinkPermissionIdV1(files),
   requestedGrants: [
     { datasetId: "primary", role: "viewer" },
     { datasetId: "secondary", role: "writer" },
@@ -41,11 +47,6 @@ const response = await createSharingPublicKeyResponseV1(recipient, {
   exchangeId: "exchange-1",
   createdAt: "2026-07-08T12:05:00.000Z",
 });
-
-const files = [
-  { datasetId: "primary", fileId: "file-primary", role: "viewer" },
-  { datasetId: "secondary", fileId: "file-secondary", role: "writer" },
-];
 
 const fixture = {
   provenance: "Synthetic link-exchange WebCrypto conformance vector",

@@ -190,9 +190,11 @@ class SharedBackupController<T>(
     /** Delete a dataset file from the transport and forget its local record. */
     suspend fun deleteDataset(datasetId: String): Unit = serialized {
         requireNonEmpty(datasetId, "datasetId")
-        val fileId = registry.get(datasetId)?.fileId
-            ?: transport.listDatasets().find { it.datasetId == datasetId }?.fileId
-        if (fileId != null) transport.deleteDataset(fileId)
+        val stored = readDatasetById(datasetId)
+        val record = requiredRegistry(datasetId)
+        verifyHead(stored, record)
+        requireDatasetOwner(stored)
+        transport.deleteDataset(stored.fileId)
         registry.delete(datasetId)
     }
 
@@ -205,10 +207,23 @@ class SharedBackupController<T>(
      */
     suspend fun trashDataset(datasetId: String): Unit = serialized {
         requireNonEmpty(datasetId, "datasetId")
-        val fileId = registry.get(datasetId)?.fileId
-            ?: transport.listDatasets().find { it.datasetId == datasetId }?.fileId
-        if (fileId != null) transport.trashDataset(fileId)
+        val stored = readDatasetById(datasetId)
+        val record = requiredRegistry(datasetId)
+        verifyHead(stored, record)
+        requireDatasetOwner(stored)
+        transport.trashDataset(stored.fileId)
         registry.delete(datasetId)
+    }
+
+    private suspend fun requireDatasetOwner(stored: VersionedSharedDataset) {
+        val currentIdentity = identity()
+        val participant = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+        if (participant?.role != SharingRole.OWNER) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only the cryptographic owner may dispose of dataset ${stored.datasetId}.",
+            )
+        }
     }
 
     suspend fun loadDataset(datasetId: String): SharedDatasetResult<T> = serialized {
@@ -407,6 +422,7 @@ class SharedBackupController<T>(
         responseFileId: String,
         recipientEmailAddress: String,
     ): List<AcceptedDatasetResult> = serialized {
+        requireConfiguredAccountBindingVerifier()
         val currentIdentity = identity()
         val responseFile = transport.readKeyResponse(
             responseFileId,
@@ -431,12 +447,6 @@ class SharedBackupController<T>(
             )
         } else {
             null
-        }
-        if (binding != null && requireAccountBinding && verifyAccountBinding == null) {
-            throw SyncKitError(
-                SyncKitErrorCode.CONFIGURATION,
-                "Account binding is required but no verifier is configured.",
-            )
         }
         val accepted = SharingCrypto.acceptSharingPublicKeyResponseV1(
             invitation = invitation,
@@ -523,7 +533,7 @@ class SharedBackupController<T>(
             transport.setDatasetPermission(
                 fileId = stored.fileId,
                 emailAddress = emailAddress,
-                role = grant.role,
+                role = SharingRole.VIEWER,
                 hasInheritedReadAccess = false,
             )
             files += SharingDatasetFileV1(grant.datasetId, stored.fileId, grant.role)
@@ -540,7 +550,7 @@ class SharedBackupController<T>(
             input = CreateSharingInvitationInput(
                 appId = appId,
                 appFolderId = storage.appFolderId,
-                recipientDrivePermissionId = SHARING_LINK_PERMISSION_ID,
+                recipientDrivePermissionId = createSharingLinkPermissionIdV1(files),
                 requestedGrants = requestedGrants,
                 trustedOwnerKeyId = trustedOwnerKeyIds.first(),
                 expiresAt = expiresAt,
@@ -567,6 +577,7 @@ class SharedBackupController<T>(
                 "The invitation belongs to another app.",
             )
         }
+        val verifiedFiles = verifySharingLinkDatasetFilesV1(verified, datasetFiles)
         val currentIdentity = identity()
         val accountBinding = createAccountBinding?.invoke(
             AccountBindingContext(
@@ -582,7 +593,7 @@ class SharedBackupController<T>(
             options = cryptoOptions,
             accountBinding = accountBinding,
         )
-        val fileById = datasetFiles.associate { it.datasetId to it.fileId }
+        val fileById = verifiedFiles.associate { it.datasetId to it.fileId }
         for (grant in verified.requestedGrants) {
             val existing = registry.get(grant.datasetId)
             if (existing != null && existing.trustedOwnerKeyId != verified.trustedOwnerKeyId) {
@@ -615,6 +626,7 @@ class SharedBackupController<T>(
         response: SharingPublicKeyResponseV1,
         recipientEmailAddress: String,
     ): List<AcceptedDatasetResult> = serialized {
+        requireConfiguredAccountBindingVerifier()
         val currentIdentity = identity()
         val binding = response.accountBinding
         if (requireAccountBinding && binding == null) {
@@ -645,6 +657,15 @@ class SharedBackupController<T>(
             googleSubject = verifiedAccount?.subject,
         )
         applyAcceptedGrants(accepted, currentIdentity, recipientEmailAddress)
+    }
+
+    private fun requireConfiguredAccountBindingVerifier() {
+        if (requireAccountBinding && verifyAccountBinding == null) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "Account binding is required but no verifier is configured.",
+            )
+        }
     }
 
     suspend fun reconcileDrivePermissions(

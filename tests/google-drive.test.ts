@@ -738,6 +738,31 @@ describe("Google Drive dataset change tokens", () => {
     expect(requestHeader(uploadInit, "If-Match")).toBe('"rev-7-etag"');
   });
 
+  it("does not write when v2 omits headRevisionId", async () => {
+    const envelope = await makeEnvelope();
+    const next = { ...envelope, revisionId: "revision-2", parentRevisionId: "revision-1" };
+    const current = {
+      datasetId: "ds-1",
+      fileId: "ds-file",
+      name: "ds-1.sync-kit.json",
+      envelope,
+      version: "rev-7",
+    };
+    const fetch = vi.fn().mockResolvedValueOnce(
+      Response.json({ etag: '"rev-7-etag"' }),
+    );
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: { authorize: async () => authorization, clear: vi.fn() },
+      drive: new GoogleDriveFileStore({ fetch }),
+    });
+
+    await expect(transport.writeDataset(current, next)).rejects.toMatchObject({
+      code: "state",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("reports stale v2 If-Match writes as conflicts", async () => {
     const envelope = await makeEnvelope();
     const next = { ...envelope, revisionId: "revision-2", parentRevisionId: "revision-1" };

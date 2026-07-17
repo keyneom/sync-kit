@@ -758,7 +758,13 @@ function assertWriteHeadFresh(
     }
     return;
   }
-  if (head.headRevisionId && head.headRevisionId !== currentVersion) {
+  if (!head.headRevisionId) {
+    throw new SyncKitError(
+      "state",
+      "Google Drive did not expose headRevisionId for a safe dataset write.",
+    );
+  }
+  if (head.headRevisionId !== currentVersion) {
     throw new SyncKitError(
       "conflict",
       "The Drive dataset changed after it was last read.",

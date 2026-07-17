@@ -17,6 +17,7 @@ import {
   parseSharingJoinLinkV1,
   parseSharingResponseLinkV1,
   type SharingDatasetFileV1,
+  verifySharingLinkDatasetFilesV1,
 } from "../src/sharing/link-exchange.js";
 
 const landing = "https://keyneom.github.io/easy-bc/";
@@ -119,6 +120,14 @@ describe("link-carried sharing exchange", () => {
       fixture.expected.recipientKeyId,
     );
     expect(parseSharingJoinLinkV1(fixture.joinLink)?.files.length).toBe(2);
+    const parsedJoin = parseSharingJoinLinkV1(fixture.joinLink);
+    if (!parsedJoin) throw new Error("fixture join link did not parse");
+    await expect(
+      verifySharingLinkDatasetFilesV1(
+        parsedJoin.invitation,
+        parsedJoin.files,
+      ),
+    ).resolves.toEqual(parsedJoin.files);
   });
 
   it("returns null for links that are not the expected kind", () => {

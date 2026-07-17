@@ -1,5 +1,10 @@
 import { SyncKitError } from "../core/errors.js";
+import {
+  canonicalAad,
+  compareUtf16CodeUnits,
+} from "../crypto/canonical.js";
 import { base64UrlToBytes, bytesToBase64Url } from "../crypto/index.js";
+import { copyBuffer } from "../crypto/runtime.js";
 import {
   parseSharingInvitationV1,
   parseSharingPublicKeyResponseV1,
@@ -34,6 +39,7 @@ export const SHARING_JOIN_INVITATION_PARAM = "sk-inv";
 export const SHARING_JOIN_FILES_PARAM = "sk-files";
 export const SHARING_RESPONSE_MARKER_PARAM = "sk-resp";
 export const SHARING_RESPONSE_PAYLOAD_PARAM = "sk-kr";
+const SHARING_LINK_PERMISSION_PREFIX = "link:";
 
 export type SharingJoinLinkV1 = {
   invitation: SharingInvitationV1;
@@ -71,10 +77,7 @@ export function decodeSharingPublicKeyResponseV1(
 export function encodeSharingDatasetFilesV1(
   files: SharingDatasetFileV1[],
 ): string {
-  if (files.length === 0) {
-    throw new SyncKitError("compatibility", "A join link needs at least one dataset file.");
-  }
-  return encodeJson(files.map(normalizeDatasetFile));
+  return encodeJson(normalizedDatasetFiles(files));
 }
 
 export function decodeSharingDatasetFilesV1(
@@ -84,7 +87,64 @@ export function decodeSharingDatasetFilesV1(
   if (!Array.isArray(value) || value.length === 0) {
     throw new SyncKitError("compatibility", "The join link dataset file list is malformed.");
   }
-  return value.map(normalizeDatasetFile);
+  return normalizedDatasetFiles(value);
+}
+
+/**
+ * Binds the link-carried dataset/file/role manifest into the invitation's
+ * already-signed recipient permission field without changing its wire shape.
+ */
+export async function createSharingLinkPermissionIdV1(
+  files: SharingDatasetFileV1[],
+  cryptoImplementation: Crypto = globalThis.crypto,
+): Promise<string> {
+  if (!cryptoImplementation?.subtle) {
+    throw new SyncKitError(
+      "configuration",
+      "Web Crypto is required to authenticate a sharing link file manifest.",
+    );
+  }
+  const digest = await cryptoImplementation.subtle.digest(
+    "SHA-256",
+    copyBuffer(canonicalAad(normalizedDatasetFiles(files))),
+  );
+  return `${SHARING_LINK_PERMISSION_PREFIX}${bytesToBase64Url(new Uint8Array(digest))}`;
+}
+
+/** Verifies exact signed-grant/file-manifest correspondence before registry use. */
+export async function verifySharingLinkDatasetFilesV1(
+  invitation: SharingInvitationV1,
+  files: SharingDatasetFileV1[],
+  cryptoImplementation: Crypto = globalThis.crypto,
+): Promise<SharingDatasetFileV1[]> {
+  const normalized = normalizedDatasetFiles(files);
+  const grants = [...invitation.requestedGrants].sort((left, right) =>
+    compareUtf16CodeUnits(left.datasetId, right.datasetId),
+  );
+  if (
+    normalized.length !== grants.length ||
+    normalized.some(
+      (file, index) =>
+        file.datasetId !== grants[index]?.datasetId ||
+        file.role !== grants[index]?.role,
+    )
+  ) {
+    throw new SyncKitError(
+      "authorization",
+      "The sharing link file manifest does not exactly match its signed grants.",
+    );
+  }
+  const expected = await createSharingLinkPermissionIdV1(
+    normalized,
+    cryptoImplementation,
+  );
+  if (invitation.recipientDrivePermissionId !== expected) {
+    throw new SyncKitError(
+      "authorization",
+      "The sharing link file manifest is not authenticated by its invitation.",
+    );
+  }
+  return normalized;
 }
 
 // --- link builders / parsers ---
@@ -196,6 +256,27 @@ function normalizeDatasetFile(value: unknown): SharingDatasetFileV1 {
     fileId: entry.fileId as string,
     role,
   };
+}
+
+function normalizedDatasetFiles(value: unknown[]): SharingDatasetFileV1[] {
+  if (value.length === 0) {
+    throw new SyncKitError(
+      "compatibility",
+      "A join link needs at least one dataset file.",
+    );
+  }
+  const files = value.map(normalizeDatasetFile).sort((left, right) =>
+    compareUtf16CodeUnits(left.datasetId, right.datasetId),
+  );
+  for (let index = 1; index < files.length; index += 1) {
+    if (files[index - 1]?.datasetId === files[index]?.datasetId) {
+      throw new SyncKitError(
+        "compatibility",
+        `Duplicate dataset file ${files[index]?.datasetId}.`,
+      );
+    }
+  }
+  return files;
 }
 
 function toSearchParams(input: string | URLSearchParams): URLSearchParams {

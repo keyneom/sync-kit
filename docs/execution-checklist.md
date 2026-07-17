@@ -246,6 +246,30 @@ Stable promotion on 2026-07-16:
 - stable `0.2.0` contains no protocol change after RC19 and is promoted from
   that validated candidate through the same coordinated tag workflows.
 
+Post-`0.2.0` review follow-ups are tracked in
+[v0.2.0-follow-up-issues.md](v0.2.0-follow-up-issues.md). They are not part of
+the validated `0.2.0` release record. Web/Android protocol or controller fixes
+must land with parity tests before a later release.
+
+Validated on 2026-07-16 for `0.2.1` sharing and concurrency hardening:
+
+- required account binding fails closed on both Drive-file and link-payload
+  acceptance when no verifier is configured;
+- Drive writes fail before upload when a non-ETag read cannot be matched to a
+  current `headRevisionId`;
+- link invitees receive reader access until verified cryptographic enrollment,
+  after which writer/admin Drive access is upgraded;
+- delete and recovery-safe trash require a verified owner-pinned head and the
+  current cryptographic owner;
+- link dataset/file/role manifests are canonically hashed into the existing
+  signed invitation field and verified before any registry write; pending
+  unbound links from older versions must be recreated;
+- Web protected-identity creation uses Web Locks plus atomic IndexedDB
+  create-if-absent semantics;
+- the versioned `npm run check` gate passed Android, Java fixtures, JS/Kotlin
+  parity, 157 TypeScript tests, lint, typecheck, build, and packed npm/pnpm
+  imports.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive

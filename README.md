@@ -42,6 +42,13 @@ with equivalent Android and cross-platform fixture coverage. The RC19
 candidate passed live existing-profile discovery and reload validation on Web
 and Android before stable promotion.
 
+Version `0.2.1` hardens sharing acceptance, Drive write concurrency, link ACL
+timing, destructive dataset authorization, authenticated link file manifests,
+and cross-context Web sharing-identity creation. Web and Android implement the
+same controller and link-manifest behavior. Existing datasets and identities
+need no migration, but pending join links created by `0.2.0` or earlier must be
+recreated because new recipients reject their unbound `sk-files` manifests.
+
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the
 packed tarball. They do not install this package into EasyBC, Family Chores, or

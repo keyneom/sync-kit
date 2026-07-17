@@ -2,6 +2,8 @@ package com.keyneom.synckit.stores
 
 import com.keyneom.synckit.core.Authorization
 import com.keyneom.synckit.core.AuthorizationProvider
+import com.keyneom.synckit.core.SyncKitError
+import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.crypto.SyncKitJson
 import com.keyneom.synckit.sharing.CreateSharedBackupEnvelopeInput
 import com.keyneom.synckit.sharing.SharedBackupCodec
@@ -206,6 +208,27 @@ class GoogleDriveSharedBackupTransportTest {
         val upload = requests[1]
         assertEquals("PUT", upload.method)
         assertEquals("\"rev-7-etag\"", upload.getHeader("If-Match"))
+    }
+
+    @Test
+    fun writeDatasetDoesNotWriteWhenV2OmitsHeadRevisionId() = runBlocking {
+        val first = envelope()
+        val next = envelope(revisionId = "revision-2", previous = first)
+        val current = VersionedSharedDataset(
+            datasetId = "ds-1",
+            fileId = "ds-file",
+            name = "ds-1.sync-kit.json",
+            envelope = first,
+            version = "rev-7",
+        )
+        server.enqueue(json("""{"etag":"\"rev-7-etag\""}"""))
+
+        val error = assertThrows(SyncKitError::class.java) {
+            runBlocking { transport().writeDataset(current, next) }
+        }
+
+        assertEquals(SyncKitErrorCode.STATE, error.code)
+        assertEquals(1, server.requestCount)
     }
 
     @Test

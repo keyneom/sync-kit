@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SyncKitError } from "../src/core/errors.js";
 import { readFileSync } from "node:fs";
 import {
   createSharedBackupController,
@@ -36,6 +37,7 @@ import {
   buildSharingResponseLinkV1,
   parseSharingJoinLinkV1,
   parseSharingResponseLinkV1,
+  type SharingDatasetFileV1,
 } from "../src/sharing/link-exchange.js";
 
 type Payload = {
@@ -194,6 +196,61 @@ describe("shared-backup controller", () => {
     ).toBe("google-subject");
   });
 
+  it("rejects every required-binding acceptance path without a verifier", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const binding = fixtureAccountBinding();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+      { requireAccountBinding: true },
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+      { createAccountBinding: async () => binding },
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+
+    const driveInvite = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const driveResponse = await recipientController.submitKeyResponse(
+      driveInvite.invitationFileId,
+    );
+    await expect(
+      ownerController.acceptKeyResponse({
+        invitation: driveInvite.invitation,
+        responseFileId: driveResponse.responseFileId,
+        recipientEmailAddress: "recipient@example.com",
+      }),
+    ).rejects.toMatchObject({ code: "configuration" });
+
+    const linkInvite = await ownerController.inviteParticipantForLink({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const linkResponse = await recipientController.submitKeyResponseFromInvitation(
+      linkInvite.invitation,
+      linkInvite.files,
+    );
+    await expect(
+      ownerController.acceptKeyResponseFromPayload({
+        invitation: linkInvite.invitation,
+        response: linkResponse,
+        recipientEmailAddress: "recipient@example.com",
+      }),
+    ).rejects.toMatchObject({ code: "configuration" });
+
+    await expect(ownerController.getDatasetParticipants("tasks")).resolves.toMatchObject({
+      participants: [{ keyId: owner.publicKey.keyId, role: "owner" }],
+    });
+  });
+
   it("completes a link-carried invite, response, and acceptance flow", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const recipient = await createWebCryptoSharingIdentity();
@@ -221,6 +278,9 @@ describe("shared-backup controller", () => {
     expect(invite.files).toEqual([
       { datasetId: "tasks", fileId: "dataset-tasks", role: "writer" },
     ]);
+    await expect(
+      transport.listDatasetPermissions("dataset-tasks"),
+    ).resolves.toMatchObject([{ role: "reader" }]);
     const joinLink = buildSharingJoinLinkV1({
       landingUrl: landing,
       invitation: invite.invitation,
@@ -245,6 +305,9 @@ describe("shared-backup controller", () => {
       recipientEmailAddress: "recipient@example.com",
     });
     expect(accepted).toMatchObject([{ datasetId: "tasks", status: "accepted" }]);
+    await expect(
+      transport.listDatasetPermissions("dataset-tasks"),
+    ).resolves.toMatchObject([{ role: "writer" }]);
 
     // Recipient can now read and write the dataset — no exchange files touched.
     await expect(recipientController.loadDataset("tasks")).resolves.toMatchObject({
@@ -256,6 +319,88 @@ describe("shared-backup controller", () => {
       value: { items: ["owner", "recipient"] },
       outcome: "updated",
     });
+  });
+
+  it.each(["viewer", "writer", "admin"] as const)(
+    "keeps a %s link grant read-only until verified acceptance",
+    async (role) => {
+      const owner = await createWebCryptoSharingIdentity();
+      const recipient = await createWebCryptoSharingIdentity();
+      const transport = new MemorySharingTransport();
+      const ownerController = controller(
+        owner,
+        transport,
+        new MemorySharedBackupRegistry(),
+      );
+      const recipientController = controller(
+        recipient,
+        transport,
+        new MemorySharedBackupRegistry(),
+      );
+      await ownerController.createDataset("tasks", { items: ["owner"] });
+
+      const invite = await ownerController.inviteParticipantForLink({
+        emailAddress: "recipient@example.com",
+        requestedGrants: [{ datasetId: "tasks", role }],
+      });
+      await expect(
+        transport.listDatasetPermissions("dataset-tasks"),
+      ).resolves.toMatchObject([{ role: "reader" }]);
+
+      const response = await recipientController.submitKeyResponseFromInvitation(
+        invite.invitation,
+        invite.files,
+      );
+      await ownerController.acceptKeyResponseFromPayload({
+        invitation: invite.invitation,
+        response,
+        recipientEmailAddress: "recipient@example.com",
+      });
+
+      await expect(
+        transport.listDatasetPermissions("dataset-tasks"),
+      ).resolves.toMatchObject([
+        { role: role === "viewer" ? "reader" : "writer" },
+      ]);
+    },
+  );
+
+  it("rejects unauthenticated or ambiguous link file manifests before registry writes", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await ownerController.createDataset("tasks", { items: ["owner"] });
+    const invite = await ownerController.inviteParticipantForLink({
+      emailAddress: "recipient@example.com",
+      requestedGrants: [{ datasetId: "tasks", role: "writer" }],
+    });
+    const valid = invite.files[0];
+    if (!valid) throw new Error("Expected a link dataset file.");
+    const invalidManifests: SharingDatasetFileV1[][] = [
+      [],
+      [valid, { datasetId: "extra", fileId: "dataset-extra", role: "viewer" }],
+      [valid, valid],
+      [{ ...valid, role: "viewer" }],
+      [{ ...valid, fileId: "attacker-selected-file" }],
+    ];
+
+    for (const files of invalidManifests) {
+      const registry = new MemorySharedBackupRegistry();
+      const recipientController = controller(recipient, transport, registry);
+      await expect(
+        recipientController.submitKeyResponseFromInvitation(
+          invite.invitation,
+          files,
+        ),
+      ).rejects.toBeInstanceOf(SyncKitError);
+      await expect(registry.get("tasks")).resolves.toBeNull();
+      await expect(registry.get("extra")).resolves.toBeNull();
+    }
   });
 
   it("keeps participant roles and Drive permissions aligned", async () => {
@@ -818,6 +963,58 @@ describe("shared-backup controller adoption", () => {
     expect(transport.trashed.has("dataset-tasks")).toBe(true);
   });
 
+  it.each([
+    ["delete", "viewer"],
+    ["delete", "writer"],
+    ["delete", "admin"],
+    ["trash", "viewer"],
+    ["trash", "writer"],
+    ["trash", "admin"],
+  ] as const)(
+    "rejects %sDataset by a cryptographic %s",
+    async (operation, role) => {
+      const owner = await createWebCryptoSharingIdentity();
+      const recipient = await createWebCryptoSharingIdentity();
+      const transport = new MemorySharingTransport();
+      const ownerController = controller(
+        owner,
+        transport,
+        new MemorySharedBackupRegistry(),
+      );
+      const recipientRegistry = new MemorySharedBackupRegistry();
+      const recipientController = controller(
+        recipient,
+        transport,
+        recipientRegistry,
+      );
+      await ownerController.createDataset("tasks", { items: ["owner"] });
+      const invite = await ownerController.inviteParticipantForLink({
+        emailAddress: "recipient@example.com",
+        requestedGrants: [{ datasetId: "tasks", role }],
+      });
+      const response = await recipientController.submitKeyResponseFromInvitation(
+        invite.invitation,
+        invite.files,
+      );
+      await ownerController.acceptKeyResponseFromPayload({
+        invitation: invite.invitation,
+        response,
+        recipientEmailAddress: "recipient@example.com",
+      });
+
+      await expect(
+        operation === "delete"
+          ? recipientController.deleteDataset("tasks")
+          : recipientController.trashDataset("tasks"),
+      ).rejects.toMatchObject({ code: "authorization" });
+
+      await expect(transport.readDataset("dataset-tasks")).resolves.toMatchObject({
+        datasetId: "tasks",
+      });
+      await expect(recipientRegistry.get("tasks")).resolves.not.toBeNull();
+    },
+  );
+
   it("addDatasetParticipant grants access to a known public key without an exchange", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const recipient = await createWebCryptoSharingIdentity();
@@ -1278,6 +1475,22 @@ function incrementingUuid(): () => string {
 }
 
 let uuidCount = 0;
+
+function fixtureAccountBinding(): SharingAccountBindingV1 {
+  return {
+    schemaVersion: 1,
+    kind: "sync-kit-sharing-account-binding",
+    challenge: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    googleIdToken: "fixture.jwt.token",
+    passkey: {
+      credentialId: "Y3JlZGVudGlhbC0x",
+      credentialPublicKey: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+      authenticatorData: "AQ",
+      clientDataJSON: "AQ",
+      signature: "AQ",
+    },
+  };
+}
 
 class MemorySharingTransport implements SharedBackupTransport {
   readonly storage: SharedBackupStorage = {

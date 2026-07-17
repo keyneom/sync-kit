@@ -35,6 +35,8 @@ export type ProtectedSharingIdentityV1 = {
 export interface ProtectedSharingIdentityStore {
   load(appId: string): Promise<unknown>;
   save(record: ProtectedSharingIdentityV1): Promise<void>;
+  /** Atomically inserts a new app record and returns false when one exists. */
+  saveIfAbsent?(record: ProtectedSharingIdentityV1): Promise<boolean>;
   delete(appId: string): Promise<void>;
 }
 
@@ -43,6 +45,8 @@ export type PasskeyProtectedSharingIdentityProviderOptions = {
   passkeyProvider: WebPasskeyProvider<CryptoKey>;
   store: ProtectedSharingIdentityStore;
   crypto?: Crypto;
+  /** Overrides Web Locks coordination; null disables it for testing. */
+  locks?: LockManager | null;
 };
 
 /**
@@ -80,17 +84,25 @@ export class PasskeyProtectedSharingIdentityProvider {
   }
 
   async getOrCreate(): Promise<WebCryptoSharingIdentity> {
+    return this.withCreationLock(() => this.getOrCreateUnlocked());
+  }
+
+  private async getOrCreateUnlocked(): Promise<WebCryptoSharingIdentity> {
     try {
       return await this.get();
     } catch (error) {
       if (!(error instanceof SyncKitError) || error.code !== "not-found") {
         throw error;
       }
-      return this.create();
+      return this.createUnlocked();
     }
   }
 
   async create(): Promise<WebCryptoSharingIdentity> {
+    return this.withCreationLock(() => this.createUnlocked());
+  }
+
+  private async createUnlocked(): Promise<WebCryptoSharingIdentity> {
     if (await this.options.store.load(this.options.appId)) {
       throw new SyncKitError(
         "conflict",
@@ -104,7 +116,15 @@ export class PasskeyProtectedSharingIdentityProvider {
       created.key,
       this.crypto(),
     );
-    await this.options.store.save(protectedIdentity.record);
+    const stored = this.options.store.saveIfAbsent
+      ? await this.options.store.saveIfAbsent(protectedIdentity.record)
+      : await this.saveAfterCompatibilityRecheck(protectedIdentity.record);
+    if (!stored) {
+      throw new SyncKitError(
+        "conflict",
+        "Another context created the protected sharing identity first.",
+      );
+    }
     this.cached = protectedIdentity.identity;
     return this.cached;
   }
@@ -135,6 +155,30 @@ export class PasskeyProtectedSharingIdentityProvider {
   clear(): void {
     this.cached = null;
     this.options.passkeyProvider.clear();
+  }
+
+  private async saveAfterCompatibilityRecheck(
+    record: ProtectedSharingIdentityV1,
+  ): Promise<boolean> {
+    // Backwards compatibility for custom stores predating saveIfAbsent. This
+    // narrows but cannot eliminate cross-context races; stores should implement
+    // the atomic method when their substrate supports it.
+    if (await this.options.store.load(record.appId)) return false;
+    await this.options.store.save(record);
+    return true;
+  }
+
+  private async withCreationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const locks =
+      this.options.locks === null
+        ? undefined
+        : this.options.locks ??
+          (typeof navigator === "undefined" ? undefined : navigator.locks);
+    if (!locks) return await operation();
+    return await locks.request<Promise<T>>(
+      `sync-kit:protected-sharing-identity:${this.options.appId}`,
+      operation,
+    );
   }
 
   private crypto(): Crypto {
@@ -355,6 +399,17 @@ export class IndexedDbProtectedSharingIdentityStore
 
   async save(record: ProtectedSharingIdentityV1): Promise<void> {
     await this.transaction("readwrite", (store) => store.put(record));
+  }
+
+  async saveIfAbsent(record: ProtectedSharingIdentityV1): Promise<boolean> {
+    try {
+      await this.transaction("readwrite", (store) => store.add(record));
+      return true;
+    } catch (error) {
+      const cause = (error as { cause?: { name?: string } }).cause;
+      if (cause?.name === "ConstraintError") return false;
+      throw error;
+    }
   }
 
   async delete(appId: string): Promise<void> {

@@ -46,6 +46,7 @@ class LinkExchangeTest {
         assertEquals(SharingRole.VIEWER, join.files[0].role)
         assertEquals(SharingRole.WRITER, join.files[1].role)
         SharingCrypto.verifySharingInvitationV1(join.invitation)
+        assertEquals(join.files, verifySharingLinkDatasetFilesV1(join.invitation, join.files))
 
         val responseLink = parseSharingResponseLinkV1(root["responseLink"]!!.jsonPrimitive.content)
         assertNotNull(responseLink)

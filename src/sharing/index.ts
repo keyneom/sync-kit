@@ -621,6 +621,7 @@ export {
 export {
   buildSharingJoinLinkV1,
   buildSharingResponseLinkV1,
+  createSharingLinkPermissionIdV1,
   decodeSharingDatasetFilesV1,
   decodeSharingInvitationV1,
   decodeSharingPublicKeyResponseV1,
@@ -629,6 +630,7 @@ export {
   encodeSharingPublicKeyResponseV1,
   parseSharingJoinLinkV1,
   parseSharingResponseLinkV1,
+  verifySharingLinkDatasetFilesV1,
   SHARING_JOIN_FILES_PARAM,
   SHARING_JOIN_INVITATION_PARAM,
   SHARING_RESPONSE_MARKER_PARAM,
