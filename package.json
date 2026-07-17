@@ -1,8 +1,12 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.2.0-rc.18",
+  "version": "0.2.0-rc.19",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/keyneom/sync-kit"
+  },
   "keywords": [
     "encrypted-sync",
     "google-drive",

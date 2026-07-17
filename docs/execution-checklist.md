@@ -209,7 +209,7 @@ discovery:
 - the release remains gated on normal consumer validation rather than a
   package-owned interactive emulator harness.
 
-Validated on 2026-07-16 for the `0.2.0-rc.18` dataset codec-routing
+Validated on 2026-07-16 for the `0.2.0-rc.19` dataset codec-routing
 correction:
 
 - TypeScript now selects `codecForDataset(datasetId)` once for ordinary
@@ -229,6 +229,14 @@ correction:
   publishing and selects the `rc` dist-tag for prereleases;
 - live existing-`primary.g2` discovery/reload validation remains an external
   consumer gate before promoting this candidate to stable `0.2.0`.
+
+Release correction on 2026-07-16:
+
+- Android `0.2.0-rc.18` published successfully from the coordinated tag;
+- npm rejected `0.2.0-rc.18` before publication because the package lacked the
+  exact GitHub `repository.url` required to verify its generated provenance;
+- `0.2.0-rc.19` adds that package metadata without changing protocol behavior
+  and is the coordinated npm/Android consumer candidate.
 
 ## Android library (private snapshots)
 

@@ -14,7 +14,7 @@ APIs allow.
 | --- | --- |
 | Group | `com.keyneom` |
 | Artifact | `sync-kit-android` |
-| Version | release tag (`0.2.0-rc.18`) |
+| Version | release tag (`0.2.0-rc.19`) |
 | Module | `android/synckit` |
 | Registry | [GitHub Packages](https://github.com/keyneom/sync-kit/packages) (`https://maven.pkg.github.com/keyneom/sync-kit`) |
 
@@ -53,7 +53,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.2.0-rc.18")
+implementation("com.keyneom:sync-kit-android:0.2.0-rc.19")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.

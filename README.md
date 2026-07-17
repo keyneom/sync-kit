@@ -36,7 +36,7 @@ Version `0.1.1` was published to npm on 2026-06-30. It removes the
 application-specific runtime presets from `0.1.0` and keeps compatibility
 profiles consumer-owned.
 
-Version `0.2.0-rc.18` adds accessible `drive.file` dataset discovery and fixes
+Version `0.2.0-rc.19` adds accessible `drive.file` dataset discovery and fixes
 dataset-specific codec routing across the complete Web controller lifecycle,
 with equivalent Android and cross-platform fixture coverage. Live Google
 validation and one external consumer integration remain release gates for a
