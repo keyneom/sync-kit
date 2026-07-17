@@ -226,9 +226,10 @@ correction:
   parity gates, lint, strict typecheck, 143 TypeScript tests, build, and packed
   npm/pnpm consumer imports;
 - npm and Android publication share the release tag; npm uses OIDC trusted
-  publishing and selects the `rc` dist-tag for prereleases;
-- live existing-`primary.g2` discovery/reload validation remains an external
-  consumer gate before promoting this candidate to stable `0.2.0`.
+  publishing and selects the `rc` dist-tag for prereleases or `latest` for a
+  stable version;
+- the existing `primary.g2` profile was discovered and reloaded successfully
+  on Web and Android without duplicate passkey prompts.
 
 Release correction on 2026-07-16:
 
@@ -237,6 +238,13 @@ Release correction on 2026-07-16:
   exact GitHub `repository.url` required to verify its generated provenance;
 - `0.2.0-rc.19` adds that package metadata without changing protocol behavior
   and is the coordinated npm/Android consumer candidate.
+
+Stable promotion on 2026-07-16:
+
+- the user confirmed the RC19 live consumer gate passed on both Web and
+  Android, including existing-profile discovery and reload;
+- stable `0.2.0` contains no protocol change after RC19 and is promoted from
+  that validated candidate through the same coordinated tag workflows.
 
 ## Android library (private snapshots)
 
@@ -250,8 +258,8 @@ Release correction on 2026-07-16:
 - [x] Migrate EasyBC Android to depend on the library via `includeBuild`.
 - [x] Publish `sync-kit-android` to GitHub Packages on version tags
       (`.github/workflows/publish-android.yml`).
-- [ ] Cut a tagged Android release (`v0.2.0-rc.1`) and verify consumer install
-      from GitHub Packages.
+- [x] Cut tagged Android releases and verify consumer installation from GitHub
+      Packages through the coordinated npm/Android release workflow.
 - [x] Port shared-backup (`/sharing`) APIs to Android (primary sharing target).
 
 ## Deferred: v2 and desktop adapters
