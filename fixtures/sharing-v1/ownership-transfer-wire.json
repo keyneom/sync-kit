@@ -1,0 +1,296 @@
+{
+  "payload": {
+    "profile": "synthetic-sharing-fixture",
+    "count": 1
+  },
+  "owner": {
+    "publicKey": {
+      "keyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+      "encryptionAlgorithm": "ECDH-P256",
+      "encryptionPublicKey": "BB7KmIruz_VUG7Jj8agszsVhTm6FyNqlyFPoGdg7JqPIMoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+      "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+      "signingPublicKey": "BIMdctPzlKUbVny2vgQfRKlXCM07BBbB3xN7Vgmj_muC5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg"
+    },
+    "privateKeys": {
+      "encryption": {
+        "key_ops": [
+          "deriveBits"
+        ],
+        "ext": true,
+        "kty": "EC",
+        "x": "HsqYiu7P9VQbsmPxqCzOxWFOboXI2qXIU-gZ2Dsmo8g",
+        "y": "MoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+        "crv": "P-256",
+        "d": "FG2c3GrphYzsi9dwwa5lf0oCGBHruBLaGuKxwHI_cW0"
+      },
+      "signing": {
+        "key_ops": [
+          "sign"
+        ],
+        "ext": true,
+        "kty": "EC",
+        "x": "gx1y0_OUpRtWfLa-BB9EqVcIzTsEFsHfE3tWCaP-a4I",
+        "y": "5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg",
+        "crv": "P-256",
+        "d": "-Jc7DUQo1z1koIbwPY4WCM3aW5dIkQl6sDryEi5oQA0"
+      }
+    }
+  },
+  "recipient": {
+    "publicKey": {
+      "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+      "encryptionAlgorithm": "ECDH-P256",
+      "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+      "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+      "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc"
+    },
+    "privateKeys": {
+      "encryption": {
+        "key_ops": [
+          "deriveBits"
+        ],
+        "ext": true,
+        "kty": "EC",
+        "x": "XLYczGN8WaYVkoGEb4OZrfM8oUt7emsmsDM1BpnQNN8",
+        "y": "2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+        "crv": "P-256",
+        "d": "gAiXFh6sjVPlq75QlHlenh3hkwSQ9BOe3WbNCBn_jg8"
+      },
+      "signing": {
+        "key_ops": [
+          "sign"
+        ],
+        "ext": true,
+        "kty": "EC",
+        "x": "bYxCGLVls_yTNj3McQQ9rdcayDhXf6S3g-A29avvYeY",
+        "y": "-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+        "crv": "P-256",
+        "d": "pF7Rti1cC_AE6s7UI_tqEbbUrNFuxbipgN2Z8EZwMVY"
+      }
+    }
+  },
+  "before": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-shared-backup",
+    "algorithm": "AES-256-GCM+ECDH-P256+HKDF-SHA256",
+    "appId": "fixture-app",
+    "backupId": "fixture-backup",
+    "revisionId": "ownership-before",
+    "createdAt": "2026-07-17T12:00:00.000Z",
+    "authorKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+    "accessControl": [
+      {
+        "appId": "fixture-app",
+        "backupId": "fixture-backup",
+        "sequence": 0,
+        "authorKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+        "participants": [
+          {
+            "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+            "role": "writer",
+            "accepted": {
+              "exchangeId": "ownership-transfer-exchange",
+              "drivePermissionId": "recipient-permission",
+              "acceptedAt": "2026-07-17T12:00:00.000Z",
+              "acceptedByKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s"
+            }
+          },
+          {
+            "keyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BB7KmIruz_VUG7Jj8agszsVhTm6FyNqlyFPoGdg7JqPIMoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BIMdctPzlKUbVny2vgQfRKlXCM07BBbB3xN7Vgmj_muC5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg",
+            "role": "owner"
+          }
+        ],
+        "signature": "v8BJ3efKrZsvv3xwFk-Zp4EzPiI5FLtrMvPpLX-08eMJZ7vEClrx9bOozE5tlOO9W9earPtFnjTvAVpzmaocyA"
+      }
+    ],
+    "keyGrants": [
+      {
+        "recipientKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+        "ephemeralPublicKey": "BM_JcUr1QOn25ZgtqzxUEtOIxiwY4cx26x8n-tOxmbBXcEDXTdobhZcrTFFvQV5fkzBHDAsIAwoOEGNT1RstorQ",
+        "kdfSalt": "-YI9WzvzUKbIXcXBdYv--vdz9bBgiXAemQdjT2fDtDY",
+        "nonce": "cAmsIU9VB2eKwOH5",
+        "wrappedContentKey": "ARfsnXmkTaxsacsluWqgN3BuWjzXqhFjaLu9jP86V2dAkzFiq5QStEITTlIjSRY5"
+      },
+      {
+        "recipientKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+        "ephemeralPublicKey": "BM9S_cL8_uDvT891KuXwDtLWdM0Fvx3m5nTwTt2rbgeDxv25WUtF2E55bRSqvcCPToHU1cFnKB6dss-a-WehsCA",
+        "kdfSalt": "kmvm-3pkzsw2507_pIi5Awz3ov02ubojLfGsOMb_6Ww",
+        "nonce": "zOpWs5DJK1BckUCq",
+        "wrappedContentKey": "3VlxYz6w1ly3CLg1V_Uch5PU8rX1zjZQ8J64YrQ5llxp8Vgp2JgMF59hUgnbpHJ5"
+      }
+    ],
+    "payloadNonce": "asnmvtf4ZZenNwkP",
+    "ciphertext": "ZJzfWH_wd_i7qS-DMAHg-Uzzl7tG99im6XkORu5dCPMJZXqUsMjVzINB0vXggOH_f5yCs4v3VNg54ucMjO3qgNo",
+    "signature": "eyY8QmuyNdiowYaixRwalZQWa2f9PBxi1nLbDIWTb9mlhLpnQBgRYX1TKu4bt5sox_pv9pN14KfgowxOMVb9vQ"
+  },
+  "transfer": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-ownership-transfer",
+    "transferId": "ownership-transfer-fixture",
+    "appId": "fixture-app",
+    "fromKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+    "toKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+    "previousOwnerRole": "admin",
+    "datasets": [
+      {
+        "datasetId": "fixture-backup",
+        "revisionId": "ownership-before",
+        "accessControlHash": "ofuYUaurImAjbjwXLSFSceipRmoKfW6goY__kfaI5CA",
+        "providerPermissionId": "recipient-permission"
+      }
+    ],
+    "providerObjects": [
+      {
+        "kind": "app-folder",
+        "fileId": "app-folder",
+        "providerPermissionId": "recipient-permission"
+      },
+      {
+        "kind": "exchanges-folder",
+        "fileId": "exchanges-folder",
+        "providerPermissionId": "recipient-permission"
+      }
+    ],
+    "createdAt": "2026-07-17T12:01:00.000Z",
+    "ownerProof": "M2Yka2PNzFBTOr-I2vg_zh11vZFK_XLJ2FMu1bDR_hwfmnVmu7gYnNLtGOj1lz0x0QgwSQu7yNQYq9771G9f5g",
+    "newOwnerProof": "cLXWzzBgJicSEZFvwvLwrdKvzQExFTkxDqayTZxNYHGImyoA30NSo8TgYba4w6kIHu9YqdqalFNrNpXwPuawkA"
+  },
+  "after": {
+    "schemaVersion": 1,
+    "kind": "sync-kit-shared-backup",
+    "algorithm": "AES-256-GCM+ECDH-P256+HKDF-SHA256",
+    "appId": "fixture-app",
+    "backupId": "fixture-backup",
+    "revisionId": "ownership-after",
+    "parentRevisionId": "ownership-before",
+    "revisionAncestors": [
+      "ownership-before"
+    ],
+    "createdAt": "2026-07-17T12:02:00.000Z",
+    "authorKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+    "accessControl": [
+      {
+        "appId": "fixture-app",
+        "backupId": "fixture-backup",
+        "sequence": 0,
+        "authorKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+        "participants": [
+          {
+            "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+            "role": "writer",
+            "accepted": {
+              "exchangeId": "ownership-transfer-exchange",
+              "drivePermissionId": "recipient-permission",
+              "acceptedAt": "2026-07-17T12:00:00.000Z",
+              "acceptedByKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s"
+            }
+          },
+          {
+            "keyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BB7KmIruz_VUG7Jj8agszsVhTm6FyNqlyFPoGdg7JqPIMoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BIMdctPzlKUbVny2vgQfRKlXCM07BBbB3xN7Vgmj_muC5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg",
+            "role": "owner"
+          }
+        ],
+        "signature": "v8BJ3efKrZsvv3xwFk-Zp4EzPiI5FLtrMvPpLX-08eMJZ7vEClrx9bOozE5tlOO9W9earPtFnjTvAVpzmaocyA"
+      },
+      {
+        "appId": "fixture-app",
+        "backupId": "fixture-backup",
+        "sequence": 1,
+        "previousHash": "ofuYUaurImAjbjwXLSFSceipRmoKfW6goY__kfaI5CA",
+        "authorKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+        "participants": [
+          {
+            "keyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BFy2HMxjfFmmFZKBhG-Dma3zPKFLe3prJrAzNQaZ0DTf2MR2N0gc3g3Eq8midSL-FUsciRnbCGkX-o1V_jD7Yk0",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BG2MQhi1ZbP8kzY9zHEEPa3XGsg4V3-kt4PgNvWr72Hm-pASWKGsGrw7jEe9dvrEyt2blho1WfhQwKxlTvRPXGc",
+            "role": "owner",
+            "accepted": {
+              "exchangeId": "ownership-transfer-exchange",
+              "drivePermissionId": "recipient-permission",
+              "acceptedAt": "2026-07-17T12:00:00.000Z",
+              "acceptedByKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s"
+            }
+          },
+          {
+            "keyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+            "encryptionAlgorithm": "ECDH-P256",
+            "encryptionPublicKey": "BB7KmIruz_VUG7Jj8agszsVhTm6FyNqlyFPoGdg7JqPIMoY5oaJHFfQFrR9bgm8NvX1Mq875HslOx2UmtG71LmE",
+            "signatureAlgorithm": "ECDSA-P256-SHA256-P1363",
+            "signingPublicKey": "BIMdctPzlKUbVny2vgQfRKlXCM07BBbB3xN7Vgmj_muC5vEXck9ooD0nl43kOAtSXoIwPTcMQxDhebwoHuPpSAg",
+            "role": "admin"
+          }
+        ],
+        "ownershipTransfer": {
+          "schemaVersion": 1,
+          "kind": "sync-kit-ownership-transfer",
+          "transferId": "ownership-transfer-fixture",
+          "appId": "fixture-app",
+          "fromKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+          "toKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+          "previousOwnerRole": "admin",
+          "datasets": [
+            {
+              "datasetId": "fixture-backup",
+              "revisionId": "ownership-before",
+              "accessControlHash": "ofuYUaurImAjbjwXLSFSceipRmoKfW6goY__kfaI5CA",
+              "providerPermissionId": "recipient-permission"
+            }
+          ],
+          "providerObjects": [
+            {
+              "kind": "app-folder",
+              "fileId": "app-folder",
+              "providerPermissionId": "recipient-permission"
+            },
+            {
+              "kind": "exchanges-folder",
+              "fileId": "exchanges-folder",
+              "providerPermissionId": "recipient-permission"
+            }
+          ],
+          "createdAt": "2026-07-17T12:01:00.000Z",
+          "ownerProof": "M2Yka2PNzFBTOr-I2vg_zh11vZFK_XLJ2FMu1bDR_hwfmnVmu7gYnNLtGOj1lz0x0QgwSQu7yNQYq9771G9f5g",
+          "newOwnerProof": "cLXWzzBgJicSEZFvwvLwrdKvzQExFTkxDqayTZxNYHGImyoA30NSo8TgYba4w6kIHu9YqdqalFNrNpXwPuawkA"
+        },
+        "signature": "2mkxfsrh9LGRtHpysMQB9HabpTD5GJ18sdP4R5rAQICJeirSJb1pu7bSatb8a_SAAJ4ZL5lemXILr7XuRTLI8Q"
+      }
+    ],
+    "keyGrants": [
+      {
+        "recipientKeyId": "Ynbbj4Dx5xVfa3U1k9wjzbOVVk73QSpZhJDOetVRlYg",
+        "ephemeralPublicKey": "BIHqqA2cU54OtAeGyO29p-lvG7xKzEsZh4haNnU-vjJmQNyMsYaZTyFQ4zz93vSmdIBqdij2Y66f6mcFMT-AVIs",
+        "kdfSalt": "8BHUUxTSMAGxIEOhvX5gwsav9ewMVeUZjxZQRIu9Woo",
+        "nonce": "-bZupxjOQurpMMkw",
+        "wrappedContentKey": "72-gMtD26LIGnr3mczDjTEjTg_6U9JZ3OuJRyBCMFprSd04T7P0WHlhlzo6TVrX5"
+      },
+      {
+        "recipientKeyId": "lwwsJjdVXCf_aIvHs9zewC53e9HU7fLK78a6m2s2n1s",
+        "ephemeralPublicKey": "BHaoC7qRdkeoI2XqoWs3E6qfdJFVH4ZW9BVuMT94unV6PnDulYSpfElDCyVUG037FuDHNxTUNwlRuHdMb4M_iyE",
+        "kdfSalt": "K1llIp8yHcF5YhANBf0VmIcikgpClcVcWuQM4KhunF0",
+        "nonce": "UrJEWJvVs3nBDfHb",
+        "wrappedContentKey": "E_BsK9HPI-Xa3wAUE20e-c_7JeLWd5zfoML3fKSPDtpjtE3aC02MdsGaUOdLyYhf"
+      }
+    ],
+    "payloadNonce": "jE_Q-xto68PKJe_y",
+    "ciphertext": "ZcEhNSsV1BQywNATYqyrsQwrwIAHCZVPZ2-TyEXpViU_znLQG6fDqWncrIyizLm46tuobNc2AQOFoi0HI1P6IPE",
+    "signature": "SBpcLns_EmUZrfUU44eAX0XfiVaZH1abDY0jVkr1-1HAW3MoJOY4r5DNOrvltY5XoxkG7TAO7aKtDgl6LdH3hA"
+  }
+}

@@ -7,6 +7,7 @@ import com.keyneom.synckit.sharing.checkpoint.SharedDatasetHead
 import com.keyneom.synckit.sharing.checkpoint.SharingNotificationEventKind
 import com.keyneom.synckit.sharing.checkpoint.SharingSyncCheckpoint
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -79,6 +80,67 @@ class SharingFixtureTest {
             ),
         )
         SharingCrypto.verifySharedBackupEnvelopeV1(envelope)
+    }
+
+    @Test
+    fun webOwnershipTransferFixtureVerifiesAndDecryptsOnKotlin() {
+        val root = javaClass.classLoader
+            ?.getResourceAsStream("sharing-v1/ownership-transfer-wire.json")
+            ?.use { SyncKitJson.instance.parseToJsonElement(it.readBytes().toString(Charsets.UTF_8)) }
+            ?.jsonObject
+            ?: error("Missing sharing-v1/ownership-transfer-wire.json test resource.")
+        val recipient = root.getValue("recipient").jsonObject
+        val public = recipient.getValue("publicKey").jsonObject
+        val privateKeys = recipient.getValue("privateKeys").jsonObject
+        val identity = SharingEcKeys.identityFromPrivateKeyD(
+            encryptionD = Base64Url.decode(
+                privateKeys.getValue("encryption").jsonObject.getValue("d").jsonPrimitive.content,
+            ),
+            signingD = Base64Url.decode(
+                privateKeys.getValue("signing").jsonObject.getValue("d").jsonPrimitive.content,
+            ),
+            publicKey = SharingPublicKeyV1(
+                keyId = public.getValue("keyId").jsonPrimitive.content,
+                encryptionAlgorithm = public.getValue("encryptionAlgorithm").jsonPrimitive.content,
+                encryptionPublicKey = public.getValue("encryptionPublicKey").jsonPrimitive.content,
+                signatureAlgorithm = public.getValue("signatureAlgorithm").jsonPrimitive.content,
+                signingPublicKey = public.getValue("signingPublicKey").jsonPrimitive.content,
+            ),
+        )
+        val after = SyncKitJson.instance.decodeFromJsonElement(
+            SharedBackupEnvelopeV1.serializer(),
+            root.getValue("after"),
+        )
+        val ownerKeyId = root.getValue("owner").jsonObject
+            .getValue("publicKey").jsonObject
+            .getValue("keyId").jsonPrimitive.content
+
+        SharingCrypto.verifySharedBackupEnvelopeV1(
+            after,
+            VerifySharedBackupOptions(trustedOwnerKeyId = ownerKeyId),
+        )
+        val payload = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            after,
+            object : SharedBackupCodec<FixturePayload> {
+                override fun serialize(value: FixturePayload) = buildJsonObject {
+                    put("profile", value.profile)
+                    put("count", value.count)
+                }
+
+                override fun parse(value: JsonElement): FixturePayload {
+                    val obj = value.jsonObject
+                    return FixturePayload(
+                        obj.getValue("profile").jsonPrimitive.content,
+                        obj.getValue("count").jsonPrimitive.int,
+                    )
+                }
+            },
+            identity,
+            VerifySharedBackupOptions(trustedOwnerKeyId = ownerKeyId),
+        )
+        assertEquals("synthetic-sharing-fixture", payload.profile)
+        assertEquals(1, payload.count)
+        assertEquals("ownership-transfer-fixture", after.accessControl.last().ownershipTransfer?.transferId)
     }
 
     private data class FixturePayload(val profile: String, val count: Int)

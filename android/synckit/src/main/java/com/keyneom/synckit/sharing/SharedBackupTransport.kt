@@ -51,6 +51,12 @@ data class SharedDatasetDrivePermission(
     val inherited: Boolean = false,
 )
 
+enum class ProviderOwnershipTransferState {
+    PENDING,
+    OWNER,
+    OTHER,
+}
+
 interface SharedBackupTransport {
     suspend fun ensureStorage(): SharedBackupStorage
     suspend fun listDatasets(): List<SharedDatasetFile>
@@ -103,6 +109,31 @@ interface SharedBackupTransport {
     ): SharedDatasetPermission
     suspend fun removeDatasetPermission(fileId: String, permissionId: String)
     suspend fun listDatasetPermissions(fileId: String): List<SharedDatasetDrivePermission>
+    suspend fun requestOwnershipTransfer(
+        fileId: String,
+        permissionId: String,
+    ): Unit = throw SyncKitError(
+        SyncKitErrorCode.STATE,
+        "This transport does not support ownership-transfer requests.",
+    )
+    suspend fun acceptOwnershipTransfer(
+        fileId: String,
+        permissionId: String,
+    ): Unit = throw SyncKitError(
+        SyncKitErrorCode.STATE,
+        "This transport does not support ownership-transfer acceptance.",
+    )
+    suspend fun ownershipTransferState(
+        fileId: String,
+        permissionId: String,
+    ): ProviderOwnershipTransferState = throw SyncKitError(
+        SyncKitErrorCode.STATE,
+        "This transport cannot inspect ownership-transfer state.",
+    )
+    suspend fun setWritersCanShare(fileId: String, enabled: Boolean): Unit = throw SyncKitError(
+        SyncKitErrorCode.STATE,
+        "This transport cannot configure writer sharing.",
+    )
     suspend fun listDatasetHeads(): List<SharedDatasetHead>
 }
 

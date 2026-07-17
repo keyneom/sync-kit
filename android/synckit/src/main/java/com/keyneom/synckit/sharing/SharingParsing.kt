@@ -180,6 +180,81 @@ internal object SharingParsing {
             validateBytes(rotation.toKeyId, 32, "toKeyId")
             validateBytes(rotation.newKeyProof, 64, "newKeyProof")
         }
+        entry.ownershipTransfer?.let { transfer ->
+            parseSharedBackupOwnershipTransferV1(transfer, requireAccepted = true)
+            if (entry.keyRotation != null) {
+                throw compatibility(
+                    "An access-control entry cannot rotate a key and transfer ownership.",
+                )
+            }
+        }
+    }
+
+    fun parseSharedBackupOwnershipTransferV1(
+        value: SharedBackupOwnershipTransferV1,
+        requireAccepted: Boolean = false,
+    ): SharedBackupOwnershipTransferV1 {
+        assertExact(value.schemaVersion, 1, "ownership transfer schemaVersion")
+        assertExact(value.kind, SHARING_OWNERSHIP_TRANSFER_KIND, "ownership transfer kind")
+        assertNonEmpty(value.transferId, "transferId")
+        assertNonEmpty(value.appId, "appId")
+        validateBytes(value.fromKeyId, 32, "transfer fromKeyId")
+        validateBytes(value.toKeyId, 32, "transfer toKeyId")
+        if (value.fromKeyId == value.toKeyId) {
+            throw compatibility("An ownership transfer must change the owner key.")
+        }
+        if (value.previousOwnerRole != SharingRole.ADMIN &&
+            value.previousOwnerRole != SharingRole.WRITER
+        ) {
+            throw compatibility("previousOwnerRole must be admin or writer.")
+        }
+        if (value.datasets.isEmpty()) {
+            throw compatibility("An ownership transfer must include datasets.")
+        }
+        var priorDatasetId: String? = null
+        value.datasets.forEach { dataset ->
+            assertNonEmpty(dataset.datasetId, "datasetId")
+            assertNonEmpty(dataset.revisionId, "revisionId")
+            validateBytes(dataset.accessControlHash, 32, "transfer accessControlHash")
+            assertNonEmpty(dataset.providerPermissionId, "providerPermissionId")
+            if (priorDatasetId != null &&
+                com.keyneom.synckit.crypto.CanonicalJson.compareUtf16CodeUnits(
+                    priorDatasetId!!,
+                    dataset.datasetId,
+                ) >= 0
+            ) {
+                throw compatibility(
+                    "Ownership-transfer datasets must be unique and canonically ordered.",
+                )
+            }
+            priorDatasetId = dataset.datasetId
+        }
+        if (value.providerObjects.size != 2) {
+            throw compatibility(
+                "An ownership transfer must include the app and exchanges folders.",
+            )
+        }
+        val expectedProviderKinds = listOf("app-folder", "exchanges-folder")
+        val providerFileIds = mutableSetOf<String>()
+        value.providerObjects.forEachIndexed { index, providerObject ->
+            assertExact(providerObject.kind, expectedProviderKinds[index], "provider object kind")
+            assertNonEmpty(providerObject.fileId, "provider object fileId")
+            assertNonEmpty(providerObject.providerPermissionId, "providerPermissionId")
+            if (!providerFileIds.add(providerObject.fileId)) {
+                throw compatibility("Ownership-transfer provider file IDs must be unique.")
+            }
+        }
+        validateTimestamp(value.createdAt, "createdAt")
+        value.expiresAt?.let {
+            if (it.isBlank()) throw compatibility("expiresAt must be a non-empty string.")
+            validateTimestamp(it, "expiresAt")
+        }
+        validateBytes(value.ownerProof, 64, "ownerProof")
+        value.newOwnerProof?.let { validateBytes(it, 64, "newOwnerProof") }
+            ?: if (requireAccepted) {
+                throw compatibility("The ownership transfer has not been accepted.")
+            } else Unit
+        return value
     }
 
     private fun validateOwnerPublicKey(owner: SharingPublicKeyV1) {

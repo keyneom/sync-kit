@@ -187,7 +187,9 @@ Every reader:
 
 A writer creates a child revision whose `parentRevisionId` is the last verified
 revision. A writer may change content but not participants. An owner or admin
-may change participants. Owner transfer is not supported in sharing v1.
+may change participants. Only the owner can propose ownership transfer, and
+the proposed owner must already be a verified participant in every dataset in
+the signed profile manifest.
 
 Each revision retains at most 256 recent ancestor IDs. A client whose last
 verified revision falls outside that window cannot prove direct descent from
@@ -202,7 +204,25 @@ ciphertext, and the content author's signature.
 The first access-control entry is signed by the owner. A later entry contains
 the hash of the complete previous entry and must be signed by an owner or admin
 from that previous entry. This prevents a writer from promoting itself inside
-the new participant list. The owner key cannot change in sharing v1.
+the new participant list. An ownership-transfer entry instead requires the
+current owner's signature over an exact, canonically ordered dataset/head/
+provider-permission manifest, including the app-root and exchange folders,
+and the proposed owner's countersignature. The
+recipient publishes the new head, becomes owner, and the prior owner becomes
+admin by default (or writer when explicitly selected).
+
+For personal Google accounts, Drive separately requires the current owner to
+mark the recipient `pendingOwner` and the recipient to accept ownership. This
+applies separately to every dataset plus the app-root and exchange folders;
+without the folders, the new owner could not manage later invitations. Drive
+cannot atomically transfer multiple files, so the operation is resumable rather
+than physically transactional: apps must treat it as incomplete until every
+manifest object is transferred. The genesis owner pin remains unchanged and
+verifiers follow the dual-signed owner transition from that trust root.
+
+The built-in Google Drive controller currently implements this consumer-account
+pending-owner flow. Google Workspace direct ownership transfer has different
+domain policy and provider semantics and is not silently substituted.
 
 A new recipient must verify the access-control genesis owner against the
 owner key in the invitation. Existing participants persist that trusted owner
@@ -355,12 +375,13 @@ Important limitations:
   removed user can still decrypt revisions for which they retained a grant.
 - A Drive writer can delete, corrupt, or roll back a file. Signatures make the
   attack detectable; they do not restore availability.
-- A writer can disclose plaintext outside the app. `writersCanShare=false`
-  reduces accidental ACL changes but is not a confidentiality boundary against
-  a writer.
+- A writer can disclose plaintext outside the app. Managed sharing objects use
+  `writersCanShare=true` so a retained former-owner admin can reconcile Drive
+  ACLs; ordinary writers can therefore also disclose ciphertext and metadata
+  through Drive, but cannot create valid key grants or signed role changes.
 - My Drive has no distinct application `admin` file role. The signed role can
-  authorize participant changes, but Drive ACL reconciliation may still
-  require the file owner unless writer sharing is enabled.
+  authorize participant changes, while provider ACL reconciliation additionally
+  requires writer access on the relevant Drive object.
 - Sharing identities are not the existing passkey-derived v1 snapshot key.
   Reusing that key would require exposing key material and would couple the new
   protocol to one browser credential.

@@ -2,6 +2,7 @@ import { SyncKitError } from "../core/errors.js";
 import {
   canAdministerSharedBackup,
   parseSharedBackupEnvelopeV1,
+  parseSharedBackupOwnershipTransferV1,
   sharedBackupParticipant,
   sharedBackupParticipants,
   type SharedBackupCodec,
@@ -12,6 +13,7 @@ import {
   type SharingPublicKeyResponseV1,
   type SharingRole,
   type SharedBackupParticipantV1,
+  type SharedBackupOwnershipTransferV1,
 } from "./index.js";
 import {
   createSharingLinkPermissionIdV1,
@@ -27,7 +29,9 @@ import type {
   VersionedSharedDataset,
 } from "./transport.js";
 import {
+  acceptSharedBackupOwnershipTransferV1,
   acceptSharingPublicKeyResponseV1,
+  createSharedBackupOwnershipTransferProposalV1,
   createSharedBackupEnvelopeV1,
   createSharingInvitationV1,
   createSharingPublicKeyResponseV1,
@@ -106,6 +110,13 @@ export type AcceptedDatasetResult = {
 export type RotatedDatasetResult = {
   datasetId: string;
   status: "rotated" | "failed";
+  revisionId?: string;
+  error?: unknown;
+};
+
+export type OwnershipTransferDatasetResult = {
+  datasetId: string;
+  status: "transferred" | "already-transferred" | "failed";
   revisionId?: string;
   error?: unknown;
 };
@@ -1370,6 +1381,393 @@ export class SharedBackupController<T> {
     });
   }
 
+  /**
+   * Owner-side phase 1. Signs the exact multi-dataset head manifest and asks
+   * the storage provider to mark the fully enrolled recipient as pending
+   * owner on every dataset. The cryptographic owner is unchanged.
+   */
+  prepareOwnershipTransfer(input: {
+    datasetIds: string[];
+    toKeyId: string;
+    recipientEmailAddress: string;
+    previousOwnerRole?: "admin" | "writer";
+    expiresAt?: string;
+  }): Promise<SharedBackupOwnershipTransferV1> {
+    return this.serialized(async () => {
+      requireNonEmpty(input.toKeyId, "toKeyId");
+      requireNonEmpty(input.recipientEmailAddress, "recipientEmailAddress");
+      const datasetIds = uniqueDatasetIds(input.datasetIds);
+      if (!this.options.transport.requestOwnershipTransfer) {
+        throw new SyncKitError(
+          "state",
+          "This transport does not support ownership-transfer requests.",
+        );
+      }
+      const identity = await this.options.identity();
+      const storage = await this.options.transport.ensureStorage();
+      const prepared: {
+        stored: VersionedSharedDataset;
+        record: SharedDatasetRegistryRecord;
+      }[] = [];
+      for (const datasetId of datasetIds) {
+        const stored = await this.readDatasetById(datasetId);
+        const record = await this.requiredRegistry(datasetId);
+        await this.verifyHead(stored, record);
+        const owner = sharedBackupParticipant(
+          stored.envelope,
+          identity.publicKey.keyId,
+        );
+        const recipient = sharedBackupParticipant(stored.envelope, input.toKeyId);
+        if (owner?.role !== "owner") {
+          throw new SyncKitError(
+            "authorization",
+            `Only the current owner can transfer dataset ${datasetId}.`,
+          );
+        }
+        if (!recipient?.accepted) {
+          throw new SyncKitError(
+            "authorization",
+            `The proposed owner is not fully enrolled in dataset ${datasetId}.`,
+          );
+        }
+        prepared.push({ stored, record });
+      }
+      const providerPermissionIds: Record<string, string> = {};
+      for (const item of prepared) {
+        const existing = await this.findDirectDatasetPermission(
+          item.stored.fileId,
+          item.record.participantPermissionIds?.[input.toKeyId],
+          input.recipientEmailAddress,
+        );
+        const permissionId = existing?.permissionId ??
+          (
+            await this.options.transport.setDatasetPermission(
+              item.stored.fileId,
+              input.recipientEmailAddress,
+              "admin",
+            )
+          ).permissionId;
+        if (!permissionId) {
+          throw new SyncKitError(
+            "provider",
+            `Dataset ${item.stored.datasetId} has no direct recipient permission to transfer.`,
+          );
+        }
+        await this.options.registry.set({
+          ...item.record,
+          participantPermissionIds: {
+            ...item.record.participantPermissionIds,
+            [input.toKeyId]: permissionId,
+          },
+        });
+        providerPermissionIds[item.stored.datasetId] = permissionId;
+      }
+      const providerObjects: SharedBackupOwnershipTransferV1["providerObjects"] = [];
+      for (const providerObject of [
+        { kind: "app-folder" as const, fileId: storage.appFolderId },
+        { kind: "exchanges-folder" as const, fileId: storage.exchangesFolderId },
+      ]) {
+        const existing = await this.findDirectDatasetPermission(
+          providerObject.fileId,
+          undefined,
+          input.recipientEmailAddress,
+        );
+        const permissionId = existing?.permissionId ??
+          (
+            await this.options.transport.setDatasetPermission(
+              providerObject.fileId,
+              input.recipientEmailAddress,
+              "admin",
+            )
+          ).permissionId;
+        if (!permissionId) {
+          throw new SyncKitError(
+            "provider",
+            `The ${providerObject.kind} has no direct recipient permission to transfer.`,
+          );
+        }
+        providerObjects.push({ ...providerObject, providerPermissionId: permissionId });
+      }
+      const proposal = await createSharedBackupOwnershipTransferProposalV1(
+        prepared.map(({ stored }) => stored.envelope),
+        identity,
+        {
+          toKeyId: input.toKeyId,
+          previousOwnerRole: input.previousOwnerRole ?? "admin",
+          providerPermissionIds,
+          providerObjects,
+          ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+        },
+        this.cryptoOptions(),
+      );
+      for (const providerObject of proposal.providerObjects) {
+        await this.options.transport.requestOwnershipTransfer(
+          providerObject.fileId,
+          providerObject.providerPermissionId,
+        );
+      }
+      for (const item of prepared) {
+        const permissionId = providerPermissionIds[item.stored.datasetId];
+        if (!permissionId) {
+          throw new SyncKitError(
+            "state",
+            `Dataset ${item.stored.datasetId} lost its prepared provider permission.`,
+          );
+        }
+        await this.options.transport.requestOwnershipTransfer(
+          item.stored.fileId,
+          permissionId,
+        );
+      }
+      return proposal;
+    });
+  }
+
+  /** Recipient-side phase 2. Adds acceptance without mutating Drive or data. */
+  acceptOwnershipTransferProposal(
+    input: unknown,
+  ): Promise<SharedBackupOwnershipTransferV1> {
+    return this.serialized(async () => {
+      const proposal = parseSharedBackupOwnershipTransferV1(input);
+      const storage = await this.options.transport.ensureStorage();
+      if (
+        proposal.providerObjects[0]?.fileId !== storage.appFolderId ||
+        proposal.providerObjects[1]?.fileId !== storage.exchangesFolderId
+      ) {
+        throw new SyncKitError(
+          "compatibility",
+          "The ownership transfer references another sharing storage root.",
+        );
+      }
+      if (!this.options.transport.ownershipTransferState) {
+        throw new SyncKitError(
+          "state",
+          "This transport cannot verify pending ownership transfers.",
+        );
+      }
+      const envelopes: SharedBackupEnvelopeV1[] = [];
+      for (const dataset of proposal.datasets) {
+        const stored = await this.readDatasetById(dataset.datasetId);
+        const record = await this.requiredRegistry(dataset.datasetId);
+        await this.verifyHead(stored, record);
+        const state = await this.options.transport.ownershipTransferState(
+          stored.fileId,
+          dataset.providerPermissionId,
+        );
+        if (state !== "pending" && state !== "owner") {
+          throw new SyncKitError(
+            "provider",
+            `Dataset ${dataset.datasetId} is not pending transfer to this identity.`,
+          );
+        }
+        envelopes.push(stored.envelope);
+      }
+      for (const providerObject of proposal.providerObjects) {
+        const state = await this.options.transport.ownershipTransferState(
+          providerObject.fileId,
+          providerObject.providerPermissionId,
+        );
+        if (state !== "pending" && state !== "owner") {
+          throw new SyncKitError(
+            "provider",
+            `The ${providerObject.kind} is not pending transfer to this identity.`,
+          );
+        }
+      }
+      return acceptSharedBackupOwnershipTransferV1(
+        proposal,
+        envelopes,
+        await this.options.identity(),
+        this.cryptoOptions(),
+      );
+    });
+  }
+
+  /**
+   * Recipient-side phase 3. Prebuilds every signed revision, accepts provider
+   * ownership, then conditionally publishes each dataset. The same accepted
+   * artifact can be retried after interruption; completed datasets are
+   * recognized by transfer ID.
+   */
+  finalizeOwnershipTransfer(
+    input: unknown,
+  ): Promise<OwnershipTransferDatasetResult[]> {
+    return this.serialized(async () => {
+      const transfer = parseSharedBackupOwnershipTransferV1(input, true);
+      const storage = await this.options.transport.ensureStorage();
+      if (
+        transfer.providerObjects[0]?.fileId !== storage.appFolderId ||
+        transfer.providerObjects[1]?.fileId !== storage.exchangesFolderId
+      ) {
+        throw new SyncKitError(
+          "compatibility",
+          "The ownership transfer references another sharing storage root.",
+        );
+      }
+      if (
+        !this.options.transport.acceptOwnershipTransfer ||
+        !this.options.transport.ownershipTransferState ||
+        !this.options.transport.setWritersCanShare
+      ) {
+        throw new SyncKitError(
+          "state",
+          "This transport does not support ownership-transfer acceptance.",
+        );
+      }
+      const identity = await this.options.identity();
+      if (identity.publicKey.keyId !== transfer.toKeyId) {
+        throw new SyncKitError(
+          "authorization",
+          "Only the accepted new owner can finalize this ownership transfer.",
+        );
+      }
+      const pending: {
+        stored: VersionedSharedDataset;
+        record: SharedDatasetRegistryRecord;
+        next: SharedBackupEnvelopeV1;
+        permissionId: string;
+      }[] = [];
+      const results: OwnershipTransferDatasetResult[] = [];
+      for (const dataset of transfer.datasets) {
+        try {
+          const stored = await this.readDatasetById(dataset.datasetId);
+          const record = await this.requiredRegistry(dataset.datasetId);
+          await this.verifyHead(stored, record);
+          const completedTransfer = stored.envelope.accessControl.find(
+            (entry) =>
+              entry.ownershipTransfer?.transferId === transfer.transferId,
+          )?.ownershipTransfer;
+          if (
+            completedTransfer !== undefined &&
+            sharedBackupParticipant(stored.envelope, transfer.toKeyId)?.role === "owner"
+          ) {
+            results.push({
+              datasetId: dataset.datasetId,
+              status: "already-transferred",
+              revisionId: stored.envelope.revisionId,
+            });
+            continue;
+          }
+          const recipient = sharedBackupParticipant(stored.envelope, transfer.toKeyId);
+          if (!recipient?.accepted) {
+            throw new SyncKitError(
+              "authorization",
+              `The proposed owner is not enrolled in dataset ${dataset.datasetId}.`,
+            );
+          }
+          const codec = this.codecForDataset(dataset.datasetId);
+          const value = await decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            codec,
+            identity,
+            this.crypto(),
+            { trustedOwnerKeyId: record.trustedOwnerKeyId },
+          );
+          const participants = participantInputs(stored.envelope).map((participant) => ({
+            ...participant,
+            role:
+              participant.publicKey.keyId === transfer.fromKeyId
+                ? transfer.previousOwnerRole
+                : participant.publicKey.keyId === transfer.toKeyId
+                  ? "owner" as const
+                  : participant.role,
+          }));
+          const next = await createSharedBackupEnvelopeV1(
+            value,
+            codec,
+            identity,
+            {
+              appId: this.options.appId,
+              backupId: dataset.datasetId,
+              participants,
+              previous: stored.envelope,
+              ownershipTransfer: transfer,
+            },
+            this.cryptoOptions(),
+          );
+          pending.push({
+            stored,
+            record,
+            next,
+            permissionId: dataset.providerPermissionId,
+          });
+        } catch (error) {
+          results.push({ datasetId: dataset.datasetId, status: "failed", error });
+        }
+      }
+      if (results.some(({ status }) => status === "failed")) return results;
+      for (const item of pending) {
+        try {
+          const providerState = await this.options.transport.ownershipTransferState(
+            item.stored.fileId,
+            item.permissionId,
+          );
+          if (providerState === "pending") {
+            await this.options.transport.acceptOwnershipTransfer(
+              item.stored.fileId,
+              item.permissionId,
+            );
+          } else if (providerState !== "owner") {
+            throw new SyncKitError(
+              "provider",
+              `Dataset ${item.stored.datasetId} is not pending transfer to this identity.`,
+            );
+          }
+          await this.options.transport.setWritersCanShare(
+            item.stored.fileId,
+            true,
+          );
+          const updated = await this.options.transport.writeDataset(
+            item.stored,
+            item.next,
+          );
+          await this.persistHead(
+            updated,
+            item.record.trustedOwnerKeyId,
+            item.record,
+          );
+          results.push({
+            datasetId: item.stored.datasetId,
+            status: "transferred",
+            revisionId: updated.envelope.revisionId,
+          });
+        } catch (error) {
+          results.push({
+            datasetId: item.stored.datasetId,
+            status: "failed",
+            error,
+          });
+        }
+      }
+      if (!results.some(({ status }) => status === "failed")) {
+        for (const providerObject of transfer.providerObjects) {
+          const state = await this.options.transport.ownershipTransferState(
+            providerObject.fileId,
+            providerObject.providerPermissionId,
+          );
+          if (state === "pending") {
+            await this.options.transport.acceptOwnershipTransfer(
+              providerObject.fileId,
+              providerObject.providerPermissionId,
+            );
+          } else if (state !== "owner") {
+            throw new SyncKitError(
+              "provider",
+              `The ${providerObject.kind} is not pending transfer to this identity.`,
+            );
+          }
+          await this.options.transport.setWritersCanShare(
+            providerObject.fileId,
+            true,
+          );
+        }
+      }
+      return results.sort((left, right) =>
+        compareDatasetIds(left.datasetId, right.datasetId),
+      );
+    });
+  }
+
   reconcileDrivePermissions(input: {
     datasetId: string;
     participantEmails: Record<string, string>;
@@ -1692,6 +2090,30 @@ function sharingRoleToDriveRole(
   role: Exclude<SharingRole, "owner">,
 ): "reader" | "writer" {
   return role === "viewer" ? "reader" : "writer";
+}
+
+function compareDatasetIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function uniqueDatasetIds(input: string[]): string[] {
+  if (input.length === 0) {
+    throw new SyncKitError(
+      "configuration",
+      "Ownership transfer requires at least one dataset.",
+    );
+  }
+  const datasetIds = input.map((datasetId) => {
+    requireNonEmpty(datasetId, "datasetId");
+    return datasetId;
+  }).sort(compareDatasetIds);
+  if (new Set(datasetIds).size !== datasetIds.length) {
+    throw new SyncKitError(
+      "configuration",
+      "Ownership-transfer dataset IDs must be unique.",
+    );
+  }
+  return datasetIds;
 }
 
 function participantInputs(

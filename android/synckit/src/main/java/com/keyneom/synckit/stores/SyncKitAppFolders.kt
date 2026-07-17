@@ -59,6 +59,7 @@ data class EnsureSyncKitFolderOptions(
     val folderName: String? = null,
     val parentFolderId: String? = null,
     val drive: GoogleDriveFileStore = GoogleDriveFileStore(),
+    val writersCanShare: Boolean = false,
 )
 
 suspend fun ensureSyncKitFolder(options: EnsureSyncKitFolderOptions): GoogleDriveSyncKitFolder =
@@ -81,6 +82,7 @@ suspend fun ensureSyncKitFolder(options: EnsureSyncKitFolderOptions): GoogleDriv
             options.authorization,
             parentId = options.parentFolderId,
             appProperties = appProperties,
+            writersCanShare = options.writersCanShare,
         )
         GoogleDriveSyncKitFolder(appFolderId)
     }

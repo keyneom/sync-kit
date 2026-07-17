@@ -47,6 +47,13 @@ data class RotatedDatasetResult(
     val error: Throwable? = null,
 )
 
+data class OwnershipTransferDatasetResult(
+    val datasetId: String,
+    val status: String,
+    val revisionId: String? = null,
+    val error: Throwable? = null,
+)
+
 sealed class DrivePermissionReconciliationAction {
     data class GrantedOrUpdated(
         val kind: String,
@@ -93,6 +100,13 @@ class SharedBackupController<T>(
         val updated: VersionedSharedDataset,
         val value: T,
         val permissionId: String?,
+    )
+
+    private data class PendingOwnershipTransfer(
+        val stored: VersionedSharedDataset,
+        val record: SharedDatasetRegistryRecord,
+        val next: SharedBackupEnvelopeV1,
+        val permissionId: String,
     )
 
     init {
@@ -668,6 +682,334 @@ class SharedBackupController<T>(
         }
     }
 
+    suspend fun prepareOwnershipTransfer(
+        datasetIds: List<String>,
+        toKeyId: String,
+        recipientEmailAddress: String,
+        previousOwnerRole: SharingRole = SharingRole.ADMIN,
+        expiresAt: String? = null,
+    ): SharedBackupOwnershipTransferV1 = serialized {
+        requireNonEmpty(toKeyId, "toKeyId")
+        requireNonEmpty(recipientEmailAddress, "recipientEmailAddress")
+        if (previousOwnerRole != SharingRole.ADMIN && previousOwnerRole != SharingRole.WRITER) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "The previous owner must become an admin or writer.",
+            )
+        }
+        val normalizedIds = uniqueDatasetIds(datasetIds)
+        val currentIdentity = identity()
+        val storage = transport.ensureStorage()
+        val prepared = normalizedIds.map { datasetId ->
+            val stored = readDatasetById(datasetId)
+            val record = requiredRegistry(datasetId)
+            verifyHead(stored, record)
+            val owner = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+            val recipient = sharedBackupParticipant(stored.envelope, toKeyId)
+            if (owner?.role != SharingRole.OWNER) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "Only the current owner can transfer dataset $datasetId.",
+                )
+            }
+            if (recipient?.accepted == null) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "The proposed owner is not fully enrolled in dataset $datasetId.",
+                )
+            }
+            stored to record
+        }
+        val providerPermissionIds = mutableMapOf<String, String>()
+        prepared.forEach { (stored, record) ->
+            val existing = findDirectDatasetPermission(
+                stored.fileId,
+                record.participantPermissionIds?.get(toKeyId),
+                recipientEmailAddress,
+            )
+            val permissionId = existing?.permissionId ?: transport.setDatasetPermission(
+                fileId = stored.fileId,
+                emailAddress = recipientEmailAddress,
+                role = SharingRole.ADMIN,
+            ).permissionId
+                ?: throw SyncKitError(
+                    SyncKitErrorCode.STATE,
+                    "Dataset ${stored.datasetId} has no direct recipient permission to transfer.",
+                )
+            registry.set(
+                record.copy(
+                    participantPermissionIds = record.participantPermissionIds.orEmpty() +
+                        (toKeyId to permissionId),
+                ),
+            )
+            providerPermissionIds[stored.datasetId] = permissionId
+        }
+        val providerObjects = listOf(
+            SharedBackupOwnershipTransferProviderObjectV1(
+                kind = "app-folder",
+                fileId = storage.appFolderId,
+                providerPermissionId = "",
+            ),
+            SharedBackupOwnershipTransferProviderObjectV1(
+                kind = "exchanges-folder",
+                fileId = storage.exchangesFolderId,
+                providerPermissionId = "",
+            ),
+        ).map { providerObject ->
+            val existing = findDirectDatasetPermission(
+                providerObject.fileId,
+                null,
+                recipientEmailAddress,
+            )
+            val permissionId = existing?.permissionId ?: transport.setDatasetPermission(
+                fileId = providerObject.fileId,
+                emailAddress = recipientEmailAddress,
+                role = SharingRole.ADMIN,
+            ).permissionId
+                ?: throw SyncKitError(
+                    SyncKitErrorCode.STATE,
+                    "The ${providerObject.kind} has no direct recipient permission to transfer.",
+                )
+            providerObject.copy(providerPermissionId = permissionId)
+        }
+        val proposal = SharingCrypto.createSharedBackupOwnershipTransferProposalV1(
+            prepared.map { it.first.envelope },
+            currentIdentity,
+            SharedBackupOwnershipTransferInput(
+                toKeyId = toKeyId,
+                previousOwnerRole = previousOwnerRole,
+                providerPermissionIds = providerPermissionIds,
+                providerObjects = providerObjects,
+                expiresAt = expiresAt,
+            ),
+            cryptoOptions,
+        )
+        proposal.providerObjects.forEach { providerObject ->
+            transport.requestOwnershipTransfer(
+                providerObject.fileId,
+                providerObject.providerPermissionId,
+            )
+        }
+        prepared.forEach { (stored, _) ->
+            transport.requestOwnershipTransfer(
+                stored.fileId,
+                providerPermissionIds.getValue(stored.datasetId),
+            )
+        }
+        proposal
+    }
+
+    suspend fun acceptOwnershipTransferProposal(
+        proposal: SharedBackupOwnershipTransferV1,
+    ): SharedBackupOwnershipTransferV1 = serialized {
+        val parsed = SharingParsing.parseSharedBackupOwnershipTransferV1(proposal)
+        val storage = transport.ensureStorage()
+        if (
+            parsed.providerObjects[0].fileId != storage.appFolderId ||
+            parsed.providerObjects[1].fileId != storage.exchangesFolderId
+        ) {
+            throw SyncKitError(
+                SyncKitErrorCode.COMPATIBILITY,
+                "The ownership transfer references another sharing storage root.",
+            )
+        }
+        val envelopes = parsed.datasets.map { dataset ->
+            val stored = readDatasetById(dataset.datasetId)
+            val record = requiredRegistry(dataset.datasetId)
+            verifyHead(stored, record)
+            when (transport.ownershipTransferState(stored.fileId, dataset.providerPermissionId)) {
+                ProviderOwnershipTransferState.PENDING,
+                ProviderOwnershipTransferState.OWNER -> Unit
+                ProviderOwnershipTransferState.OTHER -> throw SyncKitError(
+                    SyncKitErrorCode.STATE,
+                    "Dataset ${dataset.datasetId} is not pending transfer to this identity.",
+                )
+            }
+            stored.envelope
+        }
+        parsed.providerObjects.forEach { providerObject ->
+            when (
+                transport.ownershipTransferState(
+                    providerObject.fileId,
+                    providerObject.providerPermissionId,
+                )
+            ) {
+                ProviderOwnershipTransferState.PENDING,
+                ProviderOwnershipTransferState.OWNER -> Unit
+                ProviderOwnershipTransferState.OTHER -> throw SyncKitError(
+                    SyncKitErrorCode.STATE,
+                    "The ${providerObject.kind} is not pending transfer to this identity.",
+                )
+            }
+        }
+        SharingCrypto.acceptSharedBackupOwnershipTransferV1(
+            parsed,
+            envelopes,
+            identity(),
+            cryptoOptions,
+        )
+    }
+
+    suspend fun finalizeOwnershipTransfer(
+        acceptedTransfer: SharedBackupOwnershipTransferV1,
+    ): List<OwnershipTransferDatasetResult> = serialized {
+        val transfer = SharingParsing.parseSharedBackupOwnershipTransferV1(
+            acceptedTransfer,
+            requireAccepted = true,
+        )
+        val storage = transport.ensureStorage()
+        if (
+            transfer.providerObjects[0].fileId != storage.appFolderId ||
+            transfer.providerObjects[1].fileId != storage.exchangesFolderId
+        ) {
+            throw SyncKitError(
+                SyncKitErrorCode.COMPATIBILITY,
+                "The ownership transfer references another sharing storage root.",
+            )
+        }
+        val currentIdentity = identity()
+        if (currentIdentity.publicKey.keyId != transfer.toKeyId) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only the accepted new owner can finalize this ownership transfer.",
+            )
+        }
+        val pending = mutableListOf<PendingOwnershipTransfer>()
+        val results = mutableListOf<OwnershipTransferDatasetResult>()
+        transfer.datasets.forEach { dataset ->
+            try {
+                val stored = readDatasetById(dataset.datasetId)
+                val record = requiredRegistry(dataset.datasetId)
+                verifyHead(stored, record)
+                val completedTransfer = stored.envelope.accessControl.find {
+                    it.ownershipTransfer?.transferId == transfer.transferId
+                }?.ownershipTransfer
+                if (
+                    completedTransfer != null &&
+                    sharedBackupParticipant(stored.envelope, transfer.toKeyId)?.role == SharingRole.OWNER
+                ) {
+                    results += OwnershipTransferDatasetResult(
+                        dataset.datasetId,
+                        "already-transferred",
+                        stored.envelope.revisionId,
+                    )
+                    return@forEach
+                }
+                val recipient = sharedBackupParticipant(stored.envelope, transfer.toKeyId)
+                    ?: throw SyncKitError(
+                        SyncKitErrorCode.AUTHORIZATION,
+                        "The proposed owner is not enrolled in dataset ${dataset.datasetId}.",
+                    )
+                val accepted = recipient.accepted ?: throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "The proposed owner is not enrolled in dataset ${dataset.datasetId}.",
+                )
+                val selectedCodec = codecFor(dataset.datasetId)
+                val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+                    stored.envelope,
+                    selectedCodec,
+                    currentIdentity,
+                    VerifySharedBackupOptions(record.trustedOwnerKeyId),
+                )
+                val participants = participantInputs(stored.envelope).map { participant ->
+                    participant.copy(
+                        role = when (participant.publicKey.keyId) {
+                            transfer.fromKeyId -> transfer.previousOwnerRole
+                            transfer.toKeyId -> SharingRole.OWNER
+                            else -> participant.role
+                        },
+                    )
+                }
+                val next = SharingCrypto.createSharedBackupEnvelopeV1(
+                    value,
+                    selectedCodec,
+                    currentIdentity,
+                    CreateSharedBackupEnvelopeInput(
+                        appId = appId,
+                        backupId = dataset.datasetId,
+                        participants = participants,
+                        previous = stored.envelope,
+                        ownershipTransfer = transfer,
+                    ),
+                    cryptoOptions,
+                )
+                pending += PendingOwnershipTransfer(
+                    stored,
+                    record,
+                    next,
+                    dataset.providerPermissionId,
+                )
+            } catch (error: Throwable) {
+                results += OwnershipTransferDatasetResult(
+                    dataset.datasetId,
+                    "failed",
+                    error = error,
+                )
+            }
+        }
+        if (results.any { it.status == "failed" }) return@serialized results
+        pending.forEach { item ->
+            try {
+                when (transport.ownershipTransferState(item.stored.fileId, item.permissionId)) {
+                    ProviderOwnershipTransferState.PENDING ->
+                        transport.acceptOwnershipTransfer(
+                            item.stored.fileId,
+                            item.permissionId,
+                        )
+                    ProviderOwnershipTransferState.OWNER -> Unit
+                    ProviderOwnershipTransferState.OTHER -> throw SyncKitError(
+                        SyncKitErrorCode.STATE,
+                        "Dataset ${item.stored.datasetId} is not pending transfer to this identity.",
+                    )
+                }
+                transport.setWritersCanShare(item.stored.fileId, true)
+                val updated = transport.writeDataset(item.stored, item.next)
+                persistHead(updated, item.record.trustedOwnerKeyId, item.record)
+                results += OwnershipTransferDatasetResult(
+                    item.stored.datasetId,
+                    "transferred",
+                    updated.envelope.revisionId,
+                )
+            } catch (error: Throwable) {
+                results += OwnershipTransferDatasetResult(
+                    item.stored.datasetId,
+                    "failed",
+                    error = error,
+                )
+            }
+        }
+        if (results.none { it.status == "failed" }) {
+            transfer.providerObjects.forEach { providerObject ->
+                when (
+                    transport.ownershipTransferState(
+                        providerObject.fileId,
+                        providerObject.providerPermissionId,
+                    )
+                ) {
+                    ProviderOwnershipTransferState.PENDING -> {
+                        transport.acceptOwnershipTransfer(
+                            providerObject.fileId,
+                            providerObject.providerPermissionId,
+                        )
+                        transport.setWritersCanShare(providerObject.fileId, true)
+                    }
+                    ProviderOwnershipTransferState.OWNER ->
+                        transport.setWritersCanShare(providerObject.fileId, true)
+                    ProviderOwnershipTransferState.OTHER -> throw SyncKitError(
+                        SyncKitErrorCode.STATE,
+                        "The ${providerObject.kind} is not pending transfer to this identity.",
+                    )
+                }
+            }
+        }
+        results.sortedWith { left, right ->
+            com.keyneom.synckit.crypto.CanonicalJson.compareUtf16CodeUnits(
+                left.datasetId,
+                right.datasetId,
+            )
+        }
+    }
+
     suspend fun reconcileDrivePermissions(
         datasetId: String,
         participantEmails: Map<String, String>,
@@ -1190,6 +1532,26 @@ class SharedBackupController<T>(
 
     private fun requireNonEmpty(value: String, name: String) {
         if (value.isBlank()) throw IllegalArgumentException("$name must not be empty.")
+    }
+
+    private fun uniqueDatasetIds(input: List<String>): List<String> {
+        if (input.isEmpty()) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "Ownership transfer requires at least one dataset.",
+            )
+        }
+        input.forEach { requireNonEmpty(it, "datasetId") }
+        val sorted = input.sortedWith { left, right ->
+            com.keyneom.synckit.crypto.CanonicalJson.compareUtf16CodeUnits(left, right)
+        }
+        if (sorted.distinct().size != sorted.size) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "Ownership-transfer dataset IDs must be unique.",
+            )
+        }
+        return sorted
     }
 }
 

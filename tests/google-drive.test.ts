@@ -147,7 +147,7 @@ describe("Google Drive per-file sharing", () => {
     });
 
     expect(fetch.mock.calls[3]?.[1]?.body).toContain(
-      '"writersCanShare":false',
+      '"writersCanShare":true',
     );
     expect(fetch.mock.calls[4]?.[1]?.body).toContain('"role":"reader"');
     expect(fetch.mock.calls[5]?.[1]?.body).toContain('"role":"writer"');
@@ -181,6 +181,43 @@ describe("Google Drive per-file sharing", () => {
       appFolderId: "app-folder",
       exchangesFolderId: "exchanges-folder",
     });
+  });
+
+  it("detects pending and completed provider ownership for retries", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          permissions: [
+            {
+              id: "recipient",
+              type: "user",
+              role: "writer",
+              pendingOwner: true,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          permissions: [{ id: "recipient", type: "user", role: "owner" }],
+        }),
+      );
+    const transport = new GoogleDriveSharedBackupTransport({
+      appId: "fixture-app",
+      authorizationProvider: {
+        authorize: async () => authorization,
+        clear: vi.fn(),
+      },
+      drive: new GoogleDriveFileStore({ fetch }),
+    });
+
+    await expect(
+      transport.ownershipTransferState("dataset", "recipient"),
+    ).resolves.toBe("pending");
+    await expect(
+      transport.ownershipTransferState("dataset", "recipient"),
+    ).resolves.toBe("owner");
   });
 
   it("uses the downloaded ETag for conditional dataset writes", async () => {
@@ -303,6 +340,7 @@ describe("Google Drive per-file sharing", () => {
               id: "participant",
               type: "user",
               role: "reader",
+              pendingOwner: true,
               emailAddress: "person@example.com",
               permissionDetails: [{ inherited: false }],
             },
@@ -319,6 +357,7 @@ describe("Google Drive per-file sharing", () => {
         permissionId: "participant",
         type: "user",
         role: "reader",
+        pendingOwner: true,
         emailAddress: "person@example.com",
       },
     ]);
@@ -520,6 +559,45 @@ describe("Google Drive per-file sharing", () => {
     expect(fetch.mock.calls[1]?.[1]?.body).toBe(
       '{"type":"user","role":"reader","emailAddress":"recipient@example.com"}',
     );
+  });
+
+  it("uses Drive's two-party consumer ownership-transfer permission flow", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const drive = new GoogleDriveFileStore({ fetch });
+
+    await drive.requestOwnershipTransfer(
+      "shared-file",
+      "recipient-permission",
+      authorization,
+    );
+    await drive.acceptOwnershipTransfer(
+      "shared-file",
+      "recipient-permission",
+      authorization,
+    );
+    await drive.setWritersCanShare("shared-file", true, authorization);
+
+    expect(fetch.mock.calls[0]?.[0]).toContain(
+      "/shared-file/permissions/recipient-permission?supportsAllDrives=true",
+    );
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({
+      method: "PATCH",
+      body: '{"role":"writer","pendingOwner":true}',
+    });
+    expect(fetch.mock.calls[1]?.[0]).toContain(
+      "supportsAllDrives=true&transferOwnership=true",
+    );
+    expect(fetch.mock.calls[1]?.[1]).toMatchObject({
+      method: "PATCH",
+      body: '{"role":"owner"}',
+    });
+    expect(fetch.mock.calls[2]?.[0]).toContain(
+      "/shared-file?supportsAllDrives=true",
+    );
+    expect(fetch.mock.calls[2]?.[1]).toMatchObject({
+      method: "PATCH",
+      body: '{"writersCanShare":true}',
+    });
   });
 
   it("lists only accessible files inside a selected namespace", async () => {

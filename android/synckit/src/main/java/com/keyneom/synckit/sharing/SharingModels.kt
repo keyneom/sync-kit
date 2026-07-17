@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonElement
 
 const val SHARING_KEY_KIND = "sync-kit-public-key"
 const val SHARING_INVITATION_KIND = "sync-kit-share-invitation"
+const val SHARING_OWNERSHIP_TRANSFER_KIND = "sync-kit-ownership-transfer"
 const val SHARED_BACKUP_KIND = "sync-kit-shared-backup"
 const val SHARING_ENCRYPTION_ALGORITHM = "ECDH-P256"
 const val SHARING_SIGNATURE_ALGORITHM = "ECDSA-P256-SHA256-P1363"
@@ -114,6 +115,38 @@ data class SharedBackupKeyRotationV1(
 )
 
 @Serializable
+data class SharedBackupOwnershipTransferDatasetV1(
+    val datasetId: String,
+    val revisionId: String,
+    val accessControlHash: String,
+    val providerPermissionId: String,
+)
+
+@Serializable
+data class SharedBackupOwnershipTransferProviderObjectV1(
+    val kind: String,
+    val fileId: String,
+    val providerPermissionId: String,
+)
+
+@Serializable
+data class SharedBackupOwnershipTransferV1(
+    val schemaVersion: Int,
+    val kind: String,
+    val transferId: String,
+    val appId: String,
+    val fromKeyId: String,
+    val toKeyId: String,
+    val previousOwnerRole: SharingRole,
+    val datasets: List<SharedBackupOwnershipTransferDatasetV1>,
+    val providerObjects: List<SharedBackupOwnershipTransferProviderObjectV1>,
+    val createdAt: String,
+    val expiresAt: String? = null,
+    val ownerProof: String,
+    val newOwnerProof: String? = null,
+)
+
+@Serializable
 data class SharedBackupAccessV1(
     val sequence: Int,
     val appId: String? = null,
@@ -122,6 +155,7 @@ data class SharedBackupAccessV1(
     val authorKeyId: String,
     val participants: List<SharedBackupParticipantV1>,
     val keyRotation: SharedBackupKeyRotationV1? = null,
+    val ownershipTransfer: SharedBackupOwnershipTransferV1? = null,
     val signature: String,
 )
 

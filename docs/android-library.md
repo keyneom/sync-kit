@@ -14,7 +14,7 @@ APIs allow.
 | --- | --- |
 | Group | `com.keyneom` |
 | Artifact | `sync-kit-android` |
-| Version | release tag (`0.2.1`) |
+| Version | release tag (`0.3.0`) |
 | Module | `android/synckit` |
 | Registry | [GitHub Packages](https://github.com/keyneom/sync-kit/packages) (`https://maven.pkg.github.com/keyneom/sync-kit`) |
 
@@ -53,7 +53,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.2.1")
+implementation("com.keyneom:sync-kit-android:0.3.0")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.
@@ -104,7 +104,7 @@ See [consumer-responsibilities.md](./consumer-responsibilities.md) and
 | Type | Role |
 | --- | --- |
 | `sharing.*` | Protocol parsers, P-256 ECDH/ECDSA, invitations, envelopes |
-| `sharing.SharedBackupController` | Headless invite / accept / sync / reconcile |
+| `sharing.SharedBackupController` | Headless invite / accept / sync / reconcile / dual-signed ownership transfer |
 | `sharing.SharingControlDataset` | Signed control directory and hard-cutover migration ledger |
 | `sharing.createSharingControlCodec` | Deterministic event-union codec matching npm `/sharing/control` |
 | `stores.GoogleDriveFileStore` | normal Drive `drive.file` operations |

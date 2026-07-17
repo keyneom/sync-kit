@@ -62,16 +62,18 @@ files directly, or put sensitive datasets in limited-access subfolders.
 
 | Object | Drive ACL | Cryptographic rule |
 | --- | --- | --- |
-| app folder | participant = reader | discovery only |
-| `exchanges/` | participant = writer; `writersCanShare=false` | every artifact is untrusted until verified |
-| dataset | viewer = inherited reader; writer/admin/owner = direct writer | signed dataset ACL determines decrypt/write/admin authority |
+| app folder | participant = reader; owner/former-owner admin = owner/writer | discovery and invitation authority |
+| `exchanges/` | participant = writer; `writersCanShare=true` | every artifact is untrusted until verified |
+| dataset | viewer = inherited reader; writer/admin/owner = direct writer; `writersCanShare=true` | signed dataset ACL determines decrypt/write/admin authority |
 
 Drive permissions propagate downward, not sideways. Writing to `exchanges/`
 does not grant write access to sibling datasets.
 
-The Drive owner performs permission reconciliation by default. Drive has no
-separate application-admin role. An app admin may authorize a cryptographic ACL
-change, but the Drive owner might still need to apply its matching Drive ACL.
+Drive has no separate application-admin role. Writer sharing lets the former
+owner, who Drive demotes to writer during transfer, continue reconciling ACLs as
+the retained app admin. Other app admins can authorize cryptographic ACL changes,
+but still need writer access on the relevant Drive object; otherwise its Drive
+owner must apply the matching provider ACL.
 
 ## Key exchange
 
@@ -151,8 +153,31 @@ For every write:
 7. Encrypt once with AES-256-GCM and sign the complete revision.
 8. Update Drive with an ETag/`If-Match` precondition.
 
-Only a prior owner/admin may append an ACL entry. A writer cannot accept keys
-or change roles. Owner transfer is not part of sharing v1.
+Only a prior owner/admin may append an ordinary ACL entry. A writer cannot
+accept keys or change roles. Ownership transfer is the one deliberate
+exception: a fully enrolled proposed owner may append the transfer entry only
+when the exact current dataset-head manifest carries valid signatures from
+both the current and proposed owner. The current owner chooses whether it
+becomes `admin` (default) or `writer`; ordinary role APIs still cannot assign
+`owner`.
+
+For consumer Google accounts, the owner first changes the recipient's direct
+permission on every dataset, the app-root folder, and the exchange folder to
+`writer + pendingOwner`; the recipient must explicitly accept each transfer with
+`role=owner&transferOwnership=true` before publishing the signed transfer
+heads. Provider file and permission IDs are covered by the dual-signed manifest.
+The recipient also accepts the folder transfers needed to manage later
+invitations. Finalization enables Drive writer sharing on every transferred
+object so the former owner can exercise its retained `admin` role. Google Drive
+has no multi-file transaction, so the controller preflights every head,
+uses conditional writes, checks whether each provider transfer is pending or
+already owned, reports per-dataset results, and recognizes a previously
+completed transfer ID on retry. Consumers must show the profile as transferring
+until finalization returns successfully.
+
+This built-in transport path is for consumer Google accounts. Workspace direct
+transfer is subject to domain policy and requires a distinct provider path; do
+not treat it as completed by the pending-owner implementation.
 
 Removing a key prevents future grants but cannot revoke plaintext or old
 revisions already received. Key rotation is remove-old/add-new.
@@ -218,6 +243,9 @@ setDatasetRole
 revokeDatasetKey
 trashDataset
 rotateLocalKey
+prepareOwnershipTransfer
+acceptOwnershipTransferProposal
+finalizeOwnershipTransfer
 reconcileDrivePermissions
 createSharingControlDataset
 announceMigration
@@ -262,6 +290,9 @@ Implemented:
   exchange/key challenge;
 - signed revision ancestry, rollback detection, consumer-controlled fork
   merge/reject, and dual-proof owner/writer key rotation;
+- dual-signed profile ownership transfer across every dataset plus app-root and
+  exchange-folder Drive authority, with explicit recipient acceptance and
+  resumable provider-state checks;
 - normal-Drive app folders, per-file reads/writes/sharing, limited folders,
   and provenance validation;
 - `/stores/google-drive/sharing` managed hierarchy, exchange transport,

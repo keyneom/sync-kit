@@ -108,7 +108,11 @@ restricted full-Drive scope is not required.
       consumer merge/reject fork contract.
 - [x] Add dual-proof key rotation, including owner-key replacement without
       transferring the owner role.
-- [ ] Design ownership transfer as a separate future protocol.
+- [x] Add profile-scoped ownership transfer with an exact multi-dataset head
+      manifest, current-owner proposal signature, proposed-owner acceptance
+      signature, signed app-root/exchange-folder authority, Drive
+      pending-owner/acceptance reconciliation, resumable conditional
+      publication, and Web/Kotlin parity coverage.
 
 Exit gate: concurrent writers, stale clients, rollback, forks, and partial ACL
 updates have deterministic outcomes.
@@ -193,8 +197,9 @@ live Drive smoke path.
 
 ## Release posture
 
-The current build completes the package implementation through S4, including
-Picker, protected identity, account attestation, concurrency, ancestry/forks,
-rotation, Java fixture consumption, and packed-artifact execution. It remains
-unreleased until live Google validation and one external consumer integration
-are complete.
+Version `0.3.0` adds dual-signed, recipient-accepted ownership transfer across
+the Web and Android implementations, including managed Drive folder authority,
+resumable partial completion, and frozen cross-platform wire verification. Live
+two-account Google validation and external consumer integration remain
+production-validation gates; this release does not claim the separate Google
+Workspace direct-transfer path.

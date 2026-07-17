@@ -414,6 +414,7 @@ export type DrivePermission = {
   emailAddress?: string;
   displayName?: string;
   inherited?: boolean;
+  pendingOwner?: boolean;
 };
 
 /**
@@ -733,7 +734,7 @@ export class GoogleDriveFileStore {
   ): Promise<DrivePermission[]> {
     const params = new URLSearchParams({
       fields:
-        "permissions(id,type,role,emailAddress,displayName,permissionDetails(inherited))",
+        "permissions(id,type,role,emailAddress,displayName,pendingOwner,permissionDetails(inherited))",
       supportsAllDrives: "true",
     });
     const response = await this.request(
@@ -763,6 +764,38 @@ export class GoogleDriveFileStore {
     );
   }
 
+  async requestOwnershipTransfer(
+    fileId: string,
+    permissionId: string,
+    authorization: Authorization,
+  ): Promise<void> {
+    await this.request(
+      `${DRIVE_API}/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}?supportsAllDrives=true`,
+      authorization,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "writer", pendingOwner: true }),
+      },
+    );
+  }
+
+  async acceptOwnershipTransfer(
+    fileId: string,
+    permissionId: string,
+    authorization: Authorization,
+  ): Promise<void> {
+    await this.request(
+      `${DRIVE_API}/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}?supportsAllDrives=true&transferOwnership=true`,
+      authorization,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "owner" }),
+      },
+    );
+  }
+
   async setFolderLimitedAccess(
     folderId: string,
     enabled: boolean,
@@ -775,6 +808,22 @@ export class GoogleDriveFileStore {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ inheritedPermissionsDisabled: enabled }),
+      },
+    );
+  }
+
+  async setWritersCanShare(
+    fileId: string,
+    enabled: boolean,
+    authorization: Authorization,
+  ): Promise<void> {
+    await this.request(
+      `${DRIVE_API}/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
+      authorization,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ writersCanShare: enabled }),
       },
     );
   }
@@ -865,6 +914,7 @@ export type GoogleDriveSyncKitFolderOptions = {
   folderName?: string;
   parentFolderId?: string;
   drive?: GoogleDriveFileStore;
+  writersCanShare?: boolean;
 };
 
 export type GoogleDriveSyncKitFolder = {
@@ -900,6 +950,9 @@ export async function ensureGoogleDriveSyncKitFolder(
         ? { parentId: options.parentFolderId }
         : {}),
       appProperties,
+      ...(options.writersCanShare === undefined
+        ? {}
+        : { writersCanShare: options.writersCanShare }),
     }));
   return { appFolderId };
 }
@@ -1084,6 +1137,7 @@ type GoogleDrivePermissionApi = {
   role?: string;
   emailAddress?: string;
   displayName?: string;
+  pendingOwner?: boolean;
   permissionDetails?: { inherited?: boolean }[];
 };
 
@@ -1100,6 +1154,9 @@ function drivePermission(value: GoogleDrivePermissionApi): DrivePermission {
     role: value.role,
     ...(value.emailAddress ? { emailAddress: value.emailAddress } : {}),
     ...(value.displayName ? { displayName: value.displayName } : {}),
+    ...(value.pendingOwner === undefined
+      ? {}
+      : { pendingOwner: value.pendingOwner }),
     ...(value.permissionDetails?.some((detail) => detail.inherited)
       ? { inherited: true }
       : {}),

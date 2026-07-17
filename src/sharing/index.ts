@@ -1,8 +1,11 @@
 import { SyncKitError } from "../core/errors.js";
 import { base64UrlToBytes } from "../crypto/base64url.js";
+import { compareUtf16CodeUnits } from "../crypto/canonical.js";
 
 export const SHARING_KEY_KIND = "sync-kit-public-key" as const;
 export const SHARING_INVITATION_KIND = "sync-kit-share-invitation" as const;
+export const SHARING_OWNERSHIP_TRANSFER_KIND =
+  "sync-kit-ownership-transfer" as const;
 export const SHARED_BACKUP_KIND = "sync-kit-shared-backup" as const;
 export const SHARING_ENCRYPTION_ALGORITHM = "ECDH-P256" as const;
 export const SHARING_SIGNATURE_ALGORITHM =
@@ -80,6 +83,40 @@ export type SharedBackupParticipantV1 = SharingPublicKeyV1 & {
   accepted?: SharingAcceptanceProvenanceV1;
 };
 
+export type SharedBackupOwnershipTransferDatasetV1 = {
+  datasetId: string;
+  revisionId: string;
+  accessControlHash: string;
+  providerPermissionId: string;
+};
+
+export type SharedBackupOwnershipTransferProviderObjectV1 = {
+  kind: "app-folder" | "exchanges-folder";
+  fileId: string;
+  providerPermissionId: string;
+};
+
+/**
+ * A profile-scoped ownership handoff signed by both the current and proposed
+ * owners. `ownerProof` is created first; `newOwnerProof` is added only after
+ * the recipient has explicitly accepted the exact dataset-head manifest.
+ */
+export type SharedBackupOwnershipTransferV1 = {
+  schemaVersion: 1;
+  kind: typeof SHARING_OWNERSHIP_TRANSFER_KIND;
+  transferId: string;
+  appId: string;
+  fromKeyId: string;
+  toKeyId: string;
+  previousOwnerRole: "admin" | "writer";
+  datasets: SharedBackupOwnershipTransferDatasetV1[];
+  providerObjects: SharedBackupOwnershipTransferProviderObjectV1[];
+  createdAt: string;
+  expiresAt?: string;
+  ownerProof: string;
+  newOwnerProof?: string;
+};
+
 export type SharedBackupAccessV1 = {
   sequence: number;
   appId?: string;
@@ -92,6 +129,7 @@ export type SharedBackupAccessV1 = {
     toKeyId: string;
     newKeyProof: string;
   };
+  ownershipTransfer?: SharedBackupOwnershipTransferV1;
   signature: string;
 };
 
@@ -453,6 +491,104 @@ function parseAccessEntry(input: unknown, index: number): void {
       throw compatibility("A key rotation must change the key ID.");
     }
   }
+  if (entry.ownershipTransfer !== undefined) {
+    parseSharedBackupOwnershipTransferV1(entry.ownershipTransfer, true);
+    if (entry.keyRotation !== undefined) {
+      throw compatibility(
+        "An access-control entry cannot rotate a key and transfer ownership.",
+      );
+    }
+  }
+}
+
+export function parseSharedBackupOwnershipTransferV1(
+  value: unknown,
+  requireAccepted = false,
+): SharedBackupOwnershipTransferV1 {
+  const parsed = parseObject(value, "ownership transfer");
+  assertExact(parsed.schemaVersion, 1, "ownership transfer schemaVersion");
+  assertExact(parsed.kind, SHARING_OWNERSHIP_TRANSFER_KIND, "ownership transfer kind");
+  assertNonEmptyStrings(parsed, [
+    "transferId",
+    "appId",
+    "fromKeyId",
+    "toKeyId",
+    "previousOwnerRole",
+    "createdAt",
+    "ownerProof",
+  ]);
+  validateBytes(parsed.fromKeyId as string, 32, "transfer fromKeyId");
+  validateBytes(parsed.toKeyId as string, 32, "transfer toKeyId");
+  if (parsed.fromKeyId === parsed.toKeyId) {
+    throw compatibility("An ownership transfer must change the owner key.");
+  }
+  if (
+    parsed.previousOwnerRole !== "admin" &&
+    parsed.previousOwnerRole !== "writer"
+  ) {
+    throw compatibility("previousOwnerRole must be admin or writer.");
+  }
+  if (!Array.isArray(parsed.datasets) || parsed.datasets.length === 0) {
+    throw compatibility("An ownership transfer must include datasets.");
+  }
+  let priorDatasetId: string | undefined;
+  for (const input of parsed.datasets) {
+    const dataset = parseObject(input, "ownership transfer dataset");
+    assertNonEmptyStrings(dataset, [
+      "datasetId",
+      "revisionId",
+      "accessControlHash",
+      "providerPermissionId",
+    ]);
+    validateBytes(dataset.accessControlHash as string, 32, "transfer accessControlHash");
+    if (
+      priorDatasetId !== undefined &&
+      compareUtf16CodeUnits(priorDatasetId, dataset.datasetId as string) >= 0
+    ) {
+      throw compatibility(
+        "Ownership-transfer datasets must be unique and canonically ordered.",
+      );
+    }
+    priorDatasetId = dataset.datasetId as string;
+  }
+  if (!Array.isArray(parsed.providerObjects) || parsed.providerObjects.length !== 2) {
+    throw compatibility(
+      "An ownership transfer must include the app and exchanges folders.",
+    );
+  }
+  const expectedProviderKinds = ["app-folder", "exchanges-folder"];
+  const providerFileIds = new Set<string>();
+  for (const [index, input] of parsed.providerObjects.entries()) {
+    const providerObject = parseObject(input, "ownership transfer provider object");
+    assertNonEmptyStrings(providerObject, [
+      "kind",
+      "fileId",
+      "providerPermissionId",
+    ]);
+    if (providerObject.kind !== expectedProviderKinds[index]) {
+      throw compatibility(
+        "Ownership-transfer provider objects must contain the app and exchanges folders in canonical order.",
+      );
+    }
+    if (providerFileIds.has(providerObject.fileId as string)) {
+      throw compatibility("Ownership-transfer provider file IDs must be unique.");
+    }
+    providerFileIds.add(providerObject.fileId as string);
+  }
+  validateTimestamp(parsed.createdAt as string, "createdAt");
+  if (parsed.expiresAt !== undefined) {
+    if (!nonEmpty(parsed.expiresAt)) {
+      throw compatibility("expiresAt must be a non-empty string.");
+    }
+    validateTimestamp(parsed.expiresAt, "expiresAt");
+  }
+  validateBytes(parsed.ownerProof as string, 64, "ownerProof");
+  if (parsed.newOwnerProof !== undefined) {
+    validateBytes(parsed.newOwnerProof as string, 64, "newOwnerProof");
+  } else if (requireAccepted) {
+    throw compatibility("The ownership transfer has not been accepted.");
+  }
+  return parsed as SharedBackupOwnershipTransferV1;
 }
 
 function parseAcceptanceProvenance(input: unknown): void {

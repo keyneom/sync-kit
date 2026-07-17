@@ -94,6 +94,7 @@ data class DrivePermission(
     val emailAddress: String? = null,
     val displayName: String? = null,
     val inherited: Boolean = false,
+    val pendingOwner: Boolean = false,
 )
 
 data class DriveFileProvenanceExpectation(
@@ -370,7 +371,7 @@ open class GoogleDriveFileStore(
         authorization: Authorization,
     ): List<DrivePermission> = withContext(Dispatchers.IO) {
         val params = "fields=" + encodeQuery(
-            "permissions(id,type,role,emailAddress,displayName,permissionDetails(inherited))",
+            "permissions(id,type,role,emailAddress,displayName,pendingOwner,permissionDetails(inherited))",
         ) + "&supportsAllDrives=true"
         val response = request(
             "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}/permissions?$params",
@@ -392,6 +393,7 @@ open class GoogleDriveFileStore(
                 inherited = obj["permissionDetails"]?.jsonArray?.any {
                     it.jsonObject["inherited"]?.jsonPrimitive?.content == "true"
                 } == true,
+                pendingOwner = obj["pendingOwner"]?.jsonPrimitive?.content == "true",
             )
         }
     }
@@ -406,6 +408,63 @@ open class GoogleDriveFileStore(
         request(
             "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}" +
                 "/permissions/${encodePathSegment(permissionId)}?supportsAllDrives=true",
+            authorization.accessToken,
+            method = "POST",
+            contentType = "application/json",
+            body = SyncKitJson.instance.encodeToString(JsonObject.serializer(), body)
+                .toByteArray(Charsets.UTF_8),
+            extraHeaders = mapOf("X-HTTP-Method-Override" to "PATCH"),
+        )
+    }
+
+    suspend fun requestOwnershipTransfer(
+        fileId: String,
+        permissionId: String,
+        authorization: Authorization,
+    ) = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("role", "writer")
+            put("pendingOwner", true)
+        }
+        request(
+            "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}" +
+                "/permissions/${encodePathSegment(permissionId)}?supportsAllDrives=true",
+            authorization.accessToken,
+            method = "POST",
+            contentType = "application/json",
+            body = SyncKitJson.instance.encodeToString(JsonObject.serializer(), body)
+                .toByteArray(Charsets.UTF_8),
+            extraHeaders = mapOf("X-HTTP-Method-Override" to "PATCH"),
+        )
+    }
+
+    suspend fun acceptOwnershipTransfer(
+        fileId: String,
+        permissionId: String,
+        authorization: Authorization,
+    ) = withContext(Dispatchers.IO) {
+        val body = buildJsonObject { put("role", "owner") }
+        request(
+            "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}" +
+                "/permissions/${encodePathSegment(permissionId)}" +
+                "?supportsAllDrives=true&transferOwnership=true",
+            authorization.accessToken,
+            method = "POST",
+            contentType = "application/json",
+            body = SyncKitJson.instance.encodeToString(JsonObject.serializer(), body)
+                .toByteArray(Charsets.UTF_8),
+            extraHeaders = mapOf("X-HTTP-Method-Override" to "PATCH"),
+        )
+    }
+
+    suspend fun setWritersCanShare(
+        fileId: String,
+        enabled: Boolean,
+        authorization: Authorization,
+    ) = withContext(Dispatchers.IO) {
+        val body = buildJsonObject { put("writersCanShare", enabled) }
+        request(
+            "${options.apiOrigin}/drive/v3/files/${encodePathSegment(fileId)}?supportsAllDrives=true",
             authorization.accessToken,
             method = "POST",
             contentType = "application/json",

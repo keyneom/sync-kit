@@ -6,6 +6,7 @@ import com.keyneom.synckit.core.SyncKitError
 import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.crypto.SyncKitJson
 import com.keyneom.synckit.sharing.CreateSharedBackupEnvelopeInput
+import com.keyneom.synckit.sharing.ProviderOwnershipTransferState
 import com.keyneom.synckit.sharing.SharedBackupCodec
 import com.keyneom.synckit.sharing.SharedBackupEnvelopeV1
 import com.keyneom.synckit.sharing.SharedBackupParticipantInput
@@ -266,6 +267,49 @@ class GoogleDriveSharedBackupTransportTest {
         assertEquals("POST", request.method)
         assertEquals("PATCH", request.getHeader("X-HTTP-Method-Override"))
         assertEquals("{\"trashed\":true}", request.body.readUtf8())
+    }
+
+    @Test
+    fun usesTwoPartyConsumerOwnershipTransferPermissionFlow() = runBlocking {
+        server.enqueue(json("{}"))
+        server.enqueue(json("{}"))
+        server.enqueue(json("{}"))
+
+        val transport = transport()
+        transport.requestOwnershipTransfer("dataset", "recipient-permission")
+        transport.acceptOwnershipTransfer("dataset", "recipient-permission")
+        transport.setWritersCanShare("dataset", true)
+
+        val request = server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("No ownership request was issued.")
+        assertTrue(request.path.orEmpty().contains("supportsAllDrives=true"))
+        assertEquals("POST", request.method)
+        assertEquals("PATCH", request.getHeader("X-HTTP-Method-Override"))
+        assertEquals("{\"role\":\"writer\",\"pendingOwner\":true}", request.body.readUtf8())
+        val accept = server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("No ownership acceptance was issued.")
+        assertTrue(accept.path.orEmpty().contains("transferOwnership=true"))
+        assertEquals("{\"role\":\"owner\"}", accept.body.readUtf8())
+        val writerSharing = server.takeRequest(1, java.util.concurrent.TimeUnit.SECONDS)
+            ?: error("No writer-sharing request was issued.")
+        assertEquals("PATCH", writerSharing.getHeader("X-HTTP-Method-Override"))
+        assertEquals("{\"writersCanShare\":true}", writerSharing.body.readUtf8())
+    }
+
+    @Test
+    fun detectsPendingAndCompletedOwnershipForResumableTransfers() = runBlocking {
+        server.enqueue(json("""{"permissions":[{"id":"recipient","type":"user","role":"writer","pendingOwner":true}]}"""))
+        server.enqueue(json("""{"permissions":[{"id":"recipient","type":"user","role":"owner"}]}"""))
+
+        val transport = transport()
+        assertEquals(
+            ProviderOwnershipTransferState.PENDING,
+            transport.ownershipTransferState("dataset", "recipient"),
+        )
+        assertEquals(
+            ProviderOwnershipTransferState.OWNER,
+            transport.ownershipTransferState("dataset", "recipient"),
+        )
     }
 
     @Test

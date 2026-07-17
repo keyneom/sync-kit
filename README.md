@@ -49,6 +49,13 @@ same controller and link-manifest behavior. Existing datasets and identities
 need no migration, but pending join links created by `0.2.0` or earlier must be
 recreated because new recipients reject their unbound `sk-files` manifests.
 
+Version `0.3.0` adds recipient-accepted profile ownership transfer across Web
+and Android. The dual-signed transfer covers every dataset plus the managed
+app-root and exchange folders, preserves the prior owner as an admin by
+default, and resumes safely after partial Google Drive completion. The built-in
+provider path targets consumer Google accounts; Workspace direct transfer is
+not claimed by this release.
+
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the
 packed tarball. They do not install this package into EasyBC, Family Chores, or
@@ -129,7 +136,8 @@ Available exports:
   invitation/key-response proofs, and decryption
 - `/sharing/controller` — headless multi-dataset orchestration, owner pinning,
   serialized writes, exchange processing, roles, revocation, Drive permission
-  reconciliation, and optional IndexedDB registry persistence
+  reconciliation, dual-signed/resumable ownership transfer, and optional
+  IndexedDB registry persistence
 - `/sharing/control` — encrypted, signed coordination ledgers for Picker
   enrollment, participant provenance, and hard-cutover migration acknowledgements
 - `/sharing/web-passkey` — passkey-encrypted sharing identities with

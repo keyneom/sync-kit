@@ -51,6 +51,8 @@ export type SharedDatasetDrivePermission = {
   inherited: boolean;
 };
 
+export type ProviderOwnershipTransferState = "pending" | "owner" | "other";
+
 /**
  * Client-side transport required by the sharing controller. Implementations
  * may use Google Drive or another provider, but cannot depend on a trusted app
@@ -107,5 +109,26 @@ export interface SharedBackupTransport {
     permissionId: string,
   ): Promise<void>;
   listDatasetPermissions(fileId: string): Promise<SharedDatasetDrivePermission[]>;
+  /**
+   * Ask a consumer Google account to become the provider owner. The existing
+   * direct user permission is changed to writer + pendingOwner; the recipient
+   * must explicitly accept through `acceptOwnershipTransfer`.
+   */
+  requestOwnershipTransfer?(
+    fileId: string,
+    permissionId: string,
+  ): Promise<void>;
+  /** Accept a pending provider-ownership request as the proposed owner. */
+  acceptOwnershipTransfer?(
+    fileId: string,
+    permissionId: string,
+  ): Promise<void>;
+  /** Used to make multi-file transfer acceptance safely resumable. */
+  ownershipTransferState?(
+    fileId: string,
+    permissionId: string,
+  ): Promise<ProviderOwnershipTransferState>;
+  /** Allow Drive writers whose signed role is admin to reconcile sharing. */
+  setWritersCanShare?(fileId: string, enabled: boolean): Promise<void>;
   listDatasetHeads(): Promise<SharedDatasetHead[]>;
 }

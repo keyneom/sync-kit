@@ -270,6 +270,29 @@ Validated on 2026-07-16 for `0.2.1` sharing and concurrency hardening:
   parity, 157 TypeScript tests, lint, typecheck, build, and packed npm/pnpm
   imports.
 
+Validated on 2026-07-17 for the `0.3.0` ownership-transfer protocol:
+
+- only the current owner can propose a transfer, and the proposed owner must
+  already be fully enrolled in every exact dataset head in the signed manifest;
+- the recipient explicitly countersigns before any encrypted owner change;
+  the former owner becomes `admin` by default or `writer` when selected;
+- consumer Google Drive ownership transfers cover every dataset plus the
+  app-root and exchange folders through `pendingOwner` and explicit recipient
+  acceptance; provider file/permission IDs are covered by both signatures;
+- finalization prebuilds and verifies every revision, preserves conditional
+  writes and the genesis owner trust root, enables writer sharing so the former
+  owner can exercise its retained admin role, and resumes partial provider/data
+  completion by inspecting pending/owner state and transfer IDs;
+- TypeScript and Kotlin controller tests consume the same two-dataset/profile
+  fixture, and Kotlin verifies and decrypts a frozen Web-generated transfer
+  envelope containing both owner proofs;
+- `npm run check` passed Java fixtures, the complete Android suite, private and
+  sharing parity gates, lint, strict typecheck, 162 TypeScript tests, build, and
+  packed npm/pnpm imports.
+
+Live two-account Drive validation and the distinct Workspace direct-transfer
+path remain open; the built-in provider flow must not claim Workspace support.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive
@@ -336,6 +359,8 @@ Validated on 2026-07-16 for `0.2.1` sharing and concurrency hardening:
       compatibility.
 - [x] Add Picker/Open-with, Google/passkey account attestation, signed ancestry,
       fork policy, and dual-proof key rotation.
+- [x] Add dual-signed, recipient-accepted profile ownership transfer with
+      app-root/exchange-folder provider authority and Web/Kotlin wire parity.
 - [x] Execute sharing exchange/decryption from packed npm and pnpm artifacts.
 - [x] Add metadata-only `listDatasetHeads`, `SharingChangeDetector`, and
       `SharingSyncCheckpoint` on npm `/sharing`.

@@ -1,7 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
+  acceptSharedBackupOwnershipTransferV1,
   acceptSharingPublicKeyResponseV1,
+  createSharedBackupOwnershipTransferProposalV1,
   createSharedBackupEnvelopeV1,
   createSharingInvitationV1,
   createSharingPublicKeyResponseV1,
@@ -18,6 +20,7 @@ import {
   SHARED_BACKUP_MAX_REVISION_ANCESTORS,
   type SharedBackupCodec,
   type SharedBackupEnvelopeV1,
+  type SharedBackupOwnershipTransferV1,
   type SharingPublicKeyResponseV1,
   type SharingPublicKeyV1,
 } from "../src/sharing/index.js";
@@ -178,6 +181,59 @@ describe("shared-backup crypto", () => {
     ).rejects.toMatchObject({ code: "authorization" });
     await expect(
       decryptSharedBackupEnvelopeV1(fixture.envelope, codec, viewer),
+    ).resolves.toEqual(fixture.payload);
+  });
+
+  it("verifies the frozen Web-to-Kotlin ownership-transfer wire fixture", async () => {
+    const fixture = JSON.parse(
+      await readFile(
+        new URL(
+          "../fixtures/sharing-v1/ownership-transfer-wire.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as {
+      payload: Payload;
+      owner: { publicKey: SharingPublicKeyV1 };
+      recipient: {
+        publicKey: SharingPublicKeyV1;
+        privateKeys: { encryption: JsonWebKey; signing: JsonWebKey };
+      };
+      before: SharedBackupEnvelopeV1;
+      transfer: SharedBackupOwnershipTransferV1;
+      after: SharedBackupEnvelopeV1;
+    };
+    const recipient: WebCryptoSharingIdentity = {
+      publicKey: fixture.recipient.publicKey,
+      encryptionPrivateKey: await crypto.subtle.importKey(
+        "jwk",
+        fixture.recipient.privateKeys.encryption,
+        { name: "ECDH", namedCurve: "P-256" },
+        false,
+        ["deriveBits"],
+      ),
+      signingPrivateKey: await crypto.subtle.importKey(
+        "jwk",
+        fixture.recipient.privateKeys.signing,
+        { name: "ECDSA", namedCurve: "P-256" },
+        false,
+        ["sign"],
+      ),
+    };
+
+    expect(fixture.after.accessControl.at(-1)?.ownershipTransfer).toEqual(
+      fixture.transfer,
+    );
+    await expect(
+      verifySharedBackupEnvelopeV1(fixture.after, crypto, {
+        trustedOwnerKeyId: fixture.owner.publicKey.keyId,
+      }),
+    ).resolves.toEqual(fixture.after);
+    await expect(
+      decryptSharedBackupEnvelopeV1(fixture.after, codec, recipient, crypto, {
+        trustedOwnerKeyId: fixture.owner.publicKey.keyId,
+      }),
     ).resolves.toEqual(fixture.payload);
   });
 
@@ -458,6 +514,130 @@ describe("shared-backup crypto", () => {
     ).resolves.toEqual({ profile: "shared", count: 1 });
     await expect(
       decryptSharedBackupEnvelopeV1(rotated, codec, owner),
+    ).rejects.toMatchObject({ code: "authorization" });
+  });
+
+  it("transfers ownership only after exact-head proofs from both identities", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const accepted = {
+      exchangeId: "exchange-1",
+      drivePermissionId: "recipient-permission",
+      acceptedAt: "2026-07-01T11:00:00.000Z",
+      acceptedByKeyId: owner.publicKey.keyId,
+    };
+    const first = await createSharedBackupEnvelopeV1(
+      { profile: "shared", count: 1 },
+      codec,
+      owner,
+      {
+        appId: "fixture-app",
+        backupId: "profile",
+        participants: [
+          { publicKey: owner.publicKey, role: "owner" },
+          { publicKey: recipient.publicKey, role: "writer", accepted },
+        ],
+        revisionId: "before-transfer",
+      },
+    );
+    const proposal = await createSharedBackupOwnershipTransferProposalV1(
+      [first],
+      owner,
+      {
+        toKeyId: recipient.publicKey.keyId,
+        previousOwnerRole: "admin",
+        transferId: "transfer-1",
+        createdAt: "2026-07-01T12:00:00.000Z",
+        providerPermissionIds: { profile: "recipient-permission" },
+        providerObjects: [
+          {
+            kind: "app-folder",
+            fileId: "app-folder",
+            providerPermissionId: "recipient-permission",
+          },
+          {
+            kind: "exchanges-folder",
+            fileId: "exchanges-folder",
+            providerPermissionId: "recipient-permission",
+          },
+        ],
+      },
+    );
+    await expect(
+      acceptSharedBackupOwnershipTransferV1(
+        {
+          ...proposal,
+          ownerProof: `${proposal.ownerProof.startsWith("A") ? "B" : "A"}${proposal.ownerProof.slice(1)}`,
+        },
+        [first],
+        recipient,
+      ),
+    ).rejects.toMatchObject({ code: "crypto" });
+    const transfer = await acceptSharedBackupOwnershipTransferV1(
+      proposal,
+      [first],
+      recipient,
+    );
+    const transferred = await createSharedBackupEnvelopeV1(
+      { profile: "shared", count: 1 },
+      codec,
+      recipient,
+      {
+        appId: "fixture-app",
+        backupId: "profile",
+        participants: [
+          { publicKey: owner.publicKey, role: "admin" },
+          { publicKey: recipient.publicKey, role: "owner", accepted },
+        ],
+        previous: first,
+        ownershipTransfer: transfer,
+        revisionId: "after-transfer",
+      },
+    );
+
+    await expect(
+      verifySharedBackupEnvelopeV1(transferred, crypto, {
+        trustedOwnerKeyId: owner.publicKey.keyId,
+      }),
+    ).resolves.toEqual(transferred);
+    await expect(
+      decryptSharedBackupEnvelopeV1(transferred, codec, recipient, crypto, {
+        trustedOwnerKeyId: owner.publicKey.keyId,
+      }),
+    ).resolves.toEqual({ profile: "shared", count: 1 });
+    await expect(
+      createSharedBackupEnvelopeV1(
+        { profile: "shared", count: 2 },
+        codec,
+        owner,
+        {
+          appId: "fixture-app",
+          backupId: "profile",
+          participants: [
+            { publicKey: owner.publicKey, role: "owner" },
+            { publicKey: recipient.publicKey, role: "writer", accepted },
+          ],
+          previous: transferred,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "authorization" });
+
+    await expect(
+      createSharedBackupEnvelopeV1(
+        { profile: "shared", count: 1 },
+        codec,
+        recipient,
+        {
+          appId: "fixture-app",
+          backupId: "profile",
+          participants: [
+            { publicKey: owner.publicKey, role: "writer" },
+            { publicKey: recipient.publicKey, role: "owner", accepted },
+          ],
+          previous: first,
+          ownershipTransfer: transfer,
+        },
+      ),
     ).rejects.toMatchObject({ code: "authorization" });
   });
 

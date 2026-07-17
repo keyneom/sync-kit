@@ -213,6 +213,7 @@ export class GoogleDriveSharedBackupTransport
           ...this.properties("dataset"),
           [SYNC_KIT_DATASET_ID_PROPERTY]: datasetId,
         },
+        writersCanShare: true,
       },
     );
     try {
@@ -556,6 +557,45 @@ export class GoogleDriveSharedBackupTransport
       }));
   }
 
+  async requestOwnershipTransfer(
+    fileId: string,
+    permissionId: string,
+  ): Promise<void> {
+    await this.drive.requestOwnershipTransfer(
+      fileId,
+      permissionId,
+      await this.authorize(),
+    );
+  }
+
+  async acceptOwnershipTransfer(
+    fileId: string,
+    permissionId: string,
+  ): Promise<void> {
+    await this.drive.acceptOwnershipTransfer(
+      fileId,
+      permissionId,
+      await this.authorize(),
+    );
+  }
+
+  async ownershipTransferState(
+    fileId: string,
+    permissionId: string,
+  ): Promise<"pending" | "owner" | "other"> {
+    const permission = (await this.drive.listPermissions(
+      fileId,
+      await this.authorize(),
+    )).find((candidate) => candidate.permissionId === permissionId);
+    if (permission?.role === "owner") return "owner";
+    if (permission?.role === "writer" && permission.pendingOwner) return "pending";
+    return "other";
+  }
+
+  async setWritersCanShare(fileId: string, enabled: boolean): Promise<void> {
+    await this.drive.setWritersCanShare(fileId, enabled, await this.authorize());
+  }
+
   async listDatasetHeads(): Promise<SharedDatasetHead[]> {
     const authorization = await this.authorize();
     const appFolderId = await this.resolveAppFolderForRead(authorization);
@@ -592,6 +632,7 @@ export class GoogleDriveSharedBackupTransport
             ? { parentFolderId: this.options.parentFolderId }
             : {}),
           drive: this.drive,
+          writersCanShare: true,
         })
       ).appFolderId;
     const exchangeProperties = this.properties("exchange-folder");
@@ -604,7 +645,7 @@ export class GoogleDriveSharedBackupTransport
       (await this.drive.createFolder("exchanges", authorization, {
         parentId: appFolderId,
         appProperties: exchangeProperties,
-        writersCanShare: false,
+        writersCanShare: true,
       }));
     return { appFolderId, exchangesFolderId };
   }

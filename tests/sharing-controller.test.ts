@@ -66,6 +66,16 @@ type CodecRoutingFixture = {
   branchControlPayload: RoutedPayload;
 };
 
+type OwnershipTransferFixture = {
+  appId: string;
+  datasetIds: string[];
+  providerObjectIds: string[];
+  previousOwnerRole: "admin" | "writer";
+  initialRecipientRoles: Record<string, Exclude<SharingRole, "owner">>;
+  expectedRoles: { previousOwner: SharingRole; newOwner: SharingRole };
+  expectedStatuses: string[];
+};
+
 const codecRoutingFixture = JSON.parse(
   readFileSync(
     new URL(
@@ -75,6 +85,13 @@ const codecRoutingFixture = JSON.parse(
     "utf8",
   ),
 ) as CodecRoutingFixture;
+
+const ownershipTransferFixture = JSON.parse(
+  readFileSync(
+    new URL("../fixtures/sharing-v1/ownership-transfer.json", import.meta.url),
+    "utf8",
+  ),
+) as OwnershipTransferFixture;
 
 const codec: SharedBackupControllerCodec<Payload> = {
   serialize: (value) => value,
@@ -677,6 +694,124 @@ describe("shared-backup controller", () => {
     await expect(
       controller(replacement, transport, registry).loadDataset("profile"),
     ).resolves.toMatchObject({ value: { items: ["one"] } });
+  });
+
+  it("transfers a multi-dataset profile after recipient and provider acceptance", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    const recipientController = controller(
+      recipient,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    for (const datasetId of ownershipTransferFixture.datasetIds) {
+      await ownerController.createDataset(datasetId, { items: [datasetId] });
+    }
+    const invited = await ownerController.inviteParticipant({
+      emailAddress: "recipient@example.com",
+      requestedGrants: ownershipTransferFixture.datasetIds.map((datasetId) => {
+        const role = ownershipTransferFixture.initialRecipientRoles[datasetId];
+        if (!role) throw new Error(`Missing fixture role for ${datasetId}`);
+        return { datasetId, role };
+      }),
+    });
+    const response = await recipientController.submitKeyResponse(
+      invited.invitationFileId,
+    );
+    await ownerController.acceptKeyResponse({
+      invitation: invited.invitation,
+      responseFileId: response.responseFileId,
+      recipientEmailAddress: "recipient@example.com",
+    });
+
+    const proposal = await ownerController.prepareOwnershipTransfer({
+      datasetIds: ownershipTransferFixture.datasetIds,
+      toKeyId: recipient.publicKey.keyId,
+      recipientEmailAddress: "recipient@example.com",
+      previousOwnerRole: ownershipTransferFixture.previousOwnerRole,
+    });
+    expect(proposal.providerObjects.map(({ fileId }) => fileId)).toEqual(
+      ownershipTransferFixture.providerObjectIds,
+    );
+    expect(transport.requestedOwnership).toEqual(
+      new Set([
+        "app-folder",
+        "exchanges-folder",
+        "dataset-profile",
+        "dataset-control",
+      ]),
+    );
+    const accepted = await recipientController.acceptOwnershipTransferProposal(
+      proposal,
+    );
+    const finalized = await recipientController.finalizeOwnershipTransfer(
+      accepted,
+    );
+    const failure = finalized.find(({ status }) => status === "failed");
+    if (failure) throw failure.error;
+    expect(finalized.map(({ datasetId, status }) => `${datasetId}:${status}`)).toEqual(
+      ownershipTransferFixture.expectedStatuses,
+    );
+    expect(transport.acceptedOwnership).toEqual(
+      new Set([
+        "app-folder",
+        "exchanges-folder",
+        "dataset-profile",
+        "dataset-control",
+      ]),
+    );
+    expect(transport.writerSharingEnabled).toEqual(
+      new Set([
+        "app-folder",
+        "exchanges-folder",
+        "dataset-profile",
+        "dataset-control",
+      ]),
+    );
+    for (const datasetId of ownershipTransferFixture.datasetIds) {
+      const participants = await recipientController.getDatasetParticipants(datasetId);
+      expect(
+        participants.participants.find(
+          (participant) => participant.keyId === recipient.publicKey.keyId,
+        )?.role,
+      ).toBe(ownershipTransferFixture.expectedRoles.newOwner);
+      expect(
+        participants.participants.find(
+          (participant) => participant.keyId === owner.publicKey.keyId,
+        )?.role,
+      ).toBe(ownershipTransferFixture.expectedRoles.previousOwner);
+    }
+    const laterParticipant = await createWebCryptoSharingIdentity();
+    await ownerController.addDatasetParticipant({
+      datasetId: "profile",
+      participant: {
+        publicKey: laterParticipant.publicKey,
+        role: "viewer",
+      },
+      emailAddress: "later@example.com",
+    });
+    await expect(
+      recipientController.getDatasetParticipants("profile"),
+    ).resolves.toMatchObject({
+      participants: expect.arrayContaining([
+        expect.objectContaining({
+          keyId: laterParticipant.publicKey.keyId,
+          role: "viewer",
+        }),
+      ]),
+    });
+    await expect(
+      recipientController.finalizeOwnershipTransfer(accepted),
+    ).resolves.toMatchObject([
+      { datasetId: "control", status: "already-transferred" },
+      { datasetId: "profile", status: "already-transferred" },
+    ]);
   });
 
   it("merges a divergent signed head only through the consumer fork policy", async () => {
@@ -1512,6 +1647,9 @@ class MemorySharingTransport implements SharedBackupTransport {
     >
   >();
   conflictNextWrite = false;
+  readonly requestedOwnership = new Set<string>();
+  readonly acceptedOwnership = new Set<string>();
+  readonly writerSharingEnabled = new Set<string>();
   lastInviteEmailMessage: string | undefined;
   private counter = 0;
 
@@ -1712,6 +1850,40 @@ class MemorySharingTransport implements SharedBackupTransport {
         : {}),
       inherited: permission.inherited,
     }));
+  }
+
+  async requestOwnershipTransfer(
+    fileId: string,
+    _permissionId: string,
+  ): Promise<void> {
+    void _permissionId;
+    this.requestedOwnership.add(fileId);
+  }
+
+  async acceptOwnershipTransfer(
+    fileId: string,
+    _permissionId: string,
+  ): Promise<void> {
+    void _permissionId;
+    if (!this.requestedOwnership.has(fileId)) {
+      throw new Error(`Ownership was not requested for ${fileId}`);
+    }
+    this.acceptedOwnership.add(fileId);
+  }
+
+  async ownershipTransferState(
+    fileId: string,
+    _permissionId: string,
+  ): Promise<"pending" | "owner" | "other"> {
+    void _permissionId;
+    if (this.acceptedOwnership.has(fileId)) return "owner";
+    if (this.requestedOwnership.has(fileId)) return "pending";
+    return "other";
+  }
+
+  async setWritersCanShare(fileId: string, enabled: boolean): Promise<void> {
+    if (enabled) this.writerSharingEnabled.add(fileId);
+    else this.writerSharingEnabled.delete(fileId);
   }
 
   async listDatasetHeads() {

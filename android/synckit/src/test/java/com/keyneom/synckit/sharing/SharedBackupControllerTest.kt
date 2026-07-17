@@ -116,6 +116,106 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun transfersMultiDatasetOwnershipAfterRecipientAndProviderAcceptance() = runBlocking {
+        val fixture = checkNotNull(
+            javaClass.classLoader?.getResourceAsStream("sharing-v1/ownership-transfer.json"),
+        ).bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
+        val datasetIds = fixture.getValue("datasetIds").jsonArray.map {
+            it.jsonPrimitive.content
+        }
+        val initialRoles = fixture.getValue("initialRecipientRoles").jsonObject.mapValues {
+            SharingRole.valueOf(it.value.jsonPrimitive.content.uppercase())
+        }
+        val expectedRoles = fixture.getValue("expectedRoles").jsonObject.mapValues {
+            SharingRole.valueOf(it.value.jsonPrimitive.content.uppercase())
+        }
+        val expectedStatuses = fixture.getValue("expectedStatuses").jsonArray.map {
+            it.jsonPrimitive.content
+        }
+        val providerObjectIds = fixture.getValue("providerObjectIds").jsonArray.map {
+            it.jsonPrimitive.content
+        }
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        val recipientController = controller(recipient, transport, MemorySharedBackupRegistry())
+        datasetIds.forEach { datasetId ->
+            ownerController.createDataset(datasetId, Payload(listOf(datasetId)))
+        }
+        val invite = ownerController.inviteParticipant(
+            InviteParticipantInput(
+                emailAddress = "recipient@example.com",
+                requestedGrants = datasetIds.map { datasetId ->
+                    SharingDatasetGrantV1(datasetId, initialRoles.getValue(datasetId))
+                },
+            ),
+        )
+        val response = recipientController.submitKeyResponse(invite.invitationFileId)
+        ownerController.acceptKeyResponse(
+            invite.invitation,
+            response.first,
+            "recipient@example.com",
+        )
+
+        val proposal = ownerController.prepareOwnershipTransfer(
+            datasetIds = datasetIds,
+            toKeyId = recipient.publicKey.keyId,
+            recipientEmailAddress = "recipient@example.com",
+            previousOwnerRole = SharingRole.valueOf(
+                fixture.getValue("previousOwnerRole").jsonPrimitive.content.uppercase(),
+            ),
+        )
+        assertEquals(providerObjectIds, proposal.providerObjects.map { it.fileId })
+        assertEquals(
+            setOf("app-folder", "exchanges-folder", "dataset-profile", "dataset-control"),
+            transport.requestedOwnership,
+        )
+        val accepted = recipientController.acceptOwnershipTransferProposal(proposal)
+        val finalized = recipientController.finalizeOwnershipTransfer(accepted)
+        finalized.find { it.status == "failed" }?.error?.let { throw it }
+        assertEquals(
+            expectedStatuses,
+            finalized.map { "${it.datasetId}:${it.status}" },
+        )
+        assertEquals(
+            setOf("app-folder", "exchanges-folder", "dataset-profile", "dataset-control"),
+            transport.acceptedOwnership,
+        )
+        assertEquals(
+            setOf("app-folder", "exchanges-folder", "dataset-profile", "dataset-control"),
+            transport.writerSharingEnabled,
+        )
+        datasetIds.forEach { datasetId ->
+            val participants = recipientController.getDatasetParticipants(datasetId).participants
+            assertEquals(
+                expectedRoles.getValue("newOwner"),
+                participants.single { it.keyId == recipient.publicKey.keyId }.role,
+            )
+            assertEquals(
+                expectedRoles.getValue("previousOwner"),
+                participants.single { it.keyId == owner.publicKey.keyId }.role,
+            )
+        }
+        val laterParticipant = SharingCrypto.generateIdentity()
+        ownerController.addDatasetParticipant(
+            datasetId = "profile",
+            publicKey = laterParticipant.publicKey,
+            role = SharingRole.VIEWER,
+            emailAddress = "later@example.com",
+        )
+        assertEquals(
+            SharingRole.VIEWER,
+            recipientController.getDatasetParticipants("profile").participants
+                .single { it.keyId == laterParticipant.publicKey.keyId }.role,
+        )
+        assertEquals(
+            listOf("already-transferred", "already-transferred"),
+            recipientController.finalizeOwnershipTransfer(accepted).map { it.status },
+        )
+    }
+
+    @Test
     fun rejectsEveryRequiredBindingAcceptancePathWithoutAVerifier() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val recipient = SharingCrypto.generateIdentity()
@@ -1049,6 +1149,9 @@ class SharedBackupControllerTest {
         private val responses = mutableMapOf<String, SharingPublicKeyResponseV1>()
         private val permissions = mutableMapOf<String, MutableMap<String, SharedDatasetDrivePermission>>()
         var conflictNextWrite = false
+        val requestedOwnership = mutableSetOf<String>()
+        val acceptedOwnership = mutableSetOf<String>()
+        val writerSharingEnabled = mutableSetOf<String>()
         private var counter = 0
 
         override suspend fun ensureStorage(): SharedBackupStorage = storage
@@ -1194,6 +1297,34 @@ class SharedBackupControllerTest {
             fileId: String,
         ): List<SharedDatasetDrivePermission> =
             permissions[fileId]?.values?.toList() ?: emptyList()
+
+        override suspend fun requestOwnershipTransfer(
+            fileId: String,
+            permissionId: String,
+        ) {
+            requestedOwnership += fileId
+        }
+
+        override suspend fun acceptOwnershipTransfer(
+            fileId: String,
+            permissionId: String,
+        ) {
+            check(fileId in requestedOwnership) { "Ownership was not requested for $fileId" }
+            acceptedOwnership += fileId
+        }
+
+        override suspend fun ownershipTransferState(
+            fileId: String,
+            permissionId: String,
+        ): ProviderOwnershipTransferState = when (fileId) {
+            in acceptedOwnership -> ProviderOwnershipTransferState.OWNER
+            in requestedOwnership -> ProviderOwnershipTransferState.PENDING
+            else -> ProviderOwnershipTransferState.OTHER
+        }
+
+        override suspend fun setWritersCanShare(fileId: String, enabled: Boolean) {
+            if (enabled) writerSharingEnabled += fileId else writerSharingEnabled -= fileId
+        }
 
         override suspend fun listDatasetHeads(): List<SharedDatasetHead> =
             datasets.values.map {

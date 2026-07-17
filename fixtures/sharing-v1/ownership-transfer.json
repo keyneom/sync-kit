@@ -1,0 +1,15 @@
+{
+  "appId": "fixture-app",
+  "datasetIds": ["control", "profile"],
+  "providerObjectIds": ["app-folder", "exchanges-folder"],
+  "previousOwnerRole": "admin",
+  "initialRecipientRoles": {
+    "control": "admin",
+    "profile": "writer"
+  },
+  "expectedRoles": {
+    "previousOwner": "admin",
+    "newOwner": "owner"
+  },
+  "expectedStatuses": ["control:transferred", "profile:transferred"]
+}

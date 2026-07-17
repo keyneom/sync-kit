@@ -13,10 +13,12 @@ import {
   SHARING_ENCRYPTION_ALGORITHM,
   SHARING_INVITATION_KIND,
   SHARING_KEY_KIND,
+  SHARING_OWNERSHIP_TRANSFER_KIND,
   SHARING_SIGNATURE_ALGORITHM,
   canAdministerSharedBackup,
   canWriteSharedBackup,
   parseSharedBackupEnvelopeV1,
+  parseSharedBackupOwnershipTransferV1,
   parseSharingInvitationV1,
   parseSharingPublicKeyResponseV1,
   sharedBackupParticipant,
@@ -25,6 +27,7 @@ import {
   type SharedBackupAccessV1,
   type SharedBackupEnvelopeV1,
   type SharedBackupParticipantV1,
+  type SharedBackupOwnershipTransferV1,
   type SharingAcceptanceProvenanceV1,
   type SharingAccountBindingV1,
   type SharingDatasetGrantV1,
@@ -52,6 +55,16 @@ export type SharedBackupParticipantInput = {
 export type AcceptedSharingGrantV1 = {
   datasetId: string;
   participant: SharedBackupParticipantInput;
+};
+
+export type SharedBackupOwnershipTransferInput = {
+  toKeyId: string;
+  previousOwnerRole: "admin" | "writer";
+  transferId?: string;
+  createdAt?: string;
+  expiresAt?: string;
+  providerPermissionIds: Record<string, string>;
+  providerObjects: SharedBackupOwnershipTransferV1["providerObjects"];
 };
 
 export type WebCryptoSharingOptions = {
@@ -317,6 +330,148 @@ export async function verifySharingPublicKeyResponseV1(
   return response;
 }
 
+/**
+ * Creates the current owner's half of a profile-scoped ownership transfer.
+ * Every target must already be a verified participant in every listed dataset.
+ * No dataset is changed until the proposed owner adds its proof and publishes
+ * the transfer revision for each exact head in the manifest.
+ */
+export async function createSharedBackupOwnershipTransferProposalV1(
+  inputs: SharedBackupEnvelopeV1[],
+  identity: WebCryptoSharingIdentity,
+  input: SharedBackupOwnershipTransferInput,
+  options: WebCryptoSharingOptions = {},
+): Promise<SharedBackupOwnershipTransferV1> {
+  if (inputs.length === 0) {
+    throw new SyncKitError("configuration", "Ownership transfer requires datasets.");
+  }
+  requireNonEmpty(input.toKeyId, "toKeyId");
+  const cryptoImplementation = options.crypto ?? globalThis.crypto;
+  assertWebCrypto(cryptoImplementation);
+  await assertIdentity(identity, cryptoImplementation);
+  const envelopes = await Promise.all(
+    inputs.map((candidate) =>
+      verifySharedBackupEnvelopeV1(candidate, cryptoImplementation),
+    ),
+  );
+  const firstEnvelope = envelopes[0];
+  if (!firstEnvelope) {
+    throw new SyncKitError("configuration", "Ownership transfer requires datasets.");
+  }
+  const appId = firstEnvelope.appId;
+  const datasets = await Promise.all(
+    envelopes.map(async (envelope) => {
+      if (envelope.appId !== appId) {
+        throw new SyncKitError(
+          "compatibility",
+          "An ownership transfer cannot span applications.",
+        );
+      }
+      const participants = sharedBackupParticipants(envelope);
+      const owner = participants.find((participant) => participant.role === "owner");
+      if (owner?.keyId !== identity.publicKey.keyId) {
+        throw new SyncKitError(
+          "authorization",
+          `This identity does not own dataset ${envelope.backupId}.`,
+        );
+      }
+      const recipient = participants.find(
+        (participant) => participant.keyId === input.toKeyId,
+      );
+      if (!recipient?.accepted) {
+        throw new SyncKitError(
+          "authorization",
+          `The proposed owner is not fully enrolled in dataset ${envelope.backupId}.`,
+        );
+      }
+      const lastAccess = envelope.accessControl.at(-1);
+      if (!lastAccess) {
+        throw new SyncKitError("compatibility", "Access-control history is empty.");
+      }
+      return {
+        datasetId: envelope.backupId,
+        revisionId: envelope.revisionId,
+        accessControlHash: await accessControlHash(lastAccess, cryptoImplementation),
+        providerPermissionId:
+          input.providerPermissionIds[envelope.backupId] ?? "",
+      };
+    }),
+  );
+  datasets.sort((left, right) =>
+    compareUtf16CodeUnits(left.datasetId, right.datasetId),
+  );
+  if (new Set(datasets.map(({ datasetId }) => datasetId)).size !== datasets.length) {
+    throw new SyncKitError("configuration", "Ownership-transfer datasets must be unique.");
+  }
+  const unsigned = {
+    schemaVersion: 1 as const,
+    kind: SHARING_OWNERSHIP_TRANSFER_KIND,
+    transferId: input.transferId ?? randomUUID(options),
+    appId,
+    fromKeyId: identity.publicKey.keyId,
+    toKeyId: input.toKeyId,
+    previousOwnerRole: input.previousOwnerRole,
+    datasets,
+    providerObjects: input.providerObjects,
+    createdAt: input.createdAt ?? now(options).toISOString(),
+    ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+  };
+  const ownerProof = bytesToBase64Url(
+    new Uint8Array(
+      await cryptoImplementation.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        identity.signingPrivateKey,
+        copyBuffer(canonicalAad(unsigned)),
+      ),
+    ),
+  );
+  return parseSharedBackupOwnershipTransferV1({ ...unsigned, ownerProof });
+}
+
+/** Adds the proposed owner's explicit acceptance to an exact transfer manifest. */
+export async function acceptSharedBackupOwnershipTransferV1(
+  input: unknown,
+  envelopes: SharedBackupEnvelopeV1[],
+  identity: WebCryptoSharingIdentity,
+  options: WebCryptoSharingOptions = {},
+): Promise<SharedBackupOwnershipTransferV1> {
+  const transfer = parseSharedBackupOwnershipTransferV1(input);
+  const cryptoImplementation = options.crypto ?? globalThis.crypto;
+  assertWebCrypto(cryptoImplementation);
+  await assertIdentity(identity, cryptoImplementation);
+  if (identity.publicKey.keyId !== transfer.toKeyId) {
+    throw new SyncKitError(
+      "authorization",
+      "Only the proposed owner can accept this ownership transfer.",
+    );
+  }
+  if (transfer.newOwnerProof) {
+    throw new SyncKitError("conflict", "The ownership transfer is already accepted.");
+  }
+  if (transfer.expiresAt && now(options).getTime() > Date.parse(transfer.expiresAt)) {
+    throw new SyncKitError("authorization", "The ownership transfer has expired.");
+  }
+  await verifyOwnershipTransferManifest(
+    transfer,
+    envelopes,
+    cryptoImplementation,
+    false,
+  );
+  const newOwnerProof = bytesToBase64Url(
+    new Uint8Array(
+      await cryptoImplementation.subtle.sign(
+        { name: "ECDSA", hash: "SHA-256" },
+        identity.signingPrivateKey,
+        copyBuffer(canonicalAad(ownershipTransferAcceptancePayload(transfer))),
+      ),
+    ),
+  );
+  return parseSharedBackupOwnershipTransferV1(
+    { ...transfer, newOwnerProof },
+    true,
+  );
+}
+
 export async function createSharedBackupEnvelopeV1<T>(
   value: T,
   codec: SharedBackupCodec<T>,
@@ -329,6 +484,7 @@ export async function createSharedBackupEnvelopeV1<T>(
     keyRotation?: {
       previousIdentity: WebCryptoSharingIdentity;
     };
+    ownershipTransfer?: SharedBackupOwnershipTransferV1;
     revisionId?: string;
     createdAt?: string;
   },
@@ -349,7 +505,12 @@ export async function createSharedBackupEnvelopeV1<T>(
   const author = participants.find(
     (participant) => participant.keyId === identity.publicKey.keyId,
   );
-  if (!author || !canWriteSharedBackup(author.role)) {
+  const isOwnershipTransferAuthor =
+    input.ownershipTransfer?.toKeyId === identity.publicKey.keyId;
+  if (
+    !author ||
+    (!canWriteSharedBackup(author.role) && !isOwnershipTransferAuthor)
+  ) {
     throw new SyncKitError(
       "authorization",
       "The author is not allowed to write this shared backup.",
@@ -358,7 +519,28 @@ export async function createSharedBackupEnvelopeV1<T>(
   const previous = input.previous
     ? await verifySharedBackupEnvelopeV1(input.previous, cryptoImplementation)
     : undefined;
+  if (input.keyRotation && input.ownershipTransfer) {
+    throw new SyncKitError(
+      "configuration",
+      "A revision cannot rotate a key and transfer ownership.",
+    );
+  }
   await assertParticipantKeys(participants, cryptoImplementation);
+  if (input.ownershipTransfer) {
+    if (!previous) {
+      throw new SyncKitError(
+        "configuration",
+        "Ownership transfer requires a previous revision.",
+      );
+    }
+    await verifyOwnershipTransferForDataset(
+      input.ownershipTransfer,
+      previous,
+      participants,
+      identity.publicKey.keyId,
+      cryptoImplementation,
+    );
+  }
   assertRevisionAuthority(
     input.appId,
     input.backupId,
@@ -366,6 +548,7 @@ export async function createSharedBackupEnvelopeV1<T>(
     identity.publicKey.keyId,
     previous,
     input.keyRotation?.previousIdentity.publicKey.keyId,
+    input.ownershipTransfer,
   );
   const accessControl = await createAccessControl(
     input.appId,
@@ -375,6 +558,7 @@ export async function createSharedBackupEnvelopeV1<T>(
     previous,
     cryptoImplementation,
     input.keyRotation?.previousIdentity,
+    input.ownershipTransfer,
   );
 
   const revisionId = input.revisionId ?? randomUUID(options);
@@ -785,6 +969,7 @@ async function createAccessControl(
   previous: SharedBackupEnvelopeV1 | undefined,
   cryptoImplementation: Crypto,
   previousIdentity?: WebCryptoSharingIdentity,
+  ownershipTransfer?: SharedBackupOwnershipTransferV1,
 ): Promise<SharedBackupAccessV1[]> {
   if (
     previous &&
@@ -834,6 +1019,7 @@ async function createAccessControl(
     authorKeyId: accessSigner.publicKey.keyId,
     participants,
     ...(keyRotation ? { keyRotation } : {}),
+    ...(ownershipTransfer ? { ownershipTransfer } : {}),
   };
   const entry: SharedBackupAccessV1 = {
     ...unsigned,
@@ -891,6 +1077,7 @@ async function verifyAccessControl(
 
     let author: SharedBackupParticipantV1 | undefined;
     let validRotation = false;
+    let validOwnershipTransfer = false;
     if (previous) {
       const expectedHash = await accessControlHash(
         previous,
@@ -912,9 +1099,18 @@ async function verifyAccessControl(
             cryptoImplementation,
           )
         : false;
+      validOwnershipTransfer = entry.ownershipTransfer
+        ? await verifyOwnershipTransferEntry(
+            entry,
+            previous,
+            cryptoImplementation,
+          )
+        : false;
       if (
         !author ||
-        (!canAdministerSharedBackup(author.role) && !validRotation)
+        (!canAdministerSharedBackup(author.role) &&
+          !validRotation &&
+          !validOwnershipTransfer)
       ) {
         throw new SyncKitError(
           "authorization",
@@ -922,23 +1118,26 @@ async function verifyAccessControl(
         );
       }
       if (owner.keyId !== ownerKeyId) {
-        if (
-          !validRotation ||
-          entry.keyRotation?.fromKeyId !== ownerKeyId ||
-          entry.keyRotation.toKeyId !== owner.keyId
-        ) {
+        const validOwnerChange =
+          (validRotation &&
+            entry.keyRotation?.fromKeyId === ownerKeyId &&
+            entry.keyRotation.toKeyId === owner.keyId) ||
+          (validOwnershipTransfer &&
+            entry.ownershipTransfer?.fromKeyId === ownerKeyId &&
+            entry.ownershipTransfer.toKeyId === owner.keyId);
+        if (!validOwnerChange) {
           throw new SyncKitError(
             "authorization",
-            "Owner transfer is not supported by sharing v1.",
+            "The owner change is not authorized by a valid transfer or key rotation.",
           );
         }
         ownerKeyId = owner.keyId;
       }
     } else {
-      if (entry.keyRotation) {
+      if (entry.keyRotation || entry.ownershipTransfer) {
         throw new SyncKitError(
           "authorization",
-          "A genesis access entry cannot rotate a key.",
+          "A genesis access entry cannot rotate a key or transfer ownership.",
         );
       }
       author = entry.participants.find(
@@ -1025,6 +1224,273 @@ async function verifyAccessKeyRotation(
     copyBuffer(base64UrlToBytes(rotation.newKeyProof)),
     copyBuffer(canonicalAad(proof)),
   );
+}
+
+async function verifyOwnershipTransferManifest(
+  transfer: SharedBackupOwnershipTransferV1,
+  inputs: SharedBackupEnvelopeV1[],
+  cryptoImplementation: Crypto,
+  requireAccepted: boolean,
+): Promise<void> {
+  const parsed = parseSharedBackupOwnershipTransferV1(
+    transfer,
+    requireAccepted,
+  );
+  if (inputs.length !== parsed.datasets.length) {
+    throw new SyncKitError(
+      "conflict",
+      "The ownership-transfer dataset manifest is incomplete.",
+    );
+  }
+  let owner: SharedBackupParticipantV1 | undefined;
+  let recipient: SharedBackupParticipantV1 | undefined;
+  for (const input of inputs) {
+    const envelope = await verifySharedBackupEnvelopeV1(
+      input,
+      cryptoImplementation,
+    );
+    const expected = parsed.datasets.find(
+      (dataset) => dataset.datasetId === envelope.backupId,
+    );
+    const lastAccess = envelope.accessControl.at(-1);
+    if (
+      envelope.appId !== parsed.appId ||
+      expected?.revisionId !== envelope.revisionId ||
+      !lastAccess
+    ) {
+      throw new SyncKitError(
+        "conflict",
+        `Dataset ${envelope.backupId} no longer matches the ownership-transfer proposal.`,
+      );
+    }
+    if (
+      expected.accessControlHash !==
+      (await accessControlHash(lastAccess, cryptoImplementation))
+    ) {
+      throw new SyncKitError(
+        "conflict",
+        `Dataset ${envelope.backupId} no longer matches the ownership-transfer proposal.`,
+      );
+    }
+    const candidateOwner = sharedBackupParticipant(envelope, parsed.fromKeyId);
+    const candidateRecipient = sharedBackupParticipant(envelope, parsed.toKeyId);
+    if (candidateOwner?.role !== "owner" || !candidateRecipient?.accepted) {
+      throw new SyncKitError(
+        "authorization",
+        `Dataset ${envelope.backupId} does not authorize this ownership transfer.`,
+      );
+    }
+    owner ??= candidateOwner;
+    recipient ??= candidateRecipient;
+    if (
+      owner.signingPublicKey !== candidateOwner.signingPublicKey ||
+      recipient.signingPublicKey !== candidateRecipient.signingPublicKey
+    ) {
+      throw new SyncKitError(
+        "authorization",
+        "Ownership-transfer identities differ across datasets.",
+      );
+    }
+  }
+  if (!owner || !recipient) {
+    throw new SyncKitError("authorization", "Ownership-transfer identities are missing.");
+  }
+  const { ownerProof } = parsed;
+  const validOwner = await cryptoImplementation.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    await importSigningPublicKey(owner, cryptoImplementation),
+    copyBuffer(base64UrlToBytes(ownerProof)),
+    copyBuffer(canonicalAad(ownershipTransferUnsignedPayload(parsed))),
+  );
+  if (!validOwner) {
+    throw new SyncKitError("crypto", "The current owner's transfer proof is invalid.");
+  }
+  if (requireAccepted) {
+    const newOwnerProof = parsed.newOwnerProof;
+    if (!newOwnerProof) {
+      throw new SyncKitError("compatibility", "The ownership transfer has not been accepted.");
+    }
+    const validRecipient = await cryptoImplementation.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      await importSigningPublicKey(recipient, cryptoImplementation),
+      copyBuffer(base64UrlToBytes(newOwnerProof)),
+      copyBuffer(canonicalAad(ownershipTransferAcceptancePayload(parsed))),
+    );
+    if (!validRecipient) {
+      throw new SyncKitError("crypto", "The proposed owner's transfer proof is invalid.");
+    }
+  }
+}
+
+function ownershipTransferAcceptancePayload(
+  transfer: SharedBackupOwnershipTransferV1,
+): Omit<SharedBackupOwnershipTransferV1, "newOwnerProof"> {
+  return {
+    ...ownershipTransferUnsignedPayload(transfer),
+    ownerProof: transfer.ownerProof,
+  };
+}
+
+function ownershipTransferUnsignedPayload(
+  transfer: SharedBackupOwnershipTransferV1,
+): Omit<SharedBackupOwnershipTransferV1, "ownerProof" | "newOwnerProof"> {
+  return {
+    schemaVersion: transfer.schemaVersion,
+    kind: transfer.kind,
+    transferId: transfer.transferId,
+    appId: transfer.appId,
+    fromKeyId: transfer.fromKeyId,
+    toKeyId: transfer.toKeyId,
+    previousOwnerRole: transfer.previousOwnerRole,
+    datasets: transfer.datasets,
+    providerObjects: transfer.providerObjects,
+    createdAt: transfer.createdAt,
+    ...(transfer.expiresAt ? { expiresAt: transfer.expiresAt } : {}),
+  };
+}
+
+async function verifyOwnershipTransferForDataset(
+  input: SharedBackupOwnershipTransferV1,
+  previous: SharedBackupEnvelopeV1,
+  participants: SharedBackupParticipantV1[],
+  authorKeyId: string,
+  cryptoImplementation: Crypto,
+): Promise<void> {
+  const transfer = parseSharedBackupOwnershipTransferV1(input, true);
+  await verifyOwnershipTransferManifest(
+    transfer,
+    [previous],
+    cryptoImplementation,
+    true,
+  ).catch(async (error: unknown) => {
+    // A profile-scoped manifest legitimately contains more than this one
+    // dataset. Validate this dataset and both proofs against its participants
+    // without weakening the exact-head checks.
+    if (transfer.datasets.length === 1) throw error;
+    const previousAccess = previous.accessControl.at(-1);
+    if (!previousAccess) {
+      throw new SyncKitError("compatibility", "Access-control history is empty.");
+    }
+    await verifyOwnershipTransferProofsForEntry(
+      transfer,
+      previousAccess,
+      previousAccess,
+      previous.appId,
+      previous.backupId,
+      cryptoImplementation,
+      previous.revisionId,
+    );
+  });
+  if (authorKeyId !== transfer.toKeyId) {
+    throw new SyncKitError(
+      "authorization",
+      "Only the accepted new owner can publish the ownership transfer.",
+    );
+  }
+  assertOwnershipRoleTransition(
+    sharedBackupParticipants(previous),
+    participants,
+    transfer,
+  );
+}
+
+async function verifyOwnershipTransferEntry(
+  entry: SharedBackupAccessV1,
+  previous: SharedBackupAccessV1,
+  cryptoImplementation: Crypto,
+): Promise<boolean> {
+  const transfer = entry.ownershipTransfer;
+  if (!transfer || !entry.appId || !entry.backupId) return false;
+  try {
+    if (entry.authorKeyId !== transfer.toKeyId) return false;
+    assertOwnershipRoleTransition(previous.participants, entry.participants, transfer);
+    await verifyOwnershipTransferProofsForEntry(
+      transfer,
+      previous,
+      entry,
+      entry.appId,
+      entry.backupId,
+      cryptoImplementation,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function verifyOwnershipTransferProofsForEntry(
+  transferInput: SharedBackupOwnershipTransferV1,
+  previous: SharedBackupAccessV1,
+  entry: SharedBackupAccessV1,
+  appId: string,
+  backupId: string,
+  cryptoImplementation: Crypto,
+  revisionId?: string,
+): Promise<void> {
+  const transfer = parseSharedBackupOwnershipTransferV1(transferInput, true);
+  const manifest = transfer.datasets.find((dataset) => dataset.datasetId === backupId);
+  const previousHash = await accessControlHash(previous, cryptoImplementation);
+  if (
+    transfer.appId !== appId ||
+    manifest?.accessControlHash !== previousHash ||
+    (revisionId !== undefined && manifest.revisionId !== revisionId) ||
+    (entry !== previous && entry.previousHash !== previousHash)
+  ) {
+    throw new SyncKitError("conflict", "The ownership transfer does not match this dataset head.");
+  }
+  const owner = previous.participants.find(
+    (participant) => participant.keyId === transfer.fromKeyId,
+  );
+  const recipient = previous.participants.find(
+    (participant) => participant.keyId === transfer.toKeyId,
+  );
+  if (owner?.role !== "owner" || !recipient?.accepted) {
+    throw new SyncKitError("authorization", "The transfer identities are not eligible.");
+  }
+  const { ownerProof } = transfer;
+  const validOwner = await cryptoImplementation.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    await importSigningPublicKey(owner, cryptoImplementation),
+    copyBuffer(base64UrlToBytes(ownerProof)),
+    copyBuffer(canonicalAad(ownershipTransferUnsignedPayload(transfer))),
+  );
+  const newOwnerProof = transfer.newOwnerProof;
+  if (!newOwnerProof) {
+    throw new SyncKitError("compatibility", "The ownership transfer has not been accepted.");
+  }
+  const validRecipient = await cryptoImplementation.subtle.verify(
+    { name: "ECDSA", hash: "SHA-256" },
+    await importSigningPublicKey(recipient, cryptoImplementation),
+    copyBuffer(base64UrlToBytes(newOwnerProof)),
+    copyBuffer(canonicalAad(ownershipTransferAcceptancePayload(transfer))),
+  );
+  if (!validOwner || !validRecipient) {
+    throw new SyncKitError("crypto", "The ownership-transfer proofs are invalid.");
+  }
+}
+
+function assertOwnershipRoleTransition(
+  previous: SharedBackupParticipantV1[],
+  next: SharedBackupParticipantV1[],
+  transfer: SharedBackupOwnershipTransferV1,
+): void {
+  const expected = previous
+    .map((participant) => ({
+      ...participant,
+      role:
+        participant.keyId === transfer.fromKeyId
+          ? transfer.previousOwnerRole
+          : participant.keyId === transfer.toKeyId
+            ? "owner" as const
+            : participant.role,
+    }))
+    .sort((left, right) => compareUtf16CodeUnits(left.keyId, right.keyId));
+  if (canonicalJson(expected) !== canonicalJson(next)) {
+    throw new SyncKitError(
+      "authorization",
+      "An ownership transfer may only swap the owner and prior-owner roles.",
+    );
+  }
 }
 
 async function accessControlHash(
@@ -1118,6 +1584,7 @@ function assertRevisionAuthority(
   authorKeyId: string,
   previous: SharedBackupEnvelopeV1 | undefined,
   rotationFromKeyId?: string,
+  ownershipTransfer?: SharedBackupOwnershipTransferV1,
 ): void {
   if (!previous) {
     const owner = participants.find((participant) => participant.role === "owner");
@@ -1137,7 +1604,7 @@ function assertRevisionAuthority(
   }
   const priorAuthor = sharedBackupParticipant(
     previous,
-    rotationFromKeyId ?? authorKeyId,
+    rotationFromKeyId ?? ownershipTransfer?.fromKeyId ?? authorKeyId,
   );
   if (!priorAuthor || !canWriteSharedBackup(priorAuthor.role)) {
     throw new SyncKitError(
@@ -1151,6 +1618,7 @@ function assertRevisionAuthority(
   if (
     participantsChanged &&
     !rotationFromKeyId &&
+    !ownershipTransfer &&
     !canAdministerSharedBackup(priorAuthor.role)
   ) {
     throw new SyncKitError(
@@ -1166,12 +1634,18 @@ function assertRevisionAuthority(
   );
   if (
     priorOwner?.keyId !== nextOwner?.keyId &&
-    (rotationFromKeyId !== priorOwner?.keyId ||
-      authorKeyId !== nextOwner?.keyId)
+    !(
+      (rotationFromKeyId === priorOwner?.keyId &&
+        authorKeyId === nextOwner?.keyId) ||
+      (ownershipTransfer !== undefined &&
+        ownershipTransfer.fromKeyId === priorOwner?.keyId &&
+        ownershipTransfer.toKeyId === nextOwner?.keyId &&
+        authorKeyId === nextOwner?.keyId)
+    )
   ) {
     throw new SyncKitError(
       "authorization",
-      "Owner transfer is not supported by sharing v1.",
+      "The owner change is not authorized by a transfer or key rotation.",
     );
   }
   if (rotationFromKeyId) {

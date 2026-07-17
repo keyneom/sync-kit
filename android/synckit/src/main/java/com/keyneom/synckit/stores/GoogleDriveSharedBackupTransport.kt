@@ -10,6 +10,7 @@ import com.keyneom.synckit.sharing.SHARING_PROTOCOL
 import com.keyneom.synckit.sharing.SharedBackupEnvelopeV1
 import com.keyneom.synckit.sharing.SharedBackupTransport
 import com.keyneom.synckit.sharing.SharedDatasetDrivePermission
+import com.keyneom.synckit.sharing.ProviderOwnershipTransferState
 import com.keyneom.synckit.sharing.SharedDatasetFile
 import com.keyneom.synckit.sharing.SharedDatasetPermission
 import com.keyneom.synckit.sharing.SharedExchangeFile
@@ -110,6 +111,7 @@ class GoogleDriveSharedBackupTransport(
             parentId = storage.appFolderId,
             contentType = "application/json",
             appProperties = properties("dataset") + mapOf(SYNC_KIT_DATASET_ID_PROPERTY to datasetId),
+            writersCanShare = true,
         )
         return try {
             readDataset(fileId)
@@ -416,6 +418,38 @@ class GoogleDriveSharedBackupTransport(
                 )
             }
 
+    override suspend fun requestOwnershipTransfer(
+        fileId: String,
+        permissionId: String,
+    ) {
+        drive.requestOwnershipTransfer(fileId, permissionId, authorize())
+    }
+
+    override suspend fun acceptOwnershipTransfer(
+        fileId: String,
+        permissionId: String,
+    ) {
+        drive.acceptOwnershipTransfer(fileId, permissionId, authorize())
+    }
+
+    override suspend fun ownershipTransferState(
+        fileId: String,
+        permissionId: String,
+    ): ProviderOwnershipTransferState {
+        val permission = drive.listPermissions(fileId, authorize())
+            .find { it.permissionId == permissionId }
+        return when {
+            permission?.role == "owner" -> ProviderOwnershipTransferState.OWNER
+            permission?.role == "writer" && permission.pendingOwner ->
+                ProviderOwnershipTransferState.PENDING
+            else -> ProviderOwnershipTransferState.OTHER
+        }
+    }
+
+    override suspend fun setWritersCanShare(fileId: String, enabled: Boolean) {
+        drive.setWritersCanShare(fileId, enabled, authorize())
+    }
+
     override suspend fun listDatasetHeads(): List<SharedDatasetHead> {
         val authorization = authorize()
         val appFolderId = resolveAppFolderForRead(authorization) ?: return emptyList()
@@ -441,6 +475,7 @@ class GoogleDriveSharedBackupTransport(
                 folderName = folderName,
                 parentFolderId = parentFolderId,
                 drive = drive,
+                writersCanShare = true,
             ),
         ).appFolderId
         val exchangeProperties = properties("exchange-folder")
@@ -455,7 +490,7 @@ class GoogleDriveSharedBackupTransport(
                 authorization = authorization,
                 parentId = appFolderId,
                 appProperties = exchangeProperties,
-                writersCanShare = false,
+                writersCanShare = true,
             )
         return SharedBackupStorage(appFolderId, exchangesFolderId)
     }

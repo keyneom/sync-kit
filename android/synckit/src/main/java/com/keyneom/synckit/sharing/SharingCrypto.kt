@@ -646,6 +646,126 @@ object SharingCrypto {
         }
     }
 
+    fun createSharedBackupOwnershipTransferProposalV1(
+        inputs: List<SharedBackupEnvelopeV1>,
+        identity: SharingIdentity,
+        input: SharedBackupOwnershipTransferInput,
+        options: SharingCryptoOptions = SharingCryptoOptions(),
+    ): SharedBackupOwnershipTransferV1 {
+        if (inputs.isEmpty()) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "Ownership transfer requires datasets.",
+            )
+        }
+        requireNonEmpty(input.toKeyId, "toKeyId")
+        assertIdentity(identity)
+        val envelopes = inputs.map { verifySharedBackupEnvelopeV1(it) }
+        val appId = envelopes.first().appId
+        val datasets = envelopes.map { envelope ->
+            if (envelope.appId != appId) {
+                throw SyncKitError(
+                    SyncKitErrorCode.COMPATIBILITY,
+                    "An ownership transfer cannot span applications.",
+                )
+            }
+            val owner = sharedBackupParticipants(envelope).find {
+                it.role == SharingRole.OWNER
+            }
+            if (owner?.keyId != identity.publicKey.keyId) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "This identity does not own dataset ${envelope.backupId}.",
+                )
+            }
+            val recipient = sharedBackupParticipant(envelope, input.toKeyId)
+            if (recipient?.accepted == null) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "The proposed owner is not fully enrolled in dataset ${envelope.backupId}.",
+                )
+            }
+            SharedBackupOwnershipTransferDatasetV1(
+                datasetId = envelope.backupId,
+                revisionId = envelope.revisionId,
+                accessControlHash = accessControlHash(envelope.accessControl.last()),
+                providerPermissionId = input.providerPermissionIds[envelope.backupId].orEmpty(),
+            )
+        }.sortedWith { left, right ->
+            CanonicalJson.compareUtf16CodeUnits(left.datasetId, right.datasetId)
+        }
+        if (datasets.distinctBy { it.datasetId }.size != datasets.size) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "Ownership-transfer datasets must be unique.",
+            )
+        }
+        val unsigned = SharedBackupOwnershipTransferV1(
+            schemaVersion = 1,
+            kind = SHARING_OWNERSHIP_TRANSFER_KIND,
+            transferId = input.transferId ?: options.randomUuid(),
+            appId = appId,
+            fromKeyId = identity.publicKey.keyId,
+            toKeyId = input.toKeyId,
+            previousOwnerRole = input.previousOwnerRole,
+            datasets = datasets,
+            providerObjects = input.providerObjects,
+            createdAt = input.createdAt ?: options.now().toInstant().toString(),
+            expiresAt = input.expiresAt,
+            ownerProof = "",
+        )
+        val proof = Base64Url.encode(
+            SharingEcKeys.sign(
+                identity.signingPrivateKey,
+                CanonicalJson.encodeAad(ownershipTransferUnsignedJson(unsigned)),
+            ),
+        )
+        return SharingParsing.parseSharedBackupOwnershipTransferV1(
+            unsigned.copy(ownerProof = proof),
+        )
+    }
+
+    fun acceptSharedBackupOwnershipTransferV1(
+        input: SharedBackupOwnershipTransferV1,
+        envelopes: List<SharedBackupEnvelopeV1>,
+        identity: SharingIdentity,
+        options: SharingCryptoOptions = SharingCryptoOptions(),
+    ): SharedBackupOwnershipTransferV1 {
+        val transfer = SharingParsing.parseSharedBackupOwnershipTransferV1(input)
+        assertIdentity(identity)
+        if (identity.publicKey.keyId != transfer.toKeyId) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only the proposed owner can accept this ownership transfer.",
+            )
+        }
+        if (transfer.newOwnerProof != null) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFLICT,
+                "The ownership transfer is already accepted.",
+            )
+        }
+        transfer.expiresAt?.let {
+            if (options.now().toInstant().isAfter(java.time.Instant.parse(it))) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "The ownership transfer has expired.",
+                )
+            }
+        }
+        verifyOwnershipTransferManifest(transfer, envelopes, requireAccepted = false)
+        val proof = Base64Url.encode(
+            SharingEcKeys.sign(
+                identity.signingPrivateKey,
+                CanonicalJson.encodeAad(ownershipTransferAcceptanceJson(transfer)),
+            ),
+        )
+        return SharingParsing.parseSharedBackupOwnershipTransferV1(
+            transfer.copy(newOwnerProof = proof),
+            requireAccepted = true,
+        )
+    }
+
     fun <T> createSharedBackupEnvelopeV1(
         value: T,
         codec: SharedBackupCodec<T>,
@@ -663,14 +783,36 @@ object SharingCrypto {
                 SyncKitErrorCode.AUTHORIZATION,
                 "The author is not allowed to write this shared backup.",
             )
-        if (!canWriteSharedBackup(author.role)) {
+        val isOwnershipTransferAuthor =
+            input.ownershipTransfer?.toKeyId == identity.publicKey.keyId
+        if (!canWriteSharedBackup(author.role) && !isOwnershipTransferAuthor) {
             throw SyncKitError(
                 SyncKitErrorCode.AUTHORIZATION,
                 "The author is not allowed to write this shared backup.",
             )
         }
         val previous = input.previous?.let { verifySharedBackupEnvelopeV1(it) }
+        if (input.keyRotationPreviousIdentity != null && input.ownershipTransfer != null) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "A revision cannot rotate a key and transfer ownership.",
+            )
+        }
         assertParticipantKeys(participants)
+        input.ownershipTransfer?.let { transfer ->
+            if (previous == null) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFIGURATION,
+                    "Ownership transfer requires a previous revision.",
+                )
+            }
+            verifyOwnershipTransferForDataset(
+                transfer,
+                previous,
+                participants,
+                identity.publicKey.keyId,
+            )
+        }
         assertRevisionAuthority(
             input.appId,
             input.backupId,
@@ -678,6 +820,7 @@ object SharingCrypto {
             identity.publicKey.keyId,
             previous,
             input.keyRotationPreviousIdentity?.publicKey?.keyId,
+            input.ownershipTransfer,
         )
         val accessControl = createAccessControl(
             input.appId,
@@ -686,6 +829,7 @@ object SharingCrypto {
             identity,
             previous,
             input.keyRotationPreviousIdentity,
+            input.ownershipTransfer,
         )
         val revisionId = input.revisionId ?: options.randomUuid()
         val createdAt = input.createdAt ?: options.now().toInstant().toString()
@@ -864,6 +1008,7 @@ object SharingCrypto {
         identity: SharingIdentity,
         previous: SharedBackupEnvelopeV1?,
         previousIdentity: SharingIdentity?,
+        ownershipTransfer: SharedBackupOwnershipTransferV1?,
     ): List<SharedBackupAccessV1> {
         if (
             previous != null &&
@@ -936,6 +1081,15 @@ object SharingCrypto {
                     ),
                 )
             }
+            ownershipTransfer?.let { transfer ->
+                put(
+                    "ownershipTransfer",
+                    SyncKitJson.instance.encodeToJsonElement(
+                        SharedBackupOwnershipTransferV1.serializer(),
+                        transfer,
+                    ),
+                )
+            }
         }
         val entry = SharedBackupAccessV1(
             appId = appId,
@@ -945,6 +1099,7 @@ object SharingCrypto {
             authorKeyId = accessSigner.publicKey.keyId,
             participants = participants,
             keyRotation = keyRotation,
+            ownershipTransfer = ownershipTransfer,
             signature = Base64Url.encode(
                 SharingEcKeys.sign(
                     accessSigner.signingPrivateKey,
@@ -990,6 +1145,7 @@ object SharingCrypto {
             }
             val author: SharedBackupParticipantV1?
             val validRotation: Boolean
+            val validOwnershipTransfer: Boolean
             if (previous != null) {
                 val expectedHash = accessControlHash(previous)
                 if (entry.previousHash != expectedHash) {
@@ -1002,7 +1158,13 @@ object SharingCrypto {
                 validRotation = entry.keyRotation?.let {
                     verifyAccessKeyRotation(entry, previous)
                 } ?: false
-                if (author == null || (!canAdministerSharedBackup(author.role) && !validRotation)) {
+                validOwnershipTransfer = entry.ownershipTransfer?.let {
+                    verifyOwnershipTransferEntry(entry, previous)
+                } ?: false
+                if (author == null ||
+                    (!canAdministerSharedBackup(author.role) &&
+                        !validRotation && !validOwnershipTransfer)
+                ) {
                     throw SyncKitError(
                         SyncKitErrorCode.AUTHORIZATION,
                         "An access-control change was not signed by a prior owner or admin.",
@@ -1010,23 +1172,26 @@ object SharingCrypto {
                 }
                 if (owner.keyId != ownerKeyId) {
                     val rotation = entry.keyRotation
-                    if (
-                        !validRotation ||
-                        rotation?.fromKeyId != ownerKeyId ||
-                        rotation.toKeyId != owner.keyId
-                    ) {
+                    val transfer = entry.ownershipTransfer
+                    val validOwnerChange =
+                        (validRotation && rotation?.fromKeyId == ownerKeyId &&
+                            rotation.toKeyId == owner.keyId) ||
+                            (validOwnershipTransfer && transfer?.fromKeyId == ownerKeyId &&
+                                transfer.toKeyId == owner.keyId)
+                    if (!validOwnerChange) {
                         throw SyncKitError(
                             SyncKitErrorCode.AUTHORIZATION,
-                            "Owner transfer is not supported by sharing v1.",
+                            "The owner change is not authorized by a valid transfer or key rotation.",
                         )
                     }
                     ownerKeyId = owner.keyId
                 }
             } else {
-                if (entry.keyRotation != null) {
+                validOwnershipTransfer = false
+                if (entry.keyRotation != null || entry.ownershipTransfer != null) {
                     throw SyncKitError(
                         SyncKitErrorCode.AUTHORIZATION,
-                        "A genesis access entry cannot rotate a key.",
+                        "A genesis access entry cannot rotate a key or transfer ownership.",
                     )
                 }
                 author = entry.participants.find { it.keyId == entry.authorKeyId }
@@ -1120,6 +1285,213 @@ object SharingCrypto {
         )
     }
 
+    private fun verifyOwnershipTransferManifest(
+        transferInput: SharedBackupOwnershipTransferV1,
+        inputs: List<SharedBackupEnvelopeV1>,
+        requireAccepted: Boolean,
+    ) {
+        val transfer = SharingParsing.parseSharedBackupOwnershipTransferV1(
+            transferInput,
+            requireAccepted,
+        )
+        if (inputs.size != transfer.datasets.size) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFLICT,
+                "The ownership-transfer dataset manifest is incomplete.",
+            )
+        }
+        var owner: SharedBackupParticipantV1? = null
+        var recipient: SharedBackupParticipantV1? = null
+        inputs.forEach { input ->
+            val envelope = verifySharedBackupEnvelopeV1(input)
+            val expected = transfer.datasets.find { it.datasetId == envelope.backupId }
+            if (
+                envelope.appId != transfer.appId || expected == null ||
+                expected.revisionId != envelope.revisionId ||
+                expected.accessControlHash != accessControlHash(envelope.accessControl.last())
+            ) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFLICT,
+                    "Dataset ${envelope.backupId} no longer matches the ownership-transfer proposal.",
+                )
+            }
+            val candidateOwner = sharedBackupParticipant(envelope, transfer.fromKeyId)
+            val candidateRecipient = sharedBackupParticipant(envelope, transfer.toKeyId)
+            if (candidateOwner?.role != SharingRole.OWNER || candidateRecipient?.accepted == null) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "Dataset ${envelope.backupId} does not authorize this ownership transfer.",
+                )
+            }
+            owner = owner ?: candidateOwner
+            recipient = recipient ?: candidateRecipient
+            if (owner!!.signingPublicKey != candidateOwner.signingPublicKey ||
+                recipient!!.signingPublicKey != candidateRecipient.signingPublicKey
+            ) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "Ownership-transfer identities differ across datasets.",
+                )
+            }
+        }
+        val validOwner = SharingEcKeys.verify(
+            SharingEcKeys.signingPublicKey(owner!!),
+            CanonicalJson.encodeAad(ownershipTransferUnsignedJson(transfer)),
+            Base64Url.decode(transfer.ownerProof),
+        )
+        if (!validOwner) {
+            throw SyncKitError(
+                SyncKitErrorCode.CRYPTO,
+                "The current owner's transfer proof is invalid.",
+            )
+        }
+        if (requireAccepted) {
+            val validRecipient = SharingEcKeys.verify(
+                SharingEcKeys.signingPublicKey(recipient!!),
+                CanonicalJson.encodeAad(ownershipTransferAcceptanceJson(transfer)),
+                Base64Url.decode(transfer.newOwnerProof!!),
+            )
+            if (!validRecipient) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CRYPTO,
+                    "The proposed owner's transfer proof is invalid.",
+                )
+            }
+        }
+    }
+
+    private fun verifyOwnershipTransferForDataset(
+        transfer: SharedBackupOwnershipTransferV1,
+        previous: SharedBackupEnvelopeV1,
+        participants: List<SharedBackupParticipantV1>,
+        authorKeyId: String,
+    ) {
+        SharingParsing.parseSharedBackupOwnershipTransferV1(transfer, requireAccepted = true)
+        verifyOwnershipTransferProofsForEntry(
+            transfer,
+            previous.accessControl.last(),
+            null,
+            previous.appId,
+            previous.backupId,
+            previous.revisionId,
+        )
+        if (authorKeyId != transfer.toKeyId) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only the accepted new owner can publish the ownership transfer.",
+            )
+        }
+        assertOwnershipRoleTransition(
+            sharedBackupParticipants(previous),
+            participants,
+            transfer,
+        )
+    }
+
+    private fun verifyOwnershipTransferEntry(
+        entry: SharedBackupAccessV1,
+        previous: SharedBackupAccessV1,
+    ): Boolean {
+        val transfer = entry.ownershipTransfer ?: return false
+        val appId = entry.appId ?: return false
+        val backupId = entry.backupId ?: return false
+        return try {
+            if (entry.authorKeyId != transfer.toKeyId) return false
+            assertOwnershipRoleTransition(previous.participants, entry.participants, transfer)
+            verifyOwnershipTransferProofsForEntry(
+                transfer,
+                previous,
+                entry,
+                appId,
+                backupId,
+            )
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun verifyOwnershipTransferProofsForEntry(
+        transferInput: SharedBackupOwnershipTransferV1,
+        previous: SharedBackupAccessV1,
+        entry: SharedBackupAccessV1?,
+        appId: String,
+        backupId: String,
+        revisionId: String? = null,
+    ) {
+        val transfer = SharingParsing.parseSharedBackupOwnershipTransferV1(
+            transferInput,
+            requireAccepted = true,
+        )
+        val manifest = transfer.datasets.find { it.datasetId == backupId }
+        val previousHash = accessControlHash(previous)
+        if (
+            transfer.appId != appId || manifest == null ||
+            manifest.accessControlHash != previousHash ||
+            (revisionId != null && manifest.revisionId != revisionId) ||
+            (entry != null && entry.previousHash != previousHash)
+        ) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFLICT,
+                "The ownership transfer does not match this dataset head.",
+            )
+        }
+        val owner = previous.participants.find { it.keyId == transfer.fromKeyId }
+        val recipient = previous.participants.find { it.keyId == transfer.toKeyId }
+        if (owner?.role != SharingRole.OWNER || recipient?.accepted == null) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "The transfer identities are not eligible.",
+            )
+        }
+        val validOwner = SharingEcKeys.verify(
+            SharingEcKeys.signingPublicKey(owner),
+            CanonicalJson.encodeAad(ownershipTransferUnsignedJson(transfer)),
+            Base64Url.decode(transfer.ownerProof),
+        )
+        val validRecipient = SharingEcKeys.verify(
+            SharingEcKeys.signingPublicKey(recipient),
+            CanonicalJson.encodeAad(ownershipTransferAcceptanceJson(transfer)),
+            Base64Url.decode(transfer.newOwnerProof!!),
+        )
+        if (!validOwner || !validRecipient) {
+            throw SyncKitError(
+                SyncKitErrorCode.CRYPTO,
+                "The ownership-transfer proofs are invalid.",
+            )
+        }
+    }
+
+    private fun assertOwnershipRoleTransition(
+        previous: List<SharedBackupParticipantV1>,
+        next: List<SharedBackupParticipantV1>,
+        transfer: SharedBackupOwnershipTransferV1,
+    ) {
+        val expected = previous.map { participant ->
+            participant.copy(
+                role = when (participant.keyId) {
+                    transfer.fromKeyId -> transfer.previousOwnerRole
+                    transfer.toKeyId -> SharingRole.OWNER
+                    else -> participant.role
+                },
+            )
+        }.sortedWith { left, right ->
+            CanonicalJson.compareUtf16CodeUnits(left.keyId, right.keyId)
+        }
+        val serializer = kotlinx.serialization.builtins.ListSerializer(
+            SharedBackupParticipantV1.serializer(),
+        )
+        if (
+            CanonicalJson.encode(SyncKitJson.instance.encodeToJsonElement(serializer, expected)) !=
+            CanonicalJson.encode(SyncKitJson.instance.encodeToJsonElement(serializer, next))
+        ) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "An ownership transfer may only swap the owner and prior-owner roles.",
+            )
+        }
+    }
+
     private fun accessControlHash(entry: SharedBackupAccessV1): String =
         Base64Url.encode(
             SharingEcKeys.digestSha256(
@@ -1167,6 +1539,7 @@ object SharingCrypto {
         authorKeyId: String,
         previous: SharedBackupEnvelopeV1?,
         rotationFromKeyId: String?,
+        ownershipTransfer: SharedBackupOwnershipTransferV1?,
     ) {
         if (previous == null) {
             val owner = participants.find { it.role == SharingRole.OWNER }
@@ -1184,7 +1557,10 @@ object SharingCrypto {
                 "The previous revision belongs to a different shared backup.",
             )
         }
-        val priorAuthor = sharedBackupParticipant(previous, rotationFromKeyId ?: authorKeyId)
+        val priorAuthor = sharedBackupParticipant(
+            previous,
+            rotationFromKeyId ?: ownershipTransfer?.fromKeyId ?: authorKeyId,
+        )
         if (priorAuthor == null || !canWriteSharedBackup(priorAuthor.role)) {
             throw SyncKitError(
                 SyncKitErrorCode.AUTHORIZATION,
@@ -1203,7 +1579,7 @@ object SharingCrypto {
                     participants,
                 ),
             )
-        if (participantsChanged && rotationFromKeyId == null &&
+        if (participantsChanged && rotationFromKeyId == null && ownershipTransfer == null &&
             !canAdministerSharedBackup(priorAuthor.role)
         ) {
             throw SyncKitError(
@@ -1213,12 +1589,18 @@ object SharingCrypto {
         }
         val priorOwner = sharedBackupParticipants(previous).find { it.role == SharingRole.OWNER }
         val nextOwner = participants.find { it.role == SharingRole.OWNER }
+        val validOwnerRotation =
+            rotationFromKeyId == priorOwner?.keyId && authorKeyId == nextOwner?.keyId
+        val validOwnershipTransfer = ownershipTransfer != null &&
+            ownershipTransfer.fromKeyId == priorOwner?.keyId &&
+            ownershipTransfer.toKeyId == nextOwner?.keyId &&
+            authorKeyId == nextOwner?.keyId
         if (priorOwner?.keyId != nextOwner?.keyId &&
-            (rotationFromKeyId != priorOwner?.keyId || authorKeyId != nextOwner?.keyId)
+            !validOwnerRotation && !validOwnershipTransfer
         ) {
             throw SyncKitError(
                 SyncKitErrorCode.AUTHORIZATION,
-                "Owner transfer is not supported by sharing v1.",
+                "The owner change is not authorized by a transfer or key rotation.",
             )
         }
         if (rotationFromKeyId != null) {
@@ -1458,7 +1840,62 @@ object SharingCrypto {
                     ),
                 )
             }
+            entry.ownershipTransfer?.let { transfer ->
+                put(
+                    "ownershipTransfer",
+                    SyncKitJson.instance.encodeToJsonElement(
+                        SharedBackupOwnershipTransferV1.serializer(),
+                        transfer,
+                    ),
+                )
+            }
         }
+
+    private fun ownershipTransferUnsignedJson(
+        transfer: SharedBackupOwnershipTransferV1,
+    ): JsonElement = buildJsonObject {
+        put("schemaVersion", transfer.schemaVersion)
+        put("kind", transfer.kind)
+        put("transferId", transfer.transferId)
+        put("appId", transfer.appId)
+        put("fromKeyId", transfer.fromKeyId)
+        put("toKeyId", transfer.toKeyId)
+        put(
+            "previousOwnerRole",
+            SyncKitJson.instance.encodeToJsonElement(
+                SharingRole.serializer(),
+                transfer.previousOwnerRole,
+            ),
+        )
+        put(
+            "datasets",
+            SyncKitJson.instance.encodeToJsonElement(
+                kotlinx.serialization.builtins.ListSerializer(
+                    SharedBackupOwnershipTransferDatasetV1.serializer(),
+                ),
+                transfer.datasets,
+            ),
+        )
+        put(
+            "providerObjects",
+            SyncKitJson.instance.encodeToJsonElement(
+                kotlinx.serialization.builtins.ListSerializer(
+                    SharedBackupOwnershipTransferProviderObjectV1.serializer(),
+                ),
+                transfer.providerObjects,
+            ),
+        )
+        put("createdAt", transfer.createdAt)
+        transfer.expiresAt?.let { put("expiresAt", it) }
+    }
+
+    private fun ownershipTransferAcceptanceJson(
+        transfer: SharedBackupOwnershipTransferV1,
+    ): JsonElement = buildJsonObject {
+        val unsigned = ownershipTransferUnsignedJson(transfer) as JsonObject
+        unsigned.forEach { (key, value) -> put(key, value) }
+        put("ownerProof", transfer.ownerProof)
+    }
 
     private fun acceptanceJson(accepted: SharingAcceptanceProvenanceV1?): JsonElement =
         accepted?.let {
@@ -1493,6 +1930,17 @@ data class CreateSharedBackupEnvelopeInput(
     val participants: List<SharedBackupParticipantInput>,
     val previous: SharedBackupEnvelopeV1? = null,
     val keyRotationPreviousIdentity: SharingIdentity? = null,
+    val ownershipTransfer: SharedBackupOwnershipTransferV1? = null,
     val revisionId: String? = null,
     val createdAt: String? = null,
+)
+
+data class SharedBackupOwnershipTransferInput(
+    val toKeyId: String,
+    val previousOwnerRole: SharingRole = SharingRole.ADMIN,
+    val providerPermissionIds: Map<String, String>,
+    val providerObjects: List<SharedBackupOwnershipTransferProviderObjectV1>,
+    val transferId: String? = null,
+    val createdAt: String? = null,
+    val expiresAt: String? = null,
 )
