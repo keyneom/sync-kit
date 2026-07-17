@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   createSharedBackupController,
   MemorySharedBackupRegistry,
@@ -40,6 +41,38 @@ import {
 type Payload = {
   items: string[];
 };
+
+type RoutedPayload = {
+  kind: "application" | "control";
+  items?: string[];
+  entries?: string[];
+};
+
+type CodecCalls = {
+  serialize: number;
+  parse: number;
+  merge: number;
+  fingerprint: number;
+};
+
+type CodecRoutingFixture = {
+  applicationDatasetId: string;
+  controlDatasetId: string;
+  applicationPayload: RoutedPayload;
+  controlPayload: RoutedPayload;
+  updatedControlPayload: RoutedPayload;
+  branchControlPayload: RoutedPayload;
+};
+
+const codecRoutingFixture = JSON.parse(
+  readFileSync(
+    new URL(
+      "../fixtures/sharing-v1/dataset-codec-routing.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as CodecRoutingFixture;
 
 const codec: SharedBackupControllerCodec<Payload> = {
   serialize: (value) => value,
@@ -946,7 +979,279 @@ describe("shared-backup controller adoption", () => {
       }),
     ).rejects.toThrow(/owner or admin/);
   });
+
+  it("routes create, adopt, load, sync, roles, revocation, and rotation by dataset ID", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const recipient = await createWebCryptoSharingIdentity();
+    const replacement = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerRegistry = new MemorySharedBackupRegistry();
+    const calls = {
+      application: emptyCodecCalls(),
+      control: emptyCodecCalls(),
+    };
+    const applicationCodec = routedCodec("application", calls.application);
+    const controlCodec = routedCodec("control", calls.control);
+    const ownerController = routedController(
+      owner,
+      transport,
+      ownerRegistry,
+      applicationCodec,
+      controlCodec,
+    );
+
+    await ownerController.createDataset(
+      codecRoutingFixture.applicationDatasetId,
+      codecRoutingFixture.applicationPayload,
+    );
+    await ownerController.createDataset(
+      codecRoutingFixture.controlDatasetId,
+      codecRoutingFixture.controlPayload,
+    );
+
+    const recoveryRegistry = new MemorySharedBackupRegistry();
+    const recoveryController = routedController(
+      owner,
+      transport,
+      recoveryRegistry,
+      applicationCodec,
+      controlCodec,
+    );
+    await recoveryController.adoptDataset(codecRoutingFixture.applicationDatasetId, {
+      requireOwned: true,
+    });
+    await recoveryController.adoptDataset(codecRoutingFixture.controlDatasetId, {
+      requireOwned: true,
+    });
+    await recoveryController.loadDataset(codecRoutingFixture.controlDatasetId);
+    await recoveryController.syncDataset(
+      codecRoutingFixture.controlDatasetId,
+      codecRoutingFixture.updatedControlPayload,
+    );
+    await recoveryController.addDatasetParticipant({
+      datasetId: codecRoutingFixture.controlDatasetId,
+      participant: { publicKey: recipient.publicKey, role: "viewer" },
+      emailAddress: "recipient@example.test",
+    });
+    await recoveryController.setDatasetRole({
+      datasetId: codecRoutingFixture.controlDatasetId,
+      keyId: recipient.publicKey.keyId,
+      role: "writer",
+      emailAddress: "recipient@example.test",
+    });
+    await recoveryController.revokeDatasetKey({
+      datasetId: codecRoutingFixture.controlDatasetId,
+      keyId: recipient.publicKey.keyId,
+      emailAddress: "recipient@example.test",
+    });
+    await expect(
+      recoveryController.rotateLocalKey(replacement, [
+        codecRoutingFixture.controlDatasetId,
+      ]),
+    ).resolves.toMatchObject([
+      { datasetId: codecRoutingFixture.controlDatasetId, status: "rotated" },
+    ]);
+
+    expect(calls.application.serialize).toBeGreaterThan(0);
+    expect(calls.application.parse).toBeGreaterThan(0);
+    expect(calls.control.serialize).toBeGreaterThan(0);
+    expect(calls.control.parse).toBeGreaterThan(0);
+    expect(calls.control.merge).toBeGreaterThan(0);
+    expect(calls.control.fingerprint).toBeGreaterThan(0);
+  });
+
+  it("leaves the remote file and verified head unchanged when an override codec rejects", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const applicationCodec = routedCodec("application", emptyCodecCalls());
+    const controlCodec = routedCodec("control", emptyCodecCalls());
+    const sharing = routedController(
+      owner,
+      transport,
+      registry,
+      applicationCodec,
+      controlCodec,
+    );
+    await sharing.createDataset(
+      codecRoutingFixture.controlDatasetId,
+      codecRoutingFixture.controlPayload,
+    );
+    const beforeRemote = await transport.readDataset(
+      `dataset-${codecRoutingFixture.controlDatasetId}`,
+    );
+    const beforeHead = await registry.get(codecRoutingFixture.controlDatasetId);
+    const rejecting = routedController(
+      owner,
+      transport,
+      registry,
+      applicationCodec,
+      {
+        ...controlCodec,
+        parse: () => {
+          throw new TypeError("Sentinel control codec rejected the payload.");
+        },
+      },
+    );
+
+    await expect(
+      rejecting.syncDataset(
+        codecRoutingFixture.controlDatasetId,
+        codecRoutingFixture.updatedControlPayload,
+      ),
+    ).rejects.toMatchObject({ code: "serialization" });
+    await expect(
+      transport.readDataset(`dataset-${codecRoutingFixture.controlDatasetId}`),
+    ).resolves.toEqual(beforeRemote);
+    await expect(registry.get(codecRoutingFixture.controlDatasetId)).resolves.toEqual(
+      beforeHead,
+    );
+  });
+
+  it("rereads and merges a divergent control head with the same selected codec", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const registry = new MemorySharedBackupRegistry();
+    const applicationCalls = emptyCodecCalls();
+    const controlCalls = emptyCodecCalls();
+    const applicationCodec = routedCodec("application", applicationCalls);
+    const controlCodec = routedCodec("control", controlCalls);
+    const sharing = routedController(
+      owner,
+      transport,
+      registry,
+      applicationCodec,
+      controlCodec,
+      async () => "merge",
+    );
+    await sharing.createDataset(
+      codecRoutingFixture.controlDatasetId,
+      codecRoutingFixture.controlPayload,
+    );
+    const genesis = await transport.readDataset(
+      `dataset-${codecRoutingFixture.controlDatasetId}`,
+    );
+    await sharing.syncDataset(
+      codecRoutingFixture.controlDatasetId,
+      codecRoutingFixture.updatedControlPayload,
+    );
+    const branch = await createSharedBackupEnvelopeV1(
+      codecRoutingFixture.branchControlPayload,
+      controlCodec,
+      owner,
+      {
+        appId: "fixture-app",
+        backupId: codecRoutingFixture.controlDatasetId,
+        participants: [{ publicKey: owner.publicKey, role: "owner" }],
+        previous: genesis.envelope,
+        revisionId: "control-remote-branch",
+      },
+    );
+    const current = await transport.readDataset(
+      `dataset-${codecRoutingFixture.controlDatasetId}`,
+    );
+    transport.datasets.set(`dataset-${codecRoutingFixture.controlDatasetId}`, {
+      ...current,
+      envelope: branch,
+      version: '"control-fork"',
+    });
+
+    await expect(
+      sharing.syncDataset(
+        codecRoutingFixture.controlDatasetId,
+        codecRoutingFixture.updatedControlPayload,
+      ),
+    ).resolves.toMatchObject({
+      outcome: "updated",
+      value: {
+        kind: "control",
+        entries: [
+          "member:owner",
+          "migration:remote-branch",
+          "migration:split-profile",
+        ],
+      },
+    });
+    expect(applicationCalls).toEqual(emptyCodecCalls());
+    expect(controlCalls.parse).toBeGreaterThan(0);
+    expect(controlCalls.merge).toBeGreaterThan(0);
+    expect(controlCalls.fingerprint).toBeGreaterThan(0);
+    expect(controlCalls.serialize).toBeGreaterThan(0);
+  });
 });
+
+function emptyCodecCalls(): CodecCalls {
+  return { serialize: 0, parse: 0, merge: 0, fingerprint: 0 };
+}
+
+function routedCodec(
+  expectedKind: RoutedPayload["kind"],
+  calls: CodecCalls,
+): SharedBackupControllerCodec<RoutedPayload> {
+  const assertKind = (value: RoutedPayload): RoutedPayload => {
+    if (value.kind !== expectedKind) {
+      throw new TypeError(
+        `${expectedKind} codec received ${value.kind} payload.`,
+      );
+    }
+    return structuredClone(value);
+  };
+  return {
+    serialize: (value) => {
+      calls.serialize += 1;
+      return assertKind(value);
+    },
+    parse: (value) => {
+      calls.parse += 1;
+      return assertKind(value as RoutedPayload);
+    },
+    merge: (local, remote) => {
+      calls.merge += 1;
+      assertKind(local);
+      assertKind(remote);
+      if (expectedKind === "application") {
+        return {
+          kind: expectedKind,
+          items: [...new Set([...(remote.items ?? []), ...(local.items ?? [])])],
+        };
+      }
+      return {
+        kind: expectedKind,
+        entries: [
+          ...new Set([...(remote.entries ?? []), ...(local.entries ?? [])]),
+        ],
+      };
+    },
+    fingerprint: (value) => {
+      calls.fingerprint += 1;
+      return JSON.stringify(assertKind(value));
+    },
+  };
+}
+
+function routedController(
+  identity: WebCryptoSharingIdentity,
+  transport: SharedBackupTransport,
+  registry: MemorySharedBackupRegistry,
+  applicationCodec: SharedBackupControllerCodec<RoutedPayload>,
+  controlCodec: SharedBackupControllerCodec<RoutedPayload>,
+  resolveFork?: () => Promise<"merge" | "reject">,
+) {
+  return createSharedBackupController({
+    appId: "fixture-app",
+    codec: applicationCodec,
+    codecForDataset: (datasetId) =>
+      datasetId === codecRoutingFixture.controlDatasetId
+        ? controlCodec
+        : undefined,
+    identity: async () => identity,
+    transport,
+    registry,
+    now: () => new Date("2026-07-17T00:00:00.000Z"),
+    randomUUID: incrementingUuid(),
+    ...(resolveFork ? { resolveFork } : {}),
+  });
+}
 
 function controller(
   identity: WebCryptoSharingIdentity,

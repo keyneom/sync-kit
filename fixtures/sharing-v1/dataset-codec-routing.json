@@ -1,0 +1,20 @@
+{
+  "applicationDatasetId": "profile",
+  "controlDatasetId": "profile-control",
+  "applicationPayload": {
+    "kind": "application",
+    "items": ["owner"]
+  },
+  "controlPayload": {
+    "kind": "control",
+    "entries": ["member:owner"]
+  },
+  "updatedControlPayload": {
+    "kind": "control",
+    "entries": ["member:owner", "migration:split-profile"]
+  },
+  "branchControlPayload": {
+    "kind": "control",
+    "entries": ["member:owner", "migration:remote-branch"]
+  }
+}

@@ -59,9 +59,11 @@ delete old data while any required participant lacks that enrollment.
 The control file has a package-owned payload schema, whereas each data file
 uses the application's own codec. Construct a control controller using
 `createSharingControlCodec()` and configure the application-data controller's
-`codecForDataset` callback for the control dataset. That lets the existing
-multi-dataset invitation/accept operation re-encrypt every granted file with
-the correct codec.
+`codecForDataset` callback for the control dataset. Dataset ID remains the
+codec-routing authority for create, adopt, load, sync, participant changes,
+revocation/rekey, and invitation acceptance. Each operation selects one codec
+and uses it for the complete parse/merge/fingerprint/serialize cycle, so a
+control payload is never passed through the application codec.
 
 ```ts
 const controlCodec = createSharingControlCodec();

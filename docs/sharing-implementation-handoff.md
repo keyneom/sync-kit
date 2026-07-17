@@ -243,9 +243,10 @@ Implemented:
 - `/sharing/control` encrypted, merge-safe coordination ledgers with signed
   member directory records, migration announcements, Picker/decrypt
   acknowledgements, and owner-only close records;
-- mixed-codec invitation acceptance through `codecForDataset`, so a
-  protocol-owned control dataset can be granted beside application-owned data
-  datasets in one response flow;
+- dataset-ID-based codec routing through `codecForDataset` across ordinary
+  create/adopt/load/sync, participant changes, revocation/rekey, and invitation
+  acceptance, so a protocol-owned control dataset can be managed beside
+  application-owned data without crossing codec boundaries;
 - direct known-key participant grants through the same mixed-codec participant
   upsert path, with signed-envelope publication before Drive ACL changes and
   inherited reader reuse;

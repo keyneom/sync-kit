@@ -209,6 +209,27 @@ discovery:
 - the release remains gated on normal consumer validation rather than a
   package-owned interactive emulator harness.
 
+Validated on 2026-07-16 for the `0.2.0-rc.18` dataset codec-routing
+correction:
+
+- TypeScript now selects `codecForDataset(datasetId)` once for ordinary
+  create/adopt/load/sync and for every participant, revocation, and key-rotation
+  path that decrypts or republishes a dataset; unknown IDs still use the
+  application codec;
+- mutually rejecting application/control sentinel codecs prove that parse,
+  merge, fingerprint, and serialize stay on the selected codec, including a
+  divergent-head merge and a rejecting-codec failure that leaves both the
+  remote file and verified registry head unchanged;
+- TypeScript and Kotlin consume one fixed application/control routing fixture,
+  and focused Web plus Android controller tests passed;
+- `npm run check` passed unchanged private/sharing fixtures, the Android and
+  parity gates, lint, strict typecheck, 143 TypeScript tests, build, and packed
+  npm/pnpm consumer imports;
+- npm and Android publication share the release tag; npm uses OIDC trusted
+  publishing and selects the `rc` dist-tag for prereleases;
+- live existing-`primary.g2` discovery/reload validation remains an external
+  consumer gate before promoting this candidate to stable `0.2.0`.
+
 ## Android library (private snapshots)
 
 - [x] Extract profile-driven v1 envelope crypto, snapshot controller, Drive

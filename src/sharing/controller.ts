@@ -134,10 +134,12 @@ export type SharedBackupControllerOptions<T> = {
   appId: string;
   codec: SharedBackupControllerCodec<T>;
   /**
-   * Optional codec override for a protocol-owned companion dataset such as a
-   * sharing control ledger. It lets one signed invitation accept several
-   * application datasets plus that ledger without treating the ledger as app
-   * payload. Ordinary create/load/sync calls continue to use `codec`.
+   * Optional codec override selected by dataset ID for every operation that
+   * serializes, parses, merges, fingerprints, or republishes that dataset.
+   * Unknown dataset IDs fall back to `codec`. This lets one controller safely
+   * coordinate application datasets and protocol-owned companions such as a
+   * sharing control ledger without ever parsing with one codec and rewriting
+   * with another.
    */
   codecForDataset?(datasetId: string): SharedBackupControllerCodec<unknown> | undefined;
   identity(): Promise<WebCryptoSharingIdentity>;
@@ -228,10 +230,11 @@ export class SharedBackupController<T> {
           `Dataset ${datasetId} already exists.`,
         );
       }
+      const codec = this.codecForDataset(datasetId);
       const identity = await this.options.identity();
       const envelope = await createSharedBackupEnvelopeV1(
         value,
-        this.options.codec,
+        codec,
         identity,
         {
           appId: this.options.appId,
@@ -271,6 +274,7 @@ export class SharedBackupController<T> {
         trustedOwnerKeyId: record.trustedOwnerKeyId,
       });
       const identity = await this.options.identity();
+      const codec = this.codecForDataset(datasetId);
       if (options?.requireOwned) {
         const self = sharedBackupParticipant(
           stored.envelope,
@@ -285,7 +289,7 @@ export class SharedBackupController<T> {
       }
       const value = await decryptSharedBackupEnvelopeV1(
         stored.envelope,
-        this.options.codec,
+        codec,
         identity,
         this.crypto(),
         { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -354,9 +358,10 @@ export class SharedBackupController<T> {
       const stored = await this.readDatasetById(datasetId);
       const record = await this.requiredRegistry(datasetId);
       await this.verifyHead(stored, record);
+      const codec = this.codecForDataset(datasetId);
       const value = await decryptSharedBackupEnvelopeV1(
         stored.envelope,
-        this.options.codec,
+        codec,
         await this.options.identity(),
         this.crypto(),
         { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -375,9 +380,10 @@ export class SharedBackupController<T> {
       const record = await this.requiredRegistry(datasetId);
       const forked = await this.verifyHead(stored, record, true);
       const identity = await this.options.identity();
+      const codec = this.codecForDataset(datasetId);
       const remoteValue = await decryptSharedBackupEnvelopeV1(
         stored.envelope,
-        this.options.codec,
+        codec,
         identity,
         this.crypto(),
         { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -397,17 +403,17 @@ export class SharedBackupController<T> {
           );
         }
       }
-      const merged = this.options.codec.merge(localValue, remoteValue);
+      const merged = codec.merge(localValue, remoteValue);
       if (
-        this.options.codec.fingerprint(merged) ===
-        this.options.codec.fingerprint(remoteValue)
+        codec.fingerprint(merged) ===
+        codec.fingerprint(remoteValue)
       ) {
         await this.persistHead(stored, record.trustedOwnerKeyId, record);
         return result(stored, merged, "unchanged");
       }
       const next = await createSharedBackupEnvelopeV1(
         merged,
-        this.options.codec,
+        codec,
         identity,
         {
           appId: this.options.appId,
@@ -974,9 +980,10 @@ export class SharedBackupController<T> {
           "Only a current owner or admin can change dataset access.",
         );
       }
+      const codec = this.codecForDataset(input.datasetId);
       const value = await decryptSharedBackupEnvelopeV1(
         stored.envelope,
-        this.options.codec,
+        codec,
         identity,
         this.crypto(),
         { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -1022,7 +1029,7 @@ export class SharedBackupController<T> {
           );
       const next = await createSharedBackupEnvelopeV1(
         value,
-        this.options.codec,
+        codec,
         identity,
         {
           appId: this.options.appId,
@@ -1061,9 +1068,10 @@ export class SharedBackupController<T> {
           "Only a current owner or admin can change dataset access.",
         );
       }
+      const codec = this.codecForDataset(input.datasetId);
       const value = await decryptSharedBackupEnvelopeV1(
         stored.envelope,
-        this.options.codec,
+        codec,
         identity,
         this.crypto(),
         { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -1113,7 +1121,7 @@ export class SharedBackupController<T> {
       );
       const next = await createSharedBackupEnvelopeV1(
         value,
-        this.options.codec,
+        codec,
         identity,
         {
           appId: this.options.appId,
@@ -1276,9 +1284,10 @@ export class SharedBackupController<T> {
               "Only a current owner, admin, or writer can rotate its own key.",
             );
           }
+          const codec = this.codecForDataset(datasetId);
           const value = await decryptSharedBackupEnvelopeV1(
             stored.envelope,
-            this.options.codec,
+            codec,
             currentIdentity,
             this.crypto(),
             { trustedOwnerKeyId: record.trustedOwnerKeyId },
@@ -1297,7 +1306,7 @@ export class SharedBackupController<T> {
           );
           const next = await createSharedBackupEnvelopeV1(
             value,
-            this.options.codec,
+            codec,
             replacementIdentity,
             {
               appId: this.options.appId,
@@ -1632,9 +1641,9 @@ export class SharedBackupController<T> {
     return implementation;
   }
 
-  private codecForDataset(datasetId: string): SharedBackupControllerCodec<unknown> {
-    return this.options.codecForDataset?.(datasetId) ??
-      this.options.codec;
+  private codecForDataset(datasetId: string): SharedBackupControllerCodec<T> {
+    return (this.options.codecForDataset?.(datasetId) ??
+      this.options.codec) as SharedBackupControllerCodec<T>;
   }
 
   private cryptoOptions(): WebCryptoSharingOptions {

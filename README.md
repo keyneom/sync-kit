@@ -36,9 +36,11 @@ Version `0.1.1` was published to npm on 2026-06-30. It removes the
 application-specific runtime presets from `0.1.0` and keeps compatibility
 profiles consumer-owned.
 
-Version `0.2.0-rc.1` publishes shared encrypted backups, Tier A background
-detection helpers, and the Android sharing port. Live Google validation and
-one external consumer integration remain release gates for a stable `0.2.0`.
+Version `0.2.0-rc.18` adds accessible `drive.file` dataset discovery and fixes
+dataset-specific codec routing across the complete Web controller lifecycle,
+with equivalent Android and cross-platform fixture coverage. Live Google
+validation and one external consumer integration remain release gates for a
+stable `0.2.0`.
 
 The tests in this repository cover frozen compatibility vectors, mocked
 browser providers, package orchestration, and installation/imports from the
@@ -298,3 +300,19 @@ documented subpath import from the installed tarball.
 The extraction plan and phase gates are in
 [docs/implementation-plan.md](docs/implementation-plan.md) and
 [docs/execution-checklist.md](docs/execution-checklist.md).
+
+## Publishing releases
+
+Pushing a version tag publishes both package surfaces:
+
+- `.github/workflows/publish-android.yml` publishes the matching Android
+  artifact to GitHub Packages;
+- `.github/workflows/publish-npm.yml` runs `npm run check`, verifies that the
+  tag matches `package.json`, then publishes prereleases under the `rc`
+  dist-tag and stable versions under `latest`.
+
+npm publishing uses OIDC trusted publishing instead of a long-lived token.
+Configure `@keyneom/sync-kit` once on npm with GitHub organization/user
+`keyneom`, repository `sync-kit`, workflow `publish-npm.yml`, no environment,
+and the `npm publish` action allowed. After that, pushing `vX.Y.Z` is the only
+release operation.

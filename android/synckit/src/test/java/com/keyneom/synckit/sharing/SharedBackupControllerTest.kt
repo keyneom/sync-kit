@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SharedBackupControllerTest {
@@ -208,6 +209,76 @@ class SharedBackupControllerTest {
         assertEquals(SyncKitErrorCode.AUTHORIZATION, (acknowledgementForAnotherKey as SyncKitError).code)
         ownerControl.closeMigration("forced-cutover", force = true)
         assertEquals(true, ownerControl.migrationStatus("forced-cutover").closed)
+    }
+
+    @Test
+    fun `routes ordinary dataset lifecycle through the dataset codec parity fixture`() = runBlocking {
+        val fixture = checkNotNull(
+            javaClass.classLoader?.getResourceAsStream("sharing-v1/dataset-codec-routing.json"),
+        ).bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
+        val applicationDatasetId = fixture.getValue("applicationDatasetId").jsonPrimitive.content
+        val controlDatasetId = fixture.getValue("controlDatasetId").jsonPrimitive.content
+        val owner = SharingCrypto.generateIdentity()
+        val recipient = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val applicationCalls = CodecCallCounts()
+        val controlCalls = CodecCallCounts()
+        val applicationCodec = RoutedJsonCodec("application", applicationCalls)
+        val controlCodec = RoutedJsonCodec("control", controlCalls)
+        val ownerController = routedJsonController(
+            owner,
+            transport,
+            MemorySharedBackupRegistry(),
+            applicationCodec,
+            controlCodec,
+            controlDatasetId,
+        )
+
+        ownerController.createDataset(
+            applicationDatasetId,
+            fixture.getValue("applicationPayload"),
+        )
+        ownerController.createDataset(
+            controlDatasetId,
+            fixture.getValue("controlPayload"),
+        )
+
+        val recovered = routedJsonController(
+            owner,
+            transport,
+            MemorySharedBackupRegistry(),
+            applicationCodec,
+            controlCodec,
+            controlDatasetId,
+        )
+        recovered.adoptDataset(applicationDatasetId, requireOwned = true)
+        recovered.adoptDataset(controlDatasetId, requireOwned = true)
+        recovered.loadDataset(controlDatasetId)
+        recovered.syncDataset(controlDatasetId, fixture.getValue("updatedControlPayload"))
+        recovered.addDatasetParticipant(
+            datasetId = controlDatasetId,
+            publicKey = recipient.publicKey,
+            role = SharingRole.VIEWER,
+            emailAddress = "recipient@example.test",
+        )
+        recovered.setDatasetRole(
+            datasetId = controlDatasetId,
+            keyId = recipient.publicKey.keyId,
+            role = SharingRole.WRITER,
+            emailAddress = "recipient@example.test",
+        )
+        recovered.revokeDatasetKey(
+            datasetId = controlDatasetId,
+            keyId = recipient.publicKey.keyId,
+            emailAddress = "recipient@example.test",
+        )
+
+        assertTrue(applicationCalls.serialize > 0)
+        assertTrue(applicationCalls.parse > 0)
+        assertTrue(controlCalls.serialize > 0)
+        assertTrue(controlCalls.parse > 0)
+        assertTrue(controlCalls.merge > 0)
+        assertTrue(controlCalls.fingerprint > 0)
     }
 
     @Test
@@ -698,6 +769,48 @@ class SharedBackupControllerTest {
 
     private data class Payload(val items: List<String>)
 
+    private data class CodecCallCounts(
+        var serialize: Int = 0,
+        var parse: Int = 0,
+        var merge: Int = 0,
+        var fingerprint: Int = 0,
+    )
+
+    private class RoutedJsonCodec(
+        private val expectedKind: String,
+        private val calls: CodecCallCounts,
+    ) : SharedBackupControllerCodec<JsonElement> {
+        override fun serialize(value: JsonElement): JsonElement {
+            calls.serialize += 1
+            return requireKind(value)
+        }
+
+        override fun parse(value: JsonElement): JsonElement {
+            calls.parse += 1
+            return requireKind(value)
+        }
+
+        override fun merge(local: JsonElement, remote: JsonElement): JsonElement {
+            calls.merge += 1
+            requireKind(local)
+            requireKind(remote)
+            return local
+        }
+
+        override fun fingerprint(value: JsonElement): String {
+            calls.fingerprint += 1
+            return requireKind(value).toString()
+        }
+
+        private fun requireKind(value: JsonElement): JsonElement {
+            val actual = value.jsonObject["kind"]?.jsonPrimitive?.content
+            require(actual == expectedKind) {
+                "$expectedKind codec received ${actual ?: "missing"} payload."
+            }
+            return value
+        }
+    }
+
     private val payloadCodec = object : SharedBackupControllerCodec<Payload> {
         override fun serialize(value: Payload): JsonElement = buildJsonObject {
             put("items", buildJsonArray { value.items.forEach { add(JsonPrimitive(it)) } })
@@ -714,6 +827,28 @@ class SharedBackupControllerTest {
         override fun fingerprint(value: Payload): String =
             value.items.sorted().joinToString(",")
     }
+
+    private fun routedJsonController(
+        identity: SharingIdentity,
+        transport: SharedBackupTransport,
+        registry: SharedBackupRegistry,
+        applicationCodec: SharedBackupControllerCodec<JsonElement>,
+        controlCodec: SharedBackupControllerCodec<JsonElement>,
+        controlDatasetId: String,
+    ): SharedBackupController<JsonElement> = SharedBackupController(
+        appId = "controller-test",
+        codec = applicationCodec,
+        codecForDataset = { datasetId ->
+            controlCodec.takeIf { datasetId == controlDatasetId }
+        },
+        identity = { identity },
+        transport = transport,
+        registry = registry,
+        cryptoOptions = SharingCryptoOptions(
+            now = { java.util.Date.from(java.time.Instant.parse("2026-07-17T00:00:00.000Z")) },
+            randomUuid = { "routed-${++uuidCounter}" },
+        ),
+    )
 
     private class MemorySharingTransport : SharedBackupTransport {
         val storage = SharedBackupStorage("app-folder", "exchanges-folder")
