@@ -4,6 +4,9 @@ import com.keyneom.synckit.core.SyncKitError
 import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.sharing.checkpoint.SharedDatasetHead
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.yield
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.Json
@@ -107,12 +110,11 @@ class SharedBackupControllerTest {
         assertEquals(listOf("owner"), loaded.value.items)
         assertEquals("loaded", loaded.outcome)
 
-        val synced = recipientController.syncDataset(
-            "tasks",
-            Payload(listOf("owner", "recipient")),
-        )
+        val store = LocalStore(Payload(listOf("owner", "recipient")))
+        val synced = recipientController.syncDataset("tasks", store)
         assertEquals(listOf("owner", "recipient"), synced.value.items)
         assertEquals("updated", synced.outcome)
+        assertEquals(listOf("owner", "recipient"), store.value.items)
     }
 
     @Test
@@ -413,7 +415,7 @@ class SharedBackupControllerTest {
         recovered.adoptDataset(applicationDatasetId, requireOwned = true)
         recovered.adoptDataset(controlDatasetId, requireOwned = true)
         recovered.loadDataset(controlDatasetId)
-        recovered.syncDataset(controlDatasetId, fixture.getValue("updatedControlPayload"))
+        recovered.syncDataset(controlDatasetId, LocalStore(fixture.getValue("updatedControlPayload")))
         recovered.addDatasetParticipant(
             datasetId = controlDatasetId,
             publicKey = recipient.publicKey,
@@ -543,12 +545,11 @@ class SharedBackupControllerTest {
         // Recipient can now read and write the dataset — no exchange files touched.
         val loaded = recipientController.loadDataset("tasks")
         assertEquals(listOf("owner"), loaded.value.items)
-        val synced = recipientController.syncDataset(
-            "tasks",
-            Payload(listOf("owner", "recipient")),
-        )
+        val store = LocalStore(Payload(listOf("owner", "recipient")))
+        val synced = recipientController.syncDataset("tasks", store)
         assertEquals(listOf("owner", "recipient"), synced.value.items)
         assertEquals("updated", synced.outcome)
+        assertEquals(listOf("owner", "recipient"), store.value.items)
     }
 
     @Test
@@ -992,6 +993,85 @@ class SharedBackupControllerTest {
         assertEquals(SyncKitErrorCode.AUTHORIZATION, error?.code)
     }
 
+    @Test
+    fun syncDatasetReadsLocalStateInsideTheSerializedTurn() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        val store = LocalStore(Payload(listOf("owner", "first")))
+        val turnOneApplied = CompletableDeferred<Unit>()
+        val releaseTurnOne = CompletableDeferred<Unit>()
+        val gated = object : SharedDatasetMutator<Payload> {
+            override suspend fun read(): Payload = store.read()
+
+            // Hold the queue open after committing, so the edit below lands
+            // between the two turns rather than being clobbered by this one.
+            override suspend fun apply(merged: Payload): Payload {
+                val committed = store.apply(merged)
+                turnOneApplied.complete(Unit)
+                releaseTurnOne.await()
+                return committed
+            }
+        }
+
+        val first = async { ownerController.syncDataset("tasks", gated) }
+        turnOneApplied.await()
+        // The second sync is issued while the first still holds the queue.
+        val second = async { ownerController.syncDataset("tasks", store) }
+        yield()
+        // This edit lands after the second sync was issued. Only a read that
+        // runs inside the second turn can see it; a value bound at the call
+        // site could not.
+        store.value = Payload(store.value.items + "late")
+        releaseTurnOne.complete(Unit)
+
+        first.await()
+        val synced = second.await()
+        assertTrue(synced.value.items.contains("late"))
+        assertTrue(store.value.items.contains("late"))
+    }
+
+    @Test
+    fun syncDatasetRejectsAnApplyThatDropsTheMerge() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        val error = try {
+            ownerController.syncDataset(
+                "tasks",
+                sharedDatasetMutator(
+                    { Payload(listOf("owner", "local")) },
+                    // Commits nothing — the mistake the fingerprint check exists to catch.
+                    { Payload(listOf("owner")) },
+                ),
+            )
+            null
+        } catch (error: SyncKitError) {
+            error
+        }
+        assertEquals(SyncKitErrorCode.STATE, error?.code)
+    }
+
+    @Test
+    fun syncDatasetCommitsTheMergeEvenWhenTheCloudIsUnchanged() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner", "remote")))
+
+        // Local is behind the cloud, so the merge changes local but not remote.
+        val store = LocalStore(Payload(listOf("owner")))
+        val synced = ownerController.syncDataset("tasks", store)
+
+        assertEquals("unchanged", synced.outcome)
+        assertEquals(1, store.applies)
+        assertEquals(listOf("owner", "remote"), store.value.items.sorted())
+    }
+
     private fun controller(
         identity: SharingIdentity,
         transport: SharedBackupTransport,
@@ -1058,6 +1138,23 @@ class SharedBackupControllerTest {
         now = { java.time.Instant.parse("2026-07-09T12:00:00.000Z") },
         randomUuid = { "$prefix-event-${++uuidCounter}" },
     )
+
+    /** Minimal consumer store: reads inside the turn, commits the merge, returns what it stored. */
+    private class LocalStore<T>(var value: T) : SharedDatasetMutator<T> {
+        var reads = 0
+        var applies = 0
+
+        override suspend fun read(): T {
+            reads += 1
+            return value
+        }
+
+        override suspend fun apply(merged: T): T {
+            applies += 1
+            value = merged
+            return value
+        }
+    }
 
     private data class Payload(val items: List<String>)
 

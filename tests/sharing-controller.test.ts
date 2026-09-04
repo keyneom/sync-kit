@@ -40,6 +40,28 @@ import {
   type SharingDatasetFileV1,
 } from "../src/sharing/link-exchange.js";
 
+/**
+ * Minimal consumer store: reads inside the controller's turn, commits the
+ * merge, and returns what it stored — the shape real consumers must use.
+ */
+function localStore<T>(initial: T) {
+  const store = {
+    value: initial,
+    reads: 0,
+    applies: 0,
+    read(): T {
+      store.reads += 1;
+      return store.value;
+    },
+    apply(merged: T): T {
+      store.applies += 1;
+      store.value = merged;
+      return store.value;
+    },
+  };
+  return store;
+}
+
 type Payload = {
   items: string[];
 };
@@ -103,6 +125,89 @@ const codec: SharedBackupControllerCodec<Payload> = {
 };
 
 describe("shared-backup controller", () => {
+  it("reads local state inside the serialized turn", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const sharing = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await sharing.createDataset("tasks", { items: ["owner"] });
+
+    const store = localStore<Payload>({ items: ["owner", "first"] });
+    let releaseTurnOne!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseTurnOne = resolve;
+    });
+    let signalApplied!: () => void;
+    const applied = new Promise<void>((resolve) => {
+      signalApplied = resolve;
+    });
+
+    // Turn one holds the queue open after committing, so the edit below lands
+    // between the two turns rather than being clobbered by this one.
+    const first = sharing.syncDataset("tasks", {
+      read: () => store.read(),
+      apply: async (merged) => {
+        const committed = store.apply(merged);
+        signalApplied();
+        await held;
+        return committed;
+      },
+    });
+    await applied;
+
+    const second = sharing.syncDataset("tasks", store);
+    // Issued after the second sync was queued: only a read that runs inside
+    // that turn can see it. A value bound at the call site could not.
+    store.value = { items: [...store.value.items, "late"] };
+    releaseTurnOne();
+
+    await first;
+    const synced = await second;
+    expect(synced.value.items).toContain("late");
+    expect(store.value.items).toContain("late");
+  });
+
+  it("rejects an apply that does not commit the merged value", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const sharing = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await sharing.createDataset("tasks", { items: ["owner"] });
+
+    await expect(
+      sharing.syncDataset("tasks", {
+        read: () => ({ items: ["owner", "local"] }),
+        // Commits nothing — the mistake the fingerprint check exists to catch.
+        apply: () => ({ items: ["owner"] }),
+      }),
+    ).rejects.toMatchObject({ code: "state" });
+  });
+
+  it("commits the merge even when the cloud is already current", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const sharing = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await sharing.createDataset("tasks", { items: ["owner", "remote"] });
+
+    // Local is behind the cloud, so the merge changes local but not remote.
+    const store = localStore<Payload>({ items: ["owner"] });
+    const synced = await sharing.syncDataset("tasks", store);
+
+    expect(synced.outcome).toBe("unchanged");
+    expect(store.applies).toBe(1);
+    expect([...store.value.items].sort()).toEqual(["owner", "remote"]);
+  });
+
   it("completes a backendless invite, response, acceptance, and read flow", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const recipient = await createWebCryptoSharingIdentity();
@@ -143,9 +248,10 @@ describe("shared-backup controller", () => {
       outcome: "loaded",
     });
     await expect(
-      recipientController.syncDataset("tasks", {
-        items: ["owner", "recipient"],
-      }),
+      recipientController.syncDataset(
+        "tasks",
+        localStore({ items: ["owner", "recipient"] }),
+      ),
     ).resolves.toMatchObject({
       value: { items: ["owner", "recipient"] },
       outcome: "updated",
@@ -331,7 +437,10 @@ describe("shared-backup controller", () => {
       value: { items: ["owner"] },
     });
     await expect(
-      recipientController.syncDataset("tasks", { items: ["owner", "recipient"] }),
+      recipientController.syncDataset(
+        "tasks",
+        localStore({ items: ["owner", "recipient"] }),
+      ),
     ).resolves.toMatchObject({
       value: { items: ["owner", "recipient"] },
       outcome: "updated",
@@ -583,7 +692,7 @@ describe("shared-backup controller", () => {
 
     transport.conflictNextWrite = true;
     await expect(
-      sharing.syncDataset("profile", { items: ["one", "two"] }),
+      sharing.syncDataset("profile", localStore({ items: ["one", "two"] })),
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
@@ -823,9 +932,10 @@ describe("shared-backup controller", () => {
     });
     await sharing.createDataset("profile", { items: ["genesis"] });
     const genesis = await transport.readDataset("dataset-profile");
-    await sharing.syncDataset("profile", {
-      items: ["genesis", "local-first"],
-    });
+    await sharing.syncDataset(
+      "profile",
+      localStore({ items: ["genesis", "local-first"] }),
+    );
     const branchEnvelope = await createSharedBackupEnvelopeV1(
       { items: ["genesis", "remote-branch"] },
       codec,
@@ -848,9 +958,10 @@ describe("shared-backup controller", () => {
     });
 
     await expect(
-      sharing.syncDataset("profile", {
-        items: ["genesis", "local-first", "local-second"],
-      }),
+      sharing.syncDataset(
+        "profile",
+        localStore({ items: ["genesis", "local-first", "local-second"] }),
+      ),
     ).resolves.toMatchObject({
       value: {
         items: [
@@ -1358,7 +1469,7 @@ describe("shared-backup controller adoption", () => {
     await recoveryController.loadDataset(codecRoutingFixture.controlDatasetId);
     await recoveryController.syncDataset(
       codecRoutingFixture.controlDatasetId,
-      codecRoutingFixture.updatedControlPayload,
+      localStore(codecRoutingFixture.updatedControlPayload),
     );
     await recoveryController.addDatasetParticipant({
       datasetId: codecRoutingFixture.controlDatasetId,
@@ -1429,7 +1540,7 @@ describe("shared-backup controller adoption", () => {
     await expect(
       rejecting.syncDataset(
         codecRoutingFixture.controlDatasetId,
-        codecRoutingFixture.updatedControlPayload,
+        localStore(codecRoutingFixture.updatedControlPayload),
       ),
     ).rejects.toMatchObject({ code: "serialization" });
     await expect(
@@ -1465,7 +1576,7 @@ describe("shared-backup controller adoption", () => {
     );
     await sharing.syncDataset(
       codecRoutingFixture.controlDatasetId,
-      codecRoutingFixture.updatedControlPayload,
+      localStore(codecRoutingFixture.updatedControlPayload),
     );
     const branch = await createSharedBackupEnvelopeV1(
       codecRoutingFixture.branchControlPayload,
@@ -1491,7 +1602,7 @@ describe("shared-backup controller adoption", () => {
     await expect(
       sharing.syncDataset(
         codecRoutingFixture.controlDatasetId,
-        codecRoutingFixture.updatedControlPayload,
+        localStore(codecRoutingFixture.updatedControlPayload),
       ),
     ).resolves.toMatchObject({
       outcome: "updated",

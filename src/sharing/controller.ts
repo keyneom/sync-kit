@@ -84,6 +84,28 @@ export class MemorySharedBackupRegistry implements SharedBackupRegistry {
   }
 }
 
+/**
+ * Read-modify-write hooks for {@link SharedBackupController.syncDataset}.
+ *
+ * The controller serializes dataset operations, so a value captured at the
+ * call site can be arbitrarily stale by the time the sync actually runs.
+ * These hooks close that window: `read` is invoked inside the serialized turn,
+ * immediately before the merge, so it always observes the newest local state.
+ *
+ * `apply` receives the merged value and must commit it under whatever lock or
+ * transaction guards the consumer's local store — the merge is a
+ * read-modify-write against live local state, not a value assignment. It must
+ * return what was actually committed; the controller compares that value's
+ * stable fingerprint against the merged value's and throws a `state` error
+ * when they differ, so an apply that silently drops the merge fails loudly
+ * instead of diverging from the cloud. Consumers with no local mirror (a
+ * purely remote-derived dataset) may legitimately return `merged` unchanged.
+ */
+export type SharedDatasetMutator<T> = {
+  read(): Promise<T> | T;
+  apply(merged: T): Promise<T> | T;
+};
+
 export type SharedDatasetResult<T> = {
   datasetId: string;
   fileId: string;
@@ -388,9 +410,17 @@ export class SharedBackupController<T> {
     });
   }
 
+  /**
+   * Merge local state into the shared dataset and publish the result.
+   *
+   * `mutator` owns both ends of the read-modify-write: its `read` runs inside
+   * this serialized turn so the merge input is never stale, and its `apply`
+   * commits the merged value under the consumer's own lock. See
+   * {@link SharedDatasetMutator}.
+   */
   syncDataset(
     datasetId: string,
-    localValue: T,
+    mutator: SharedDatasetMutator<T>,
   ): Promise<SharedDatasetResult<T>> {
     return this.serialized(async () => {
       const stored = await this.readDatasetById(datasetId);
@@ -405,6 +435,7 @@ export class SharedBackupController<T> {
         this.crypto(),
         { trustedOwnerKeyId: record.trustedOwnerKeyId },
       );
+      const localValue = await mutator.read();
       if (forked) {
         const decision = await this.options.resolveFork?.({
           datasetId,
@@ -426,7 +457,11 @@ export class SharedBackupController<T> {
         codec.fingerprint(remoteValue)
       ) {
         await this.persistHead(stored, record.trustedOwnerKeyId, record);
-        return result(stored, merged, "unchanged");
+        return result(
+          stored,
+          await commitMerged(codec, datasetId, merged, mutator),
+          "unchanged",
+        );
       }
       const next = await createSharedBackupEnvelopeV1(
         merged,
@@ -442,7 +477,11 @@ export class SharedBackupController<T> {
       );
       const updated = await this.options.transport.writeDataset(stored, next);
       await this.persistHead(updated, record.trustedOwnerKeyId, record);
-      return result(updated, merged, "updated");
+      return result(
+        updated,
+        await commitMerged(codec, datasetId, merged, mutator),
+        "updated",
+      );
     });
   }
 
@@ -2145,6 +2184,24 @@ function result<T>(
     value,
     outcome,
   };
+}
+
+async function commitMerged<T>(
+  codec: SharedBackupControllerCodec<T>,
+  datasetId: string,
+  merged: T,
+  mutator: SharedDatasetMutator<T>,
+): Promise<T> {
+  const committed = await mutator.apply(merged);
+  if (codec.fingerprint(committed) !== codec.fingerprint(merged)) {
+    throw new SyncKitError(
+      "state",
+      `apply() for dataset ${datasetId} returned a value that does not match ` +
+        `the merged value. Commit the merged value under the same lock that ` +
+        `guards local reads, then return what was stored.`,
+    );
+  }
+  return committed;
 }
 
 function requireNonEmpty(value: string, name: string): void {

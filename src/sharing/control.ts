@@ -488,9 +488,18 @@ export class SharingControlDataset {
         await authorize(verified, identity);
         const sequence = Math.max(...loaded.value.events.map((event) => event.sequence), -1) + 1;
         const event = await this.sign(build(identity), identity, sequence);
-        return await this.options.controller.syncDataset(this.options.datasetId, {
+        const next = {
           ...loaded.value,
           events: [...loaded.value.events, event],
+        };
+        // The control ledger has no local mirror: its state is derived entirely
+        // from the signed remote events, so `read` hands the freshly built
+        // event list straight to the merge and `apply` has nothing to commit.
+        // The conflict retry above covers a head that moves between the load
+        // and the sync.
+        return await this.options.controller.syncDataset(this.options.datasetId, {
+          read: () => next,
+          apply: (merged) => merged,
         });
       } catch (error) {
         lastError = error;

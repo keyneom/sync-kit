@@ -383,6 +383,10 @@ path remain open; the built-in provider flow must not claim Workspace support.
       participant provenance, and hard-cutover migration acknowledgements.
 - [x] Let one invitation accept a protocol-owned control codec beside
       application-owned dataset codecs, with focused mixed-codec tests.
+- [x] Replace the value-taking `syncDataset` with read/apply hooks on Web and
+      Android so the merge input is read inside the serialized turn and the
+      merged value is committed under the consumer's own lock, verified by a
+      returned-value fingerprint check (0.4.0).
 - [ ] Validate OAuth, Picker, conditional writes, permissions, and account
       attestation against live Google services (`npm run live:drive`).
 - [ ] Integrate the complete flow into an external consumer from a packed

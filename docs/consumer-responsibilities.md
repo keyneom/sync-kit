@@ -34,6 +34,8 @@ Clinic", or "Sarah's EasyBC".
 - Browser adapters: OAuth token reuse, Picker, Open-with state parsing,
   passkey-encrypted sharing identities (optional IndexedDB ciphertext store).
 - Standardized errors and operation serialization.
+- Invoking the consumer's `read` inside the serialized turn, and verifying that
+  the consumer's `apply` actually committed the merged value.
 - Optional override hooks: `folderName`, `selectedAppFolderId`, `parentFolderId`
   on Google Drive transports.
 
@@ -50,6 +52,8 @@ Clinic", or "Sarah's EasyBC".
 - Profile switcher, status presentation, privacy copy, and rename flows.
 - OAuth client configuration and deployment URLs.
 - Lifecycle policy: foreground sync, debounce, background grace, lock timing.
+- **Atomicity of the apply step** — committing the merged value under whatever
+  lock or transaction guards local state. See "The apply window" below.
 - Local persistence technology (IndexedDB, SQLite, etc.) for app state and,
   unless using a future optional sync-kit adapter, the dataset registry.
 - Choosing whether email, display name, or other metadata appears in Drive
@@ -81,6 +85,73 @@ The application must:
 Do not put consumer data, untrusted selected files, or executable content in
 the control dataset. The detailed flow is in
 [sharing-control-datasets.md](sharing-control-datasets.md).
+
+## The apply window
+
+`syncDataset` merges local state with the decrypted remote value and publishes
+the result. The merged value is computed *before* the network write completes,
+and applying it locally is a read-modify-write against live local state — not a
+value assignment. Between the moment the merge is computed and the moment it
+lands in the local store, the user can keep editing. If the apply overwrites
+whatever is there, those edits are lost.
+
+sync-kit cannot close that window itself. What "atomic" means is specific to
+each consumer's store: Room's `withTransaction` on Android, a React state
+update plus IndexedDB on web, Core Data elsewhere. Any generic solution would
+end up calling back into the consumer to do exactly this. So the controller
+owns the read side and verifies the write side, and the consumer owns the lock.
+
+### The contract
+
+`syncDataset(datasetId, mutator)` takes hooks rather than a value:
+
+```ts
+await controller.syncDataset("tasks", {
+  // Runs inside the controller's serialized turn, immediately before the
+  // merge — so the merge input is never stale.
+  read: () => store.tasks,
+  // Runs under the consumer's own lock. Must return what was committed.
+  apply: async (merged) => {
+    await db.withTransaction(async () => {
+      store.tasks = merged;
+    });
+    return store.tasks;
+  },
+});
+```
+
+Kotlin mirrors this with `SharedDatasetMutator<T>` (and the
+`sharedDatasetMutator(read, apply)` helper for lambda construction).
+
+Two properties matter:
+
+**`read` runs inside the turn.** The controller serializes dataset operations,
+so a value captured at the call site can be arbitrarily stale by the time the
+sync runs — two syncs queued back to back would both merge snapshots taken
+before the first one's result existed. Because `read` is invoked inside the
+turn, the merge always sees the newest local state.
+
+**`apply` must return what it committed.** The controller compares that value's
+stable fingerprint against the merged value's and raises a `state` error
+(`SyncKitErrorCode.STATE` on Android) when they differ. A no-op apply cannot
+typecheck, and an apply that silently drops part of the merge fails loudly
+instead of diverging from the cloud. This guard catches accidental drops; it
+does not stop a consumer with no local mirror from legitimately returning
+`merged` unchanged — sync-kit's own control ledger does exactly that, because
+its state is derived entirely from the signed remote events.
+
+### What this does not cover
+
+The fingerprint check compares *stable* fingerprints. Two values with the same
+fingerprint may still differ in fields the codec treats as non-semantic; the
+guard is about dropped merges, not byte equality.
+
+The snapshot controller (`createSnapshotSync`) already had this shape via its
+`readLocal` / `applyMerged` options, and `readLocal` has always been invoked
+inside its exclusive turn. The one hazard there is ordering on the consumer's
+side: `sync("change")` coalesces onto an already-queued change sync, so **commit
+the edit to the store `readLocal` reads before calling `sync`**, never after.
+An edit committed after the call may miss the turn it was meant to trigger.
 
 ## Why certain work stays in applications
 
@@ -318,6 +389,13 @@ metadata are visible to Drive participants. Emails in folder names or app UI
 are a product choice; do not embed them in signed protocol fields unless the
 spec explicitly allows it.
 
+**Assigning the `syncDataset` result straight into local state.** The merged
+value is computed before the write completes; assigning it outside the lock that
+guards local edits silently drops anything the user changed in between. Commit
+inside `apply`, under that lock, and return what was stored. An `apply` that
+ignores its argument (or a `readLocal` that returns a frozen field) satisfies
+the types while defeating the entire mechanism.
+
 **Assuming sync-kit will run a full "join router".** The package stays headless.
 Applications own page load, error surfaces, and when to open Picker vs join from
 URL params.
@@ -334,6 +412,8 @@ When adding shared backups to an application:
       cross-profile mixing.
 - [ ] Implement profile switcher UI from the index, not from raw Drive listing.
 - [ ] Document privacy copy if folder names include email or other identifiers.
+- [ ] Implement `read`/`apply` for every synced dataset, committing the merge
+      under the store's own lock and returning what was committed.
 - [ ] Implement join URL routing and post-OAuth join sequence for recipients.
 - [ ] Offer "Copy join link" when inviting (app-built URL + optional
       `emailMessage` on `inviteParticipant`).

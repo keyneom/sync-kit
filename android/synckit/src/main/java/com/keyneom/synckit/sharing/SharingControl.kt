@@ -382,7 +382,15 @@ class SharingControlDataset(
                 authorize(verified, current)
                 val sequence = (loaded.value.events.maxOfOrNull { it.sequence } ?: -1L) + 1L
                 val next = loaded.value.copy(events = loaded.value.events + build(current, sequence))
-                return controller.syncDataset(datasetId, next)
+                // The control ledger has no local mirror: its state is derived
+                // entirely from the signed remote events, so `read` hands the
+                // freshly built event list straight to the merge and `apply`
+                // has nothing to commit. The conflict retry above covers a head
+                // that moves between the load and the sync.
+                return controller.syncDataset(
+                    datasetId,
+                    sharedDatasetMutator({ next }, { merged -> merged }),
+                )
             } catch (error: Throwable) {
                 lastError = error
                 if (error !is SyncKitError || error.code != SyncKitErrorCode.CONFLICT || attempt + 1 >= maxPublishAttempts) throw error
