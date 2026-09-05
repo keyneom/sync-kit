@@ -28,14 +28,18 @@ data class SharedDatasetResult<T>(
  * state.
  *
  * [apply] receives the merged value and must commit it under whatever lock or
- * transaction guards the consumer's local store — the merge is a
- * read-modify-write against live local state, not a value assignment. It must
- * return what was actually committed; the controller compares that value's
- * stable fingerprint against the merged value's and raises
- * [SyncKitErrorCode.STATE] when they differ, so an apply that silently drops
- * the merge fails loudly instead of diverging from the cloud. Consumers with
- * no local mirror (a purely remote-derived dataset) may legitimately return
- * the merged value unchanged.
+ * transaction guards the consumer's local store. It runs after the network
+ * write, so local state may have moved on since [read] — the merge is a
+ * read-modify-write against live local state, not a value assignment.
+ * Re-merge inside the lock and return what was actually committed.
+ *
+ * The controller checks that the committed value subsumes the merged value
+ * (merging the merged value into it adds nothing) and raises
+ * [SyncKitErrorCode.STATE] otherwise, so an apply that silently drops the
+ * merge fails loudly instead of diverging from the cloud. Folding in edits
+ * newer than [read] is expected and passes; the cloud picks them up on the
+ * next sync. Consumers with no local mirror (a purely remote-derived dataset)
+ * may return the merged value unchanged.
  */
 interface SharedDatasetMutator<T> {
     suspend fun read(): T
@@ -357,11 +361,19 @@ class SharedBackupController<T>(
         mutator: SharedDatasetMutator<T>,
     ): T {
         val committed = mutator.apply(merged)
-        if (selectedCodec.fingerprint(committed) != selectedCodec.fingerprint(merged)) {
+        // `apply` runs after the network write, so local state may have moved
+        // on since `read`. Folding those newer edits in is correct and
+        // expected; what is never acceptable is dropping part of the merge.
+        // Subsumption, not equality: merging `merged` into what was committed
+        // must add nothing.
+        if (selectedCodec.fingerprint(selectedCodec.merge(merged, committed)) !=
+            selectedCodec.fingerprint(committed)
+        ) {
             throw SyncKitError(
                 SyncKitErrorCode.STATE,
-                "apply() for dataset $datasetId returned a value that does not match the merged value. " +
-                    "Commit the merged value under the same lock that guards local reads, then return what was stored.",
+                "apply() for dataset $datasetId committed a value that drops part of the merge. " +
+                    "Re-merge the merged value with live local state inside the lock that guards " +
+                    "local edits, then return what was stored.",
             )
         }
         return committed

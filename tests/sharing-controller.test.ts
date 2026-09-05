@@ -170,6 +170,28 @@ describe("shared-backup controller", () => {
     expect(store.value.items).toContain("late");
   });
 
+  it("accepts an apply that folds in edits newer than the read", async () => {
+    const owner = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const sharing = controller(
+      owner,
+      transport,
+      new MemorySharedBackupRegistry(),
+    );
+    await sharing.createDataset("tasks", { items: ["owner"] });
+
+    // A user edit landing during the network write: `apply` re-merges rather
+    // than overwriting, so what it commits is ahead of `merged`. That must be
+    // accepted — the guard is subsumption, not equality.
+    const synced = await sharing.syncDataset("tasks", {
+      read: () => ({ items: ["owner", "from-read"] }),
+      apply: (merged) => codec.merge(merged, { items: ["during-write"] }),
+    });
+
+    expect(synced.value.items).toContain("from-read");
+    expect(synced.value.items).toContain("during-write");
+  });
+
   it("rejects an apply that does not commit the merged value", async () => {
     const owner = await createWebCryptoSharingIdentity();
     const transport = new MemorySharingTransport();

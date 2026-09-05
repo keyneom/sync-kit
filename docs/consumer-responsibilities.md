@@ -110,15 +110,19 @@ await controller.syncDataset("tasks", {
   // Runs inside the controller's serialized turn, immediately before the
   // merge — so the merge input is never stale.
   read: () => store.tasks,
-  // Runs under the consumer's own lock. Must return what was committed.
-  apply: async (merged) => {
-    await db.withTransaction(async () => {
-      store.tasks = merged;
-    });
-    return store.tasks;
-  },
+  // Runs after the network write, under the consumer's own lock. Local state
+  // may have changed since `read`, so re-merge rather than overwrite, and
+  // return what was actually stored.
+  apply: (merged) =>
+    db.withTransaction(async () => {
+      store.tasks = codec.merge(merged, store.tasks);
+      return store.tasks;
+    }),
 });
 ```
+
+Assigning `merged` directly — `store.tasks = merged` — is the mistake this API
+exists to prevent. It destroys every edit made during the round trip.
 
 Kotlin mirrors this with `SharedDatasetMutator<T>` (and the
 `sharedDatasetMutator(read, apply)` helper for lambda construction).
@@ -131,20 +135,31 @@ sync runs — two syncs queued back to back would both merge snapshots taken
 before the first one's result existed. Because `read` is invoked inside the
 turn, the merge always sees the newest local state.
 
-**`apply` must return what it committed.** The controller compares that value's
-stable fingerprint against the merged value's and raises a `state` error
-(`SyncKitErrorCode.STATE` on Android) when they differ. A no-op apply cannot
-typecheck, and an apply that silently drops part of the merge fails loudly
-instead of diverging from the cloud. This guard catches accidental drops; it
-does not stop a consumer with no local mirror from legitimately returning
-`merged` unchanged — sync-kit's own control ledger does exactly that, because
-its state is derived entirely from the signed remote events.
+**`apply` must return what it committed, and must not drop the merge.** The
+controller checks *subsumption*, not equality: merging `merged` into the
+returned value must add nothing, or it raises a `state` error
+(`SyncKitErrorCode.STATE` on Android).
+
+Equality would be the wrong check. `apply` runs after the network write, so
+local state can legitimately have moved past `merged` by the time it runs —
+folding those newer edits in is exactly what `apply` is for, and it passes.
+The cloud is momentarily behind local in that case; the next sync's fingerprint
+comparison publishes the difference.
+
+A no-op apply cannot typecheck, and one that returns stale local state without
+the merge fails loudly instead of diverging from the cloud. The guard does not
+stop a consumer with no local mirror from returning `merged` unchanged —
+sync-kit's own control ledger does exactly that, because its state is derived
+entirely from the signed remote events.
 
 ### What this does not cover
 
-The fingerprint check compares *stable* fingerprints. Two values with the same
-fingerprint may still differ in fields the codec treats as non-semantic; the
-guard is about dropped merges, not byte equality.
+The check runs through the codec's own `merge` and `fingerprint`, so it is only
+as strict as they are: two values with the same stable fingerprint may still
+differ in fields the codec treats as non-semantic. It is a guard against
+dropped merges, not a proof of correct application. Codecs whose `merge`
+resolves ties toward its first argument should confirm that a re-merging
+`apply` still subsumes `merged`.
 
 The snapshot controller (`createSnapshotSync`) already had this shape via its
 `readLocal` / `applyMerged` options, and `readLocal` has always been invoked

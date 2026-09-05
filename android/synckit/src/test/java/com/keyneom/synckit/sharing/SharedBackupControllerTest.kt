@@ -1034,6 +1034,28 @@ class SharedBackupControllerTest {
     }
 
     @Test
+    fun syncDatasetAcceptsAnApplyThatFoldsInEditsNewerThanTheRead() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("tasks", Payload(listOf("owner")))
+
+        // A user edit landing during the network write: apply re-merges rather
+        // than overwriting, so what it commits is ahead of the merged value.
+        // That must be accepted — the guard is subsumption, not equality.
+        val synced = ownerController.syncDataset(
+            "tasks",
+            sharedDatasetMutator(
+                { Payload(listOf("owner", "from-read")) },
+                { merged -> payloadCodec.merge(merged, Payload(listOf("during-write"))) },
+            ),
+        )
+
+        assertTrue(synced.value.items.contains("from-read"))
+        assertTrue(synced.value.items.contains("during-write"))
+    }
+
+    @Test
     fun syncDatasetRejectsAnApplyThatDropsTheMerge() = runBlocking {
         val owner = SharingCrypto.generateIdentity()
         val transport = MemorySharingTransport()

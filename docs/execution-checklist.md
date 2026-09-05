@@ -386,7 +386,8 @@ path remain open; the built-in provider flow must not claim Workspace support.
 - [x] Replace the value-taking `syncDataset` with read/apply hooks on Web and
       Android so the merge input is read inside the serialized turn and the
       merged value is committed under the consumer's own lock, verified by a
-      returned-value fingerprint check (0.4.0).
+      returned-value check (0.4.0), corrected in 0.4.1 to test subsumption
+      rather than equality so a re-merging apply is accepted.
 - [ ] Validate OAuth, Picker, conditional writes, permissions, and account
       attestation against live Google services (`npm run live:drive`).
 - [ ] Integrate the complete flow into an external consumer from a packed

@@ -1,5 +1,9 @@
 # sync-kit 0.4.0
 
+> **Superseded by 0.4.1.** The `apply` fingerprint check described below used
+> equality, which rejects a correct re-merging `apply`. See
+> `docs/release-notes-v0.4.1.md`.
+
 `syncDataset` takes read/apply hooks instead of a value, on Web and Android.
 
 ## Breaking change
