@@ -124,6 +124,24 @@ await controller.syncDataset("tasks", {
 Assigning `merged` directly — `store.tasks = merged` — is the mistake this API
 exists to prevent. It destroys every edit made during the round trip.
 
+**Merge `merged` first.** The argument order in `codec.merge(merged, store.tasks)`
+is normative, not stylistic. The controller's guard computes
+`codec.merge(merged, committed)`, so an `apply` that merges in the same order
+resolves tie-broken fields the same way the guard will. Reversing it —
+`codec.merge(store.tasks, merged)` — is safe only for codecs whose `merge`
+resolves ties toward its *second* argument:
+
+| codec resolves ties toward | `apply` merges `merged` first | `apply` merges local first |
+| --- | --- | --- |
+| its first argument | passes | **spurious `state` error** |
+| its second argument | passes | passes |
+
+The reversed form is unpleasant to diagnose: it surfaces only when a field is
+edited locally at the same timestamp the merge assigned it, and it throws after
+the cloud write has already succeeded, so the dataset is published but the call
+fails. Merging `merged` first avoids it for every codec, whatever its tie
+policy.
+
 Kotlin mirrors this with `SharedDatasetMutator<T>` (and the
 `sharedDatasetMutator(read, apply)` helper for lambda construction).
 
@@ -157,9 +175,13 @@ entirely from the signed remote events.
 The check runs through the codec's own `merge` and `fingerprint`, so it is only
 as strict as they are: two values with the same stable fingerprint may still
 differ in fields the codec treats as non-semantic. It is a guard against
-dropped merges, not a proof of correct application. Codecs whose `merge`
-resolves ties toward its first argument should confirm that a re-merging
-`apply` still subsumes `merged`.
+dropped merges, not a proof of correct application.
+
+Tie-broken fields are the blind spot rather than the strength: the guard can
+only compare what the codec's own `merge` produces, so it cannot distinguish a
+deliberate tie resolution from a dropped one. Merging `merged` first keeps
+`apply` and the guard in agreement on those fields; no other aspect of tie
+policy is checked.
 
 The snapshot controller (`createSnapshotSync`) already had this shape via its
 `readLocal` / `applyMerged` options, and `readLocal` has always been invoked
