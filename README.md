@@ -156,6 +156,7 @@ Available exports:
 - `/stores/google-drive/sharing` — managed app/exchange folders, conditional
   dataset writes, provenance checks, per-dataset permissions, and read-only
   discovery of every managed dataset visible to the current `drive.file` grant
+  (`listAccessibleSyncKitDatasets`)
 - `/stores/google-drive/picker` — explicit folder Picker and Drive Open-with
   state parsing
 
@@ -210,7 +211,9 @@ not.
 - Shared backups, mixed-codec invitations, and signed control datasets are
   implemented on both npm and Android. Browser-only Picker UI remains an
   adapter concern; Android may hand off to a web Picker grant page because SAF
-  grants do not authorize Drive API access.
+  grants do not authorize Drive API access. See
+  [Picker grant handoff](docs/native-consumers.md#picker-grant-handoff) for the
+  project-scoping reasoning and the launch details that decide whether it works.
 - Google/passkey sharing account bindings are implemented on both npm and
   Android. Consumers own RP ID, exact web/APK origin allowlists, Google OAuth
   audience, UI, and migration timing; real-device Credential Manager and live

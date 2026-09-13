@@ -42,6 +42,55 @@ Shared backups ship on Android in `com.keyneom:sync-kit-android` alongside the
 npm `/sharing` package. Both must consume `fixtures/sharing-v1/` before a
 cross-platform sharing release.
 
+### Picker grant handoff
+
+Android cannot run the Google Picker. To grant `drive.file` access to files the
+app did not create — a folder shared from another account, or a dataset created
+on the web — hand off to a web page that runs the Picker.
+
+**Why this works.** `drive.file` grants are keyed to the **Cloud project**, not
+to an individual OAuth client. That is precisely what Picker's `setAppId`
+expresses: it takes the project *number*, which is why
+`GoogleDriveFolderPicker` names the option `cloudProjectNumber`. A grant made in
+a browser under the web client is therefore visible to the Android client in the
+same project, and to any other device signed into the same Google account.
+Access follows the account and the project, not the device.
+
+**Do not use SAF for this.** A SAF grant is a URI permission held by one app
+install on one device. It authorizes nothing at the Drive API and crosses to no
+other device, so it cannot substitute for a Picker grant — Drive returns 404 for
+a file the grant does not cover.
+
+**No return channel is required.** The grant *is* the shared state. Once the
+user completes the Picker, the Android client enumerates exactly what it has
+been granted with `listAccessibleSyncKitDatasets` (npm
+`/stores/google-drive/sharing`; Kotlin
+`com.keyneom.synckit.stores.listAccessibleSyncKitDatasets`). Do not build a
+fileId hand-back from the grant page into the app: it duplicates a shipped
+function and introduces a channel that can disagree with Drive.
+
+**Launching the page.** Four details decide whether the handoff works at all,
+and each one fails silently. Reference implementation: EasyBC's
+`android/app/src/main/java/com/easybc/planner/util/GrantBrowser.kt`.
+
+1. **A full browser tab, not a Custom Tab.** Google Identity Services' popup
+   token flow breaks inside a Custom Tab — the popup replaces the page and the
+   token never reaches the opener. Launch `ACTION_VIEW` with an explicit
+   package.
+2. **Resolve the browser with a neutral URL.** An app that owns the App Link for
+   its own web origin receives its own unaddressed `ACTION_VIEW` intents, so
+   resolving the grant URL returns the app itself. Probe with an unrelated
+   `https://` URL.
+3. **Exclude your own package and `android`.** The latter is the system
+   disambiguation activity, not a browser. `CustomTabsClient.getPackageName` is
+   a reasonable fallback for *discovering* a package — still launched as a plain
+   tab.
+4. **Fall back when nothing resolves.** Offer the link for the user to copy and
+   open manually rather than failing silently.
+
+Live OAuth and Picker validation against real Google remains a consumer release
+gate. None of this is proven by unit tests.
+
 ### Sharing parity gate
 
 Before claiming native sharing compatibility:
