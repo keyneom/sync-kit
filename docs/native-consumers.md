@@ -75,9 +75,10 @@ been granted with `listAccessibleSyncKitDatasets` (npm
 fileId hand-back from the grant page into the app: it duplicates a shipped
 function and introduces a channel that can disagree with Drive.
 
-**Launching the page.** Four details decide whether the handoff works at all,
-and each one fails silently. Reference implementation: EasyBC's
-`android/app/src/main/java/com/easybc/planner/util/GrantBrowser.kt`.
+**Launching the page.** Use `launchGrantInBrowser(activity, url)` from
+`com.keyneom.synckit.stores`, which handles all of the below and returns `false`
+when no browser can be resolved. If you implement it yourself, four details
+decide whether the handoff works at all, and each one fails silently.
 
 1. **A full browser tab, not a Custom Tab.** Google Identity Services' popup
    token flow breaks inside a Custom Tab — the popup replaces the page and the
@@ -88,11 +89,17 @@ and each one fails silently. Reference implementation: EasyBC's
    resolving the grant URL returns the app itself. Probe with an unrelated
    `https://` URL.
 3. **Exclude your own package and `android`.** The latter is the system
-   disambiguation activity, not a browser. `CustomTabsClient.getPackageName` is
-   a reasonable fallback for *discovering* a package — still launched as a plain
-   tab.
+   disambiguation activity, not a browser. Query every browsable handler for the
+   fallback rather than trusting the default resolution alone.
 4. **Fall back when nothing resolves.** Offer the link for the user to copy and
    open manually rather than failing silently.
+
+**Do not declare `androidx.browser` for this.** The library's helper does not
+need it, and its presence in a build file reads as sanctioning the one approach
+this flow must refuse. A dependency that justifies a wrong answer outlives a
+comment that states one: a reader who finds `androidx.browser:browser` in Gradle
+reasonably infers Custom Tabs are the supported path here, even when the code
+correctly avoids them.
 
 Live OAuth and Picker validation against real Google remains a consumer release
 gate. None of this is proven by unit tests.

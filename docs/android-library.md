@@ -16,12 +16,19 @@ rewritten by the phone, and vice versa. `AndroidPasskeyKeyProvider` does this
 today and EasyBC ships it in exactly that configuration
 (`android/app/src/main/java/com/easybc/planner/sync/EasyBcSync.kt`).
 
-**Do not design a second key path for Android.** Sealing a second envelope
-under a different secret — a printed recovery code, a device-local key — gives
-each platform a copy it alone can rewrite. The two diverge on the first edit,
-and a later reseal on one side locks the other out of its own backup. If you
-want a recovery secret, make it a recovery *path* into the one envelope, never
-one platform's everyday key.
+**The invariant is that every platform can write every envelope.** The failure
+is not a second envelope; it is a platform that can only rewrite one of them.
+When Android cannot open the passkey envelope, a second envelope sealed under a
+different secret — a printed recovery code, a device-local key — quietly becomes
+that platform's everyday key. Each side then refreshes only its own copy, the
+two diverge on the first edit, and a later reseal on one side locks the other
+out of its own backup. That sequence has cost a real user their cloud data.
+
+A recovery envelope is legitimate, and for some products necessary: a lost
+passkey with no recovery path is lost data, which may be acceptable for a
+planner and not for a password manager. Keep it as a *recovery* path — written
+by whichever device syncs, refreshed from the same state as every other copy —
+and never as the only key one platform can reach.
 
 If Credential Manager appears unable to return a PRF secret on Android, check
 [Digital Asset Links](#digital-asset-links-required-for-passkey-unlock) before
@@ -217,7 +224,12 @@ Four things decide whether this works:
 4. **The fingerprint identifies the signing certificate, not the package.** A
    re-signed build is a different app and every passkey stops resolving. List
    every certificate you ship under — debug, release, and Play App Signing if
-   enabled.
+   enabled. Play App Signing re-signs by default, which breaks *both* relations
+   at once: App Link verification and passkey access fail together, and nothing
+   in either failure names the certificate.
+
+There is no `adb` query that reports `get_login_creds`. The only check is
+attempting a ceremony on a device — see the validation gate below.
 
 Asset links cannot be verified by unit tests. See the validation gate below.
 
