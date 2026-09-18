@@ -38,6 +38,12 @@ The library implements:
 
 It is intentionally not emulated through a webview.
 
+Android derives the **same** passkey PRF secret as the browser, so one envelope
+serves both platforms. Do not design a second key path, or a second envelope,
+for Android. Passkey unlock additionally requires a Digital Asset Links entry
+naming the app with `delegate_permission/common.get_login_creds`; see
+[One passkey, both platforms](./android-library.md#one-passkey-both-platforms).
+
 Shared backups ship on Android in `com.keyneom:sync-kit-android` alongside the
 npm `/sharing` package. Both must consume `fixtures/sharing-v1/` before a
 cross-platform sharing release.

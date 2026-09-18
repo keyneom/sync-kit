@@ -8,6 +8,26 @@ The npm `/sharing` package remains the reference implementation for browser
 deployments. Android aims for protocol and checkpoint parity where platform
 APIs allow.
 
+## One passkey, both platforms
+
+**Android derives the same passkey PRF secret as the browser.** One envelope
+serves both platforms: a backup sealed under a passkey in Chrome is opened and
+rewritten by the phone, and vice versa. `AndroidPasskeyKeyProvider` does this
+today and EasyBC ships it in exactly that configuration
+(`android/app/src/main/java/com/easybc/planner/sync/EasyBcSync.kt`).
+
+**Do not design a second key path for Android.** Sealing a second envelope
+under a different secret — a printed recovery code, a device-local key — gives
+each platform a copy it alone can rewrite. The two diverge on the first edit,
+and a later reseal on one side locks the other out of its own backup. If you
+want a recovery secret, make it a recovery *path* into the one envelope, never
+one platform's everyday key.
+
+If Credential Manager appears unable to return a PRF secret on Android, check
+[Digital Asset Links](#digital-asset-links-required-for-passkey-unlock) before
+concluding the platform cannot do it. A missing asset link is reported as "no
+usable credential", which is indistinguishable from the user having no passkey.
+
 ## Coordinates
 
 | Field | Value |
@@ -152,6 +172,54 @@ succeeds. The sharing key ID is preserved.
 
 The library's general minimum remains API 26, but consumer passkey flows must
 gate Credential Manager passkey use to Android 9 / API 28 or newer.
+
+### Digital Asset Links (required for passkey unlock)
+
+Credential Manager will not release a passkey registered for a **web** RP ID to
+an Android app unless that domain's Digital Asset Links file names the app. This
+is a hard precondition: without it the provider cannot work at all, and the
+failure does not say so.
+
+Serve `https://<rp-id>/.well-known/assetlinks.json`:
+
+```json
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.example.app",
+      "sha256_cert_fingerprints": [
+        "AB:CD:EF:...:12:34"
+      ]
+    }
+  }
+]
+```
+
+Four things decide whether this works:
+
+1. **`delegate_permission/common.get_login_creds` is the relation that matters.**
+   It is what lets the app hold credentials saved for that domain — including
+   the passkey the app's own backup is sealed with. Omitting it as a
+   least-privilege measure disables passkey unlock entirely.
+2. **The two relations are independent.** `handle_all_urls` governs App Links
+   only. An app can have fully verified App Links and no passkey access, and
+   `pm get-app-links` reports a healthy state throughout, so it is not a useful
+   check for this.
+3. **It is served from the RP ID domain root, which is usually a different
+   repository.** For a GitHub Pages project site the RP ID is the user or
+   organization domain, so the file lives in that domain's root repository — not
+   alongside the app, and not alongside the project site.
+4. **The fingerprint identifies the signing certificate, not the package.** A
+   re-signed build is a different app and every passkey stops resolving. List
+   every certificate you ship under — debug, release, and Play App Signing if
+   enabled.
+
+Asset links cannot be verified by unit tests. See the validation gate below.
 
 ## Background sync
 
