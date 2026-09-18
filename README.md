@@ -157,8 +157,8 @@ Available exports:
   dataset writes, provenance checks, per-dataset permissions, and read-only
   discovery of every managed dataset visible to the current `drive.file` grant
   (`listAccessibleSyncKitDatasets`)
-- `/stores/google-drive/picker` — explicit folder Picker and Drive Open-with
-  state parsing
+- `/stores/google-drive/picker` — explicit Google Picker (`GoogleDrivePicker`,
+  folders and files) and Drive Open-with state parsing
 
 The root, `/core`, `/crypto`, and `/snapshot` expose no browser adapter.
 Browser globals and script loading are used only after an explicit browser

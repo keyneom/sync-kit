@@ -77,8 +77,13 @@ export type GoogleDriveFolderPickerOptions = {
 };
 
 /**
- * Browser-only folder picker for granting drive.file access to a shared app
- * folder. Loading and UI are explicit; importing this module has no effects.
+ * Browser-only Google Picker for granting drive.file access. Picks folders
+ * (`pickFolder`) and files (`pickFiles`); loading and UI are explicit, and
+ * importing this module has no effects.
+ *
+ * Exported as {@link GoogleDrivePicker} too, which is the preferred name — file
+ * picking is not a secondary feature of a folder picker. Both names refer to
+ * this class; the original is kept so existing imports keep working.
  */
 export class GoogleDriveFolderPicker {
   private scriptPromise: Promise<void> | null = null;
@@ -406,3 +411,8 @@ export function parseGoogleDriveOpenState(
       : {}),
   };
 }
+
+export {
+  GoogleDriveFolderPicker as GoogleDrivePicker,
+  type GoogleDriveFolderPickerOptions as GoogleDrivePickerOptions,
+};

@@ -388,6 +388,8 @@ path remain open; the built-in provider flow must not claim Workspace support.
       merged value is committed under the consumer's own lock, verified by a
       returned-value check (0.4.0), corrected in 0.4.1 to test subsumption
       rather than equality so a re-merging apply is accepted.
+- [x] Name the Digital Asset Links prerequisite in Android passkey failures and
+      document that one passkey-derived envelope serves both platforms (0.4.2).
 - [ ] Validate OAuth, Picker, conditional writes, permissions, and account
       attestation against live Google services (`npm run live:drive`).
 - [ ] Integrate the complete flow into an external consumer from a packed

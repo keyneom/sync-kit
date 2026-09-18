@@ -7,6 +7,8 @@ import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.GetPublicKeyCredentialOption
 import androidx.credentials.PublicKeyCredential
+import androidx.credentials.exceptions.CreateCredentialException
+import androidx.credentials.exceptions.NoCredentialException
 import com.keyneom.synckit.core.CreatedKey
 import com.keyneom.synckit.core.KeyProvider
 import com.keyneom.synckit.core.SyncKitError
@@ -45,10 +47,24 @@ open class AndroidPasskeyKeyProvider<T> @JvmOverloads constructor(
         val kdfSalt = envelopeCrypto.randomBytes(profile.kdfSaltBytes)
         val challenge = Base64Url.encode(envelopeCrypto.randomBytes(32))
         val request = createRequest(prfInput, challenge)
-        val response = CredentialManager.create(activity).createCredential(
-            context = activity,
-            request = CreatePublicKeyCredentialRequest(request.toString()),
-        ) as? CreatePublicKeyCredentialResponse
+        val response = try {
+            CredentialManager.create(activity).createCredential(
+                context = activity,
+                request = CreatePublicKeyCredentialRequest(request.toString()),
+            )
+        } catch (error: CreateCredentialException) {
+            throw SyncKitError(
+                SyncKitErrorCode.KEY,
+                "Credential Manager refused to register a passkey for \"$rpId\". When the relying " +
+                    "party is a web domain this usually means the application is not authorized for " +
+                    "it. Serve https://$rpId/.well-known/assetlinks.json naming this application's package and " +
+                    "signing-certificate fingerprint with delegate_permission/common.get_login_creds. " +
+                    "Verified App Links are not sufficient: handle_all_urls and get_login_creds are " +
+                    "independent, so `pm get-app-links` can report success while passkeys stay " +
+                    "unavailable. See docs/android-library.md, \"Digital Asset Links\".",
+                error,
+            )
+        } as? CreatePublicKeyCredentialResponse
             ?: throw SyncKitError(
                 SyncKitErrorCode.KEY,
                 "Passkey creation did not return a public-key credential.",
@@ -210,10 +226,29 @@ open class AndroidPasskeyKeyProvider<T> @JvmOverloads constructor(
         prfInput: String,
     ): ByteArray {
         val option = GetPublicKeyCredentialOption(getRequest(credentialId, prfInput).toString())
-        val response = CredentialManager.create(activity).getCredential(
-            context = activity,
-            request = GetCredentialRequest.Builder().addCredentialOption(option).build(),
-        )
+        val response = try {
+            CredentialManager.create(activity).getCredential(
+                context = activity,
+                request = GetCredentialRequest.Builder().addCredentialOption(option).build(),
+            )
+        } catch (error: NoCredentialException) {
+            // Credential Manager filters out credentials this application is not
+            // authorized to receive, so a missing asset link is reported as an
+            // empty result — indistinguishable from the user having no passkey.
+            // Name the likelier cause rather than letting a consumer conclude
+            // that Android cannot derive the PRF secret at all.
+            throw SyncKitError(
+                SyncKitErrorCode.KEY,
+                "Credential Manager found no usable passkey for \"$rpId\". If this passkey exists " +
+                    "in a browser, this application is probably not authorized for that domain. " +
+                    "Serve https://$rpId/.well-known/assetlinks.json naming this application's package and " +
+                    "signing-certificate fingerprint with delegate_permission/common.get_login_creds. " +
+                    "Verified App Links are not sufficient: handle_all_urls and get_login_creds are " +
+                    "independent, so `pm get-app-links` can report success while passkeys stay " +
+                    "unavailable. See docs/android-library.md, \"Digital Asset Links\".",
+                error,
+            )
+        }
         val credential = response.credential as? PublicKeyCredential
             ?: throw SyncKitError(
                 SyncKitErrorCode.KEY,
