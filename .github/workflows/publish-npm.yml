@@ -27,6 +27,11 @@ jobs:
           java-version: "17"
 
       - uses: android-actions/setup-android@v3
+        with:
+          # The action's default package set includes the obsolete `tools`
+          # SDK package, which Google removed from the repository; requesting
+          # it fails the whole job. Nothing here needs it.
+          packages: platform-tools
 
       - run: corepack enable
       - run: corepack prepare pnpm@9.15.9 --activate
