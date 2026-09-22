@@ -7,6 +7,19 @@ import kotlinx.coroutines.sync.withLock
 
 interface SharedBackupControllerCodec<T> : SharedBackupCodec<T> {
     fun merge(local: T, remote: T): T
+
+    /**
+     * Stable fingerprint used to decide whether a write is needed and to verify
+     * that `apply` did not drop the merge.
+     *
+     * Beware delegating to a top-level function of the same name. Inside an
+     * `object : SharedBackupControllerCodec<T>` body the member shadows it, so
+     * `override fun fingerprint(value: T) = fingerprint(value)` calls itself.
+     * The resulting `StackOverflowError` is an [Error], not an [Exception], so
+     * a consumer's `catch (e: Exception)` never sees it and every write fails
+     * silently. Qualify the delegate — `MyCodecKt.fingerprint(value)`, an
+     * import alias, or a differently named helper.
+     */
     fun fingerprint(value: T): String
 }
 

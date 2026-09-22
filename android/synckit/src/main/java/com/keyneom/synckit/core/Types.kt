@@ -66,8 +66,25 @@ interface CloudStore {
 }
 
 interface KeyProvider {
+    /**
+     * Establishes a new key. The returned key is the **derived content key**,
+     * ready for encryption — see [unlock].
+     */
     suspend fun create(activity: Activity, appId: String): CreatedKey
+
+    /**
+     * Returns the **derived content key**, not the raw secret it came from.
+     *
+     * Passkey-backed providers run the Credential Manager PRF ceremony and then
+     * the envelope's KDF over its `kdfSalt` before returning. Use the result
+     * directly; **do not derive from it again.** Deriving a second time yields
+     * `KDF(KDF(secret, salt), salt)`, which differs from what every other
+     * platform holds, so the envelope fails to open in a way that looks like
+     * Credential Manager returned the wrong credential rather than a
+     * key-derivation mismatch.
+     */
     suspend fun unlock(activity: Activity, envelope: SyncEnvelopeV1): ByteArray
+
     fun clear()
 }
 

@@ -37,7 +37,22 @@ export type CreatedKey<M, K> = {
 };
 
 export interface KeyProvider<E, K, M> {
+  /**
+   * Establishes a new key. The returned `key` is the **derived content key**,
+   * ready for {@link EnvelopeCrypto.encrypt} — see {@link KeyProvider.unlock}.
+   */
   create(context: KeyCreationContext): Promise<CreatedKey<M, K>>;
+  /**
+   * Returns the **derived content key**, not the raw secret it came from.
+   *
+   * Passkey-backed providers run the PRF ceremony and then the envelope's KDF
+   * over its `kdfSalt` before returning. Pass the result straight to
+   * {@link EnvelopeCrypto.decrypt}; **do not derive from it again.** Deriving a
+   * second time yields `KDF(KDF(secret, salt), salt)`, which differs from what
+   * every other platform holds, so the envelope fails to open in a way that
+   * looks like the wrong credential was returned rather than a key-derivation
+   * mismatch.
+   */
   unlock(envelope: E): Promise<K>;
   clear(): void;
 }

@@ -45,6 +45,11 @@ import {
 import { formatSharingInviteEmailMessage, appendSharingJoinParams } from "./join.js";
 export { IndexedDbSharedBackupRegistry } from "./registry-indexeddb.js";
 
+/**
+ * Merge and fingerprint policy for one dataset. `fingerprint` runs on every
+ * write, so an implementation that accidentally recurses fails on the sync
+ * path rather than at construction.
+ */
 export type SharedBackupControllerCodec<T> = SharedBackupCodec<T> & {
   merge(local: T, remote: T): T;
   fingerprint(value: T): string;

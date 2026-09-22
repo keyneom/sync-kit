@@ -140,8 +140,15 @@ Available exports:
   IndexedDB registry persistence
 - `/sharing/control` — encrypted, signed coordination ledgers for Picker
   enrollment, participant provenance, and hard-cutover migration acknowledgements
-- `/sharing/web-passkey` — passkey-encrypted sharing identities with
-  non-extractable runtime keys and optional IndexedDB ciphertext storage
+- `/sharing/web-passkey` — passkey-encrypted sharing identities
+  (`PasskeyProtectedSharingIdentityProvider`) with non-extractable runtime keys
+  and optional IndexedDB ciphertext storage. Pair with
+  `DriveAppDataProtectedSharingIdentityStore` to carry one sharing identity
+  across every device on a Google account, and
+  `MigratingProtectedSharingIdentityStore` to move an existing local identity
+  into it. This is the supported single-account multi-device pattern — do not
+  wrap the sharing identity in an app-owned secret, which strands it on the
+  device that holds that secret.
 - `/sharing/account-binding` — backendless Google ID-token and WebAuthn
   challenge binding, signature verification, and account provenance
 - `/keys/web-passkey` — WebAuthn PRF keys with exact credential selection,

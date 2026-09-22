@@ -375,6 +375,9 @@ path remain open; the built-in provider flow must not claim Workspace support.
       and test Google/WebAuthn signatures without live endpoints.
 - [ ] Validate Credential Manager registration/assertion on a real API 28+
       Android device with Digital Asset Links and release/debug origin policy.
+      Partial: a consumer reports the assertion path succeeding on a Pixel with
+      `get_login_creds` present. The 0.4.2 missing-asset-link failure mapping is
+      still unverified on hardware by anyone, including us.
 - [ ] Wire EasyBC Android Google ID-token acquisition with the server/web OAuth
       client ID, migrate existing protected identities without public keys, and
       enable required account binding only after a real two-account web↔Android

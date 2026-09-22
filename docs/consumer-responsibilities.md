@@ -405,6 +405,31 @@ deployment-specific URL builder.
 | Dataset split/merge transform, target ACL policy, labels, and retirement UX | Application |
 | Passkey / OAuth prompts | Application triggers; sync-kit providers perform ceremonies |
 
+## One sharing identity across a user's devices
+
+A sharing identity is the keypair other participants encrypt to. It must be the
+*same* identity on every device a user signs in from, or a browser holding the
+data cannot act on a keyring the phone created, and vice versa.
+
+sync-kit ships that pattern; consumers do not need to build it:
+
+| Piece | Export |
+| --- | --- |
+| Passkey-protected identity | `PasskeyProtectedSharingIdentityProvider` (`/sharing/web-passkey`) |
+| Account-wide storage | `DriveAppDataProtectedSharingIdentityStore` (`/sharing`) |
+| Adopting an existing local identity | `MigratingProtectedSharingIdentityStore` (`/sharing`) |
+| Re-wrapping under a replacement credential | `ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential` (Android) |
+
+The ciphertext lives in Drive `appDataFolder`, so it follows the Google account
+rather than the device, and the passkey protects it.
+
+**Do not wrap the sharing identity in an application-owned secret** — a
+recovery code, a device key, anything the product mints. It strands the
+identity on whatever holds that secret: a browser with the passkey and the full
+dataset still cannot touch a keyring, because the identity it can reach is not
+the identity the keyring was encrypted to. The symptom appears at sharing time,
+long after the wrong choice was made.
+
 ## Anti-patterns
 
 **Using folder name as the primary key.** Two owners can both create
