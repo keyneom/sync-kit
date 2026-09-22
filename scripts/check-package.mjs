@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -15,6 +15,17 @@ if (
   throw new Error("The package is not configured for public publication.");
 }
 if (!packageJson.license) throw new Error("A public package license is required.");
+
+// Every exported subpath is import-tested, derived from the exports map so a
+// new subpath cannot ship untested.
+const exportSpecifiers = Object.keys(packageJson.exports).map((key) =>
+  key === "." ? packageJson.name : `${packageJson.name}${key.slice(1)}`,
+);
+// Names and subpaths the documentation tells consumers to import, verified
+// against the installed tarball rather than the source tree: the exports map
+// is invisible from src/, so a wrong subpath reads as correct there.
+const documentedReferences = await collectDocumentedReferences();
+await verifyAndroidInstallVersion();
 
 const temporaryDirectory = await mkdtemp(join(tmpdir(), "sync-kit-pack-"));
 try {
@@ -55,24 +66,55 @@ try {
 async function verifyInstalledPackage(packageManager, tarball) {
   const consumer = join(temporaryDirectory, `${packageManager}-consumer`);
   const source = `
-    await import("@keyneom/sync-kit");
-    await import("@keyneom/sync-kit/core");
-    await import("@keyneom/sync-kit/crypto");
-    await import("@keyneom/sync-kit/snapshot");
-    await import("@keyneom/sync-kit/snapshot/lifecycle");
-    await import("@keyneom/sync-kit/sharing");
-    await import("@keyneom/sync-kit/sharing/web-crypto");
-    await import("@keyneom/sync-kit/sharing/controller");
-    await import("@keyneom/sync-kit/sharing/web-passkey");
-    await import("@keyneom/sync-kit/sharing/account-binding");
-    await import("@keyneom/sync-kit/sharing/lifecycle");
-    await import("@keyneom/sync-kit/keys/web-passkey");
-    await import("@keyneom/sync-kit/auth/google-web");
-    await import("@keyneom/sync-kit/auth/google-web/identity");
-    await import("@keyneom/sync-kit/auth/google-web/cache");
-    await import("@keyneom/sync-kit/stores/google-drive");
-    await import("@keyneom/sync-kit/stores/google-drive/sharing");
-    await import("@keyneom/sync-kit/stores/google-drive/picker");
+    import { readFile } from "node:fs/promises";
+
+    for (const specifier of ${JSON.stringify(exportSpecifiers)}) {
+      await import(specifier);
+    }
+
+    async function declarationText(url, seen = new Set()) {
+      const path = url.replace(/\\.js$/, ".d.ts");
+      if (seen.has(path)) return "";
+      seen.add(path);
+      let text;
+      try {
+        text = await readFile(new URL(path), "utf8");
+      } catch {
+        return "";
+      }
+      for (const match of text.matchAll(/export \\* from ["']([^"']+)["']/g)) {
+        text += await declarationText(new URL(match[1], path).href, seen);
+      }
+      return text;
+    }
+    const unresolved = [];
+    for (const { file, specifier, names } of ${JSON.stringify(documentedReferences)}) {
+      let module;
+      try {
+        module = await import(specifier);
+      } catch {
+        unresolved.push(file + ": cannot import " + specifier);
+        continue;
+      }
+      const declarations = await declarationText(import.meta.resolve(specifier));
+      for (const name of names) {
+        if (name in module) continue;
+        const declared = new RegExp(
+          "\\\\b(?:class|interface|type|function|const|enum)\\\\s+" + name + "\\\\b" +
+            "|\\\\bas\\\\s+" + name + "\\\\b" +
+            // Named re-exports, including type-only ones: export type { A, B } from "..."
+            "|export\\\\s+(?:type\\\\s+)?\\\\{[^}]*\\\\b" + name + "\\\\b[^}]*\\\\}",
+        );
+        if (declared.test(declarations)) continue;
+        unresolved.push(file + ": " + name + " is not exported from " + specifier);
+      }
+    }
+    if (unresolved.length > 0) {
+      throw new Error(
+        "Documentation references that do not resolve against the packed artifact:\\n  " +
+          unresolved.join("\\n  "),
+      );
+    }
 
     const sharing = await import("@keyneom/sync-kit/sharing/web-crypto");
     const owner = await sharing.createWebCryptoSharingIdentity();
@@ -151,6 +193,54 @@ async function verifyInstalledPackage(packageManager, tarball) {
     );
   }
   run(process.execPath, ["index.mjs"], consumer);
+}
+
+async function collectDocumentedReferences() {
+  // Release notes are excluded: they record the package as it was at that
+  // release, so a later rename must not fail the build on history, and they
+  // illustrate patterns with placeholders. Current guidance must match today.
+  const docs = (await readdir(new URL("docs/", root)))
+    .filter((name) => name.endsWith(".md") && !name.startsWith("release-notes-"))
+    .map((name) => `docs/${name}`);
+  const references = [];
+  for (const file of ["README.md", ...docs]) {
+    const text = await readFile(new URL(file, root), "utf8");
+    // import { a, type B } from "@keyneom/sync-kit/..."
+    for (const match of text.matchAll(
+      /import\s*(?:type\s*)?\{([^}]+)\}\s*from\s*["'](@keyneom\/sync-kit[^"']*)["']/g,
+    )) {
+      const names = match[1]
+        .split(",")
+        .map((part) => part.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0])
+        .filter(Boolean);
+      references.push({ file, specifier: match[2], names });
+    }
+    // `Name` (`/subpath`) — the table shape that shipped a wrong subpath in 0.4.3.
+    for (const match of text.matchAll(/`([A-Z][A-Za-z0-9]*)`\s*\(`(\/[a-z][a-z0-9/-]*)`\)/g)) {
+      references.push({ file, specifier: `${packageJson.name}${match[2]}`, names: [match[1]] });
+    }
+    // `/subpath` — `Name`, the README export-list shape.
+    for (const match of text.matchAll(/`(\/[a-z][a-z0-9/-]*)`\s*—\s*`([A-Z][A-Za-z0-9]*)`/g)) {
+      references.push({ file, specifier: `${packageJson.name}${match[1]}`, names: [match[2]] });
+    }
+  }
+  return references;
+}
+
+// The Android install snippet drifted to a pre-mutator version for four
+// releases; it must name the version being published.
+async function verifyAndroidInstallVersion() {
+  const text = await readFile(new URL("docs/android-library.md", root), "utf8");
+  const versions = [...text.matchAll(/sync-kit-android:([^"'`\s)]+)/g)].map((match) => match[1]);
+  if (versions.length === 0) {
+    throw new Error("docs/android-library.md has no sync-kit-android install coordinate.");
+  }
+  const stale = versions.filter((version) => version !== packageJson.version);
+  if (stale.length > 0) {
+    throw new Error(
+      `docs/android-library.md installs sync-kit-android ${stale.join(", ")}; this release is ${packageJson.version}.`,
+    );
+  }
 }
 
 function run(command, arguments_, cwd) {

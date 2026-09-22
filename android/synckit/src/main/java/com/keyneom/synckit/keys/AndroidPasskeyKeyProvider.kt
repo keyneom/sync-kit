@@ -61,7 +61,7 @@ open class AndroidPasskeyKeyProvider<T> @JvmOverloads constructor(
                     "signing-certificate fingerprint with delegate_permission/common.get_login_creds. " +
                     "Verified App Links are not sufficient: handle_all_urls and get_login_creds are " +
                     "independent, so `pm get-app-links` can report success while passkeys stay " +
-                    "unavailable. See docs/android-library.md, \"Digital Asset Links\".",
+                    "unavailable. See https://github.com/keyneom/sync-kit/blob/main/docs/android-library.md#digital-asset-links-required-for-passkey-unlock",
                 error,
             )
         } as? CreatePublicKeyCredentialResponse
@@ -245,7 +245,7 @@ open class AndroidPasskeyKeyProvider<T> @JvmOverloads constructor(
                     "signing-certificate fingerprint with delegate_permission/common.get_login_creds. " +
                     "Verified App Links are not sufficient: handle_all_urls and get_login_creds are " +
                     "independent, so `pm get-app-links` can report success while passkeys stay " +
-                    "unavailable. See docs/android-library.md, \"Digital Asset Links\".",
+                    "unavailable. See https://github.com/keyneom/sync-kit/blob/main/docs/android-library.md#digital-asset-links-required-for-passkey-unlock",
                 error,
             )
         }

@@ -93,6 +93,9 @@ compatibility checks pass.
 - [x] Publish v0.1.1 with consumer-owned profiles and no consumer fixtures in
       the package artifact.
 - [ ] Verify consumers against the published artifact.
+      Partial (0.4.4): `pack:check` import-tests every exported subpath and
+      verifies every documented import against the packed tarball. That proves
+      the docs match the package, not that a consumer following them succeeds.
 
 Exit gate: installed artifacts, not source-link shortcuts, pass the matrix.
 

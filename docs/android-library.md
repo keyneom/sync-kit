@@ -41,7 +41,7 @@ usable credential", which is indistinguishable from the user having no passkey.
 | --- | --- |
 | Group | `com.keyneom` |
 | Artifact | `sync-kit-android` |
-| Version | release tag (`0.3.0`) |
+| Version | release tag; always equal to the npm version |
 | Module | `android/synckit` |
 | Registry | [GitHub Packages](https://github.com/keyneom/sync-kit/packages) (`https://maven.pkg.github.com/keyneom/sync-kit`) |
 
@@ -80,7 +80,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.3.0")
+implementation("com.keyneom:sync-kit-android:0.4.4")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.
