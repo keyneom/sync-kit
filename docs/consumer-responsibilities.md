@@ -416,9 +416,18 @@ sync-kit ships that pattern; consumers do not need to build it:
 | Piece | Export |
 | --- | --- |
 | Passkey-protected identity | `PasskeyProtectedSharingIdentityProvider` (`/sharing/web-passkey`) |
-| Account-wide storage | `DriveAppDataProtectedSharingIdentityStore` (`/sharing`) |
-| Adopting an existing local identity | `MigratingProtectedSharingIdentityStore` (`/sharing`) |
+| Account-wide storage | `DriveAppDataProtectedSharingIdentityStore` (`/sharing/appdata-identity-store`) |
+| Adopting an existing local identity | `MigratingProtectedSharingIdentityStore` (`/sharing/migrating-identity-store`) |
 | Re-wrapping under a replacement credential | `ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential` (Android) |
+
+Each has its own subpath export; none of the three is re-exported from
+`/sharing`:
+
+```ts
+import { PasskeyProtectedSharingIdentityProvider } from "@keyneom/sync-kit/sharing/web-passkey";
+import { DriveAppDataProtectedSharingIdentityStore } from "@keyneom/sync-kit/sharing/appdata-identity-store";
+import { MigratingProtectedSharingIdentityStore } from "@keyneom/sync-kit/sharing/migrating-identity-store";
+```
 
 The ciphertext lives in Drive `appDataFolder`, so it follows the Google account
 rather than the device, and the passkey protects it.

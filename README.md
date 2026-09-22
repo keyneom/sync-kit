@@ -142,13 +142,16 @@ Available exports:
   enrollment, participant provenance, and hard-cutover migration acknowledgements
 - `/sharing/web-passkey` — passkey-encrypted sharing identities
   (`PasskeyProtectedSharingIdentityProvider`) with non-extractable runtime keys
-  and optional IndexedDB ciphertext storage. Pair with
-  `DriveAppDataProtectedSharingIdentityStore` to carry one sharing identity
-  across every device on a Google account, and
-  `MigratingProtectedSharingIdentityStore` to move an existing local identity
-  into it. This is the supported single-account multi-device pattern — do not
+  and optional IndexedDB ciphertext storage
+- `/sharing/appdata-identity-store` — `DriveAppDataProtectedSharingIdentityStore`,
+  carrying one sharing identity across every device on a Google account
+- `/sharing/migrating-identity-store` — `MigratingProtectedSharingIdentityStore`,
+  moving an existing local identity into that store
+
+  Those three are the supported single-account multi-device pattern — do not
   wrap the sharing identity in an app-owned secret, which strands it on the
-  device that holds that secret.
+  device holding that secret. See
+  [consumer-responsibilities.md](docs/consumer-responsibilities.md#one-sharing-identity-across-a-users-devices).
 - `/sharing/account-binding` — backendless Google ID-token and WebAuthn
   challenge binding, signature verification, and account provenance
 - `/keys/web-passkey` — WebAuthn PRF keys with exact credential selection,
