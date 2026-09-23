@@ -1094,6 +1094,47 @@ class SharedBackupControllerTest {
         assertEquals(listOf("owner", "remote"), store.value.items.sorted())
     }
 
+    @Test
+    fun rotatesTheLocalOwnerIdentityWithoutChangingOwnership() = runBlocking {
+        val owner = SharingCrypto.generateIdentity()
+        val replacement = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val registry = MemorySharedBackupRegistry()
+        val original = controller(owner, transport, registry)
+        original.createDataset("profile", Payload(listOf("one")))
+
+        val results = original.rotateLocalKey(replacement, listOf("profile"))
+        assertEquals("rotated", results.single().status)
+        // The same registry still pins the first owner, and the replacement reads.
+        assertEquals(listOf("one"), controller(replacement, transport, registry).loadDataset("profile").value.items)
+        assertEquals(owner.publicKey.keyId, registry.get("profile")?.trustedOwnerKeyId)
+    }
+
+    @Test
+    fun refusesToRotateAViewerAndReportsEachDatasetSeparately() = runBlocking {
+        val vault = keyVault()
+        val replacement = SharingCrypto.generateIdentity()
+        vault.ownerController.createDataset("second", Payload(listOf("second")))
+        val results = vault.viewerController.rotateLocalKey(replacement, listOf("vault", "second"))
+        assertEquals(listOf("failed", "failed"), results.map { it.status })
+        assertEquals(SyncKitErrorCode.AUTHORIZATION, (results.first().error as SyncKitError).code)
+        assertEquals(SyncKitErrorCode.STATE, (results.last().error as SyncKitError).code)
+    }
+
+    @Test
+    fun movesAWritersAdditionalKeysToItsRotatedKey() = runBlocking {
+        val vault = keyVault()
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = true)
+        val recovery = keyRecoveryFor(vault.writer)
+        vault.writerController.addParticipantKeys("vault", listOf(recovery.addition))
+        val replacement = SharingCrypto.generateIdentity()
+        assertEquals("rotated", vault.writerController.rotateLocalKey(replacement, listOf("vault")).single().status)
+        assertEquals(
+            replacement.publicKey.keyId,
+            vault.ownerController.getDatasetParticipantKeys("vault").keys.single().principalKeyId,
+        )
+    }
+
     // --- Participant keys ------------------------------------------------------
 
     private class KeyVault(
@@ -1241,6 +1282,65 @@ class SharedBackupControllerTest {
         )
         vault.ownerController.setParticipantKeysPolicy("vault", enabled = false)
         assertEquals(DatasetParticipantKeys(false, emptyList()), vault.ownerController.getDatasetParticipantKeys("vault"))
+    }
+
+    private suspend fun keyProfile(): KeyVault {
+        val vault = keyVault()
+        vault.ownerController.createDataset("control", Payload(listOf("control")))
+        vault.ownerController.addDatasetParticipant("control", vault.viewer.publicKey, SharingRole.WRITER, "viewer@example.com")
+        vault.ownerController.addDatasetParticipant("control", vault.writer.publicKey, SharingRole.WRITER, "writer@example.com")
+        vault.viewerController.adoptDataset("control")
+        vault.writerController.adoptDataset("control")
+        for (datasetId in listOf("control", "vault")) vault.ownerController.setParticipantKeysPolicy(datasetId, enabled = true)
+        return vault
+    }
+
+    @Test
+    fun replicatesAViewersOwnKeyIntoDataItCanOnlyViewOnce() = runBlocking {
+        val vault = keyProfile()
+        val recovery = keyRecoveryFor(vault.viewer)
+        vault.viewerController.addParticipantKeys("control", listOf(recovery.addition))
+        assertEquals(
+            listOf(ParticipantKeyReplication("vault", "updated", ReplicatedParticipantKeys(additions = 1))),
+            vault.writerController.replicateParticipantKeys("control", listOf("vault")),
+        )
+        assertEquals(recovery.addition.keyId, vault.ownerController.getDatasetParticipantKeys("vault").keys.single().keyId)
+        assertEquals("unchanged", vault.writerController.replicateParticipantKeys("control", listOf("vault")).single().status)
+    }
+
+    @Test
+    fun replicatesAViewersRecoveryAndLaterRemoval() = runBlocking {
+        val vault = keyProfile()
+        val recovery = keyRecoveryFor(vault.viewer)
+        vault.viewerController.addParticipantKeys("control", listOf(recovery.addition))
+        vault.writerController.replicateParticipantKeys("control", listOf("vault"))
+
+        val replacement = SharingCrypto.generateIdentity()
+        val freshDevice = controller(replacement, vault.transport, MemorySharedBackupRegistry())
+        val opened = freshDevice.openRecoveryKey("control", recovery.code)
+        freshDevice.rotateWithAdditionalKey(
+            "control",
+            ParticipantKeys.createAuthorizedRotation("controller-test", vault.viewer.publicKey.keyId, opened.identity, replacement),
+            ParticipantKeyRecovery(replacement, opened.identity),
+        )
+        assertEquals(1, vault.writerController.replicateParticipantKeys("control", listOf("vault")).single().applied.rotations)
+        freshDevice.adoptDataset("vault")
+        assertEquals(listOf("owner"), freshDevice.loadDataset("vault").value.items)
+
+        freshDevice.removeParticipantKeys(
+            "control",
+            listOf(ParticipantKeyRemoval.Signed(ParticipantKeys.createRemoval("controller-test", replacement, recovery.addition))),
+        )
+        assertEquals(1, vault.writerController.replicateParticipantKeys("control", listOf("vault")).single().applied.removals)
+        assertTrue(vault.ownerController.getDatasetParticipantKeys("vault").keys.isEmpty())
+    }
+
+    @Test
+    fun leavesADatasetWhoseOwnerHasNotEnabledParticipantKeys() = runBlocking {
+        val vault = keyProfile()
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = false)
+        vault.viewerController.addParticipantKeys("control", listOf(keyRecoveryFor(vault.viewer).addition))
+        assertEquals("policy-disabled", vault.writerController.replicateParticipantKeys("control", listOf("vault")).single().status)
     }
 
     @Test

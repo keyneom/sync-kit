@@ -3,10 +3,11 @@
 Opt-in **participant keys** and **recovery codes**, on web and Android. A
 participant can hold keys in addition to their passkey-protected identity — most
 importantly one sealed under a generated recovery code — so a lost passkey is
-recoverable, including for data other people own and share with them.
+recoverable, including for data other people own and share with them. Private
+snapshots gain the same through an opt-in **snapshot v2**.
 
 The full design, rules, and security analysis are in
-`docs/participant-keys.md`.
+`docs/participant-keys.md` and `docs/snapshot-recovery.md`.
 
 ## Nothing changes unless you opt in
 
@@ -42,7 +43,32 @@ dataset only once every participant runs 0.5.0 or later.
 
 `SharedBackupController` gains `setParticipantKeysPolicy`, `addParticipantKeys`,
 `removeParticipantKeys`, `rotateWithAdditionalKey`, `openRecoveryKey`,
-`getDatasetParticipantKeys`, and `participantKeyCoverage`.
+`getDatasetParticipantKeys`, `participantKeyCoverage`, and
+`replicateParticipantKeys`. Android also gains `rotateLocalKey`, which the web
+controller already had.
+
+### A viewer's keys reach the data it views
+
+A viewer cannot write the data it views, but it is a writer in the profile's
+control dataset. It applies its own additions, removals, and recovery rotations
+there, and any writer's `replicateParticipantKeys` replays them — in order,
+idempotently — into each dataset that writer can write, skipping datasets whose
+owner has not enabled participant keys. No control-ledger format changes, so
+readers of the ledger are unaffected.
+
+### Private snapshot recovery (snapshot v2)
+
+A private snapshot can carry a recovery code: `setRecoveryCode`, then `recover`
+on a new device when the passkey is lost. This is the v2 envelope planned from
+the start — explicit `appId`, every header field authenticated — and it is
+opt-in per profile:
+
+- v1 is byte-for-byte unchanged and readable indefinitely.
+- A profile reads v2 only with `readVersions: [1, 2]`, and writes new snapshots
+  as v2 only with `writeVersion: 2`. Ship reading to every device first.
+- Ordinary sync never changes a snapshot's version. Only `setRecoveryCode` and
+  the reversible `migrateVersion` do; moving back to v1 drops the code.
+- A device that does not read v2 rejects a v2 snapshot as incompatible.
 
 Recovery works on a fresh device before any dataset is registered, and an owner's
 recovery does not change the dataset's trust root.
@@ -61,15 +87,8 @@ happened. A removed key cannot be re-added from its old authorization.
 
 `fixtures/sharing-v1/participant-keys.json` is a web-written history that Android
 verifies and decrypts, opening the recovery key from its code.
-`npm run parity:participant-keys:check` runs the reverse: Android writes a history
-and the web package verifies it and opens the Android-sealed recovery key. Both
-run in `npm run check`.
-
-## Not included
-
-- **Automatic hand-off of a viewer's signed operations to a writer.** Everything
-  a writer needs to carry them is in place; moving them there is left to the app
-  for now, because doing it through the control ledger would make pre-0.5.0
-  readers reject the whole ledger.
-- **Private v1 snapshots**, whose format is frozen. Keep private data in a
-  single-participant shared dataset to gain recovery.
+`fixtures/v2/snapshot-recovery.json` holds web-written v2 snapshots that Android
+opens with the passkey and with the recovery code. `npm run parity:recovery:check`
+runs both reverse checks: Android writes a participant-key history and a v2
+snapshot, and the web package verifies and opens them. All of this runs in
+`npm run check`, and the v1 parity check still passes unchanged.

@@ -27,7 +27,16 @@ data class V1CompatibilityProfile(
     val compression: V1Compression,
     val passkey: PasskeyProfile,
     val algorithm: String = V1_ALGORITHM,
+    /**
+     * Snapshot versions this app reads; must include 1. Add 2 once every
+     * device runs a sync-kit that reads v2 — the first step of a staged rollout.
+     */
     val readVersions: List<Int> = listOf(1),
+    /**
+     * The version a new snapshot is written in; must be one of [readVersions].
+     * An existing snapshot changes version only through an explicit
+     * `migrateVersion` or `setRecoveryCode`. See docs/snapshot-recovery.md.
+     */
     val writeVersion: Int = 1,
     val nonceBytes: Int = 12,
     val kdfSaltBytes: Int = 32,
@@ -45,8 +54,19 @@ data class V1CompatibilityProfile(
             "passkey.userDisplayName must not be empty."
         }
         require(passkey.timeoutMs > 0) { "passkey.timeoutMs must be positive." }
+        require(1 in readVersions) { "readVersions must include 1: v1 snapshots stay readable indefinitely." }
+        require(readVersions.all { it == 1 || it == 2 }) { "readVersions may contain only 1 and 2." }
+        require(writeVersion in readVersions) { "writeVersion must be one of readVersions." }
     }
 }
+
+/** The locks a v2 snapshot carries, preserved unchanged by ordinary sync. */
+data class SnapshotLocksV2(
+    val appId: String,
+    val contentSalt: String,
+    val passkeyKey: SnapshotWrappedKeyV2,
+    val recoveryKey: SnapshotRecoveryKeyV2? = null,
+)
 
 data class V1KeyMetadata @JvmOverloads constructor(
     val credentialId: String,
@@ -54,6 +74,8 @@ data class V1KeyMetadata @JvmOverloads constructor(
     val prfInput: ByteArray,
     val kdfSalt: ByteArray,
     val credentialPublicKey: JsonObject? = null,
+    /** Present for a v2 snapshot, so ordinary sync keeps its locks unchanged. */
+    val locks: SnapshotLocksV2? = null,
 ) {
     fun identity(): String =
         "$rpId\n$credentialId\n${Base64Url.encode(kdfSalt)}\n${Base64Url.encode(prfInput)}"

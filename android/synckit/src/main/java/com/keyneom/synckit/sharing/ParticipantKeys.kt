@@ -4,6 +4,7 @@ import com.keyneom.synckit.core.SyncKitError
 import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.crypto.Base64Url
 import com.keyneom.synckit.crypto.CanonicalJson
+import com.keyneom.synckit.crypto.RecoveryCodes
 import com.keyneom.synckit.crypto.SyncKitJson
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -110,51 +111,18 @@ object ParticipantKeys {
      * characters plus 2 check characters, in seven groups of four. Show it
      * once; whoever holds it can act as the participant until the key is removed.
      */
-    fun generateRecoveryCode(options: SharingCryptoOptions = SharingCryptoOptions()): String {
-        val secret = options.randomBytes(SECRET_BYTES)
-        try {
-            return (encodeSecret(secret) + checkCharacters(secret)).chunked(4).joinToString("-")
-        } finally {
-            secret.fill(0)
-        }
-    }
+    fun generateRecoveryCode(options: SharingCryptoOptions = SharingCryptoOptions()): String =
+        RecoveryCodes.generate(options.randomBytes)
 
     /** Whether [code] is a well-formed recovery code, for live input validation. */
-    fun isRecoveryCodeWellFormed(code: String): Boolean =
-        try {
-            parseRecoveryCode(code).fill(0)
-            true
-        } catch (_: SyncKitError) {
-            false
-        }
+    fun isRecoveryCodeWellFormed(code: String): Boolean = RecoveryCodes.isWellFormed(code)
 
     /**
      * Returns the 16-byte secret in a recovery code. Rejects anything that is
-     * not a generated code, so a user-chosen passphrase can never be used.
-     * Tolerates case, spaces, and hyphens, and reads I and L as 1 and O as 0.
-     * The caller zeroes the result.
+     * not a generated code, so a user-chosen passphrase can never be used. The
+     * caller zeroes the result.
      */
-    fun parseRecoveryCode(code: String): ByteArray {
-        val normalized = code.uppercase()
-            .replace(Regex("[\\s-]"), "")
-            .replace(Regex("[IL]"), "1")
-            .replace("O", "0")
-        if (
-            normalized.length != SECRET_CHARACTERS + CHECK_CHARACTERS ||
-            !Regex("^[0-9A-HJKMNP-TV-Z]+$").matches(normalized)
-        ) {
-            throw SyncKitError(SyncKitErrorCode.KEY, "This is not a recovery code.")
-        }
-        val secret = decodeSecret(normalized.substring(0, SECRET_CHARACTERS))
-        if (checkCharacters(secret) != normalized.substring(SECRET_CHARACTERS)) {
-            secret.fill(0)
-            throw SyncKitError(
-                SyncKitErrorCode.KEY,
-                "This recovery code has a typo: it does not match its check characters.",
-            )
-        }
-        return secret
-    }
+    fun parseRecoveryCode(code: String): ByteArray = RecoveryCodes.parse(code)
 
     /**
      * Creates a recovery key for [code]: a fresh sharing identity whose private
@@ -343,57 +311,6 @@ object ParticipantKeys {
     private fun wrappingKey(secret: ByteArray, kdfSalt: ByteArray): ByteArray =
         SharingEcKeys.hkdf(secret, kdfSalt, RECOVERY_KDF_INFO.toByteArray(Charsets.UTF_8), 32)
 
-    /** 128 bits → 26 characters; the final 2 bits are zero padding. */
-    private fun encodeSecret(secret: ByteArray): String {
-        val output = StringBuilder()
-        var buffer = 0
-        var bits = 0
-        for (byte in secret) {
-            buffer = (buffer shl 8) or (byte.toInt() and 0xff)
-            bits += 8
-            while (bits >= 5) {
-                output.append(CROCKFORD[(buffer ushr (bits - 5)) and 31])
-                bits -= 5
-            }
-            buffer = buffer and ((1 shl bits) - 1)
-        }
-        if (bits > 0) output.append(CROCKFORD[(buffer shl (5 - bits)) and 31])
-        return output.toString()
-    }
-
-    private fun decodeSecret(characters: String): ByteArray {
-        val secret = ByteArray(SECRET_BYTES)
-        var buffer = 0
-        var bits = 0
-        var index = 0
-        for (character in characters) {
-            buffer = (buffer shl 5) or CROCKFORD.indexOf(character)
-            bits += 5
-            if (bits >= 8) {
-                if (index >= SECRET_BYTES) break
-                secret[index++] = ((buffer ushr (bits - 8)) and 0xff).toByte()
-                bits -= 8
-            }
-            buffer = buffer and ((1 shl bits) - 1)
-        }
-        if (index != SECRET_BYTES || buffer != 0) {
-            secret.fill(0)
-            throw SyncKitError(SyncKitErrorCode.KEY, "This is not a recovery code.")
-        }
-        return secret
-    }
-
-    /** Two characters (10 bits) of SHA-256 over the secret, to catch typos. */
-    private fun checkCharacters(secret: ByteArray): String {
-        val digest = SharingEcKeys.digestSha256(secret)
-        val check = (((digest[0].toInt() and 0xff) shl 8) or (digest[1].toInt() and 0xff)) ushr 6
-        return "${CROCKFORD[(check ushr 5) and 31]}${CROCKFORD[check and 31]}"
-    }
-
-    private const val CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-    private const val SECRET_BYTES = 16
-    private const val SECRET_CHARACTERS = 26
-    private const val CHECK_CHARACTERS = 2
     private const val RECOVERY_KDF_INFO = "sync-kit participant recovery key v1"
     private const val SEALED_KEY_KIND = "sync-kit-sealed-participant-key"
 }

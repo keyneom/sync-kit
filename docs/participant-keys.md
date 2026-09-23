@@ -174,12 +174,40 @@ first entry:
 
 Each revision re-encrypts to exactly the keys listed in it, so a new key protects
 a file only from that file's next write onward. Writers apply their own keys to
-every dataset immediately. A viewer's keys wait until a writer carries them.
+every dataset immediately. A viewer's keys wait until a writer carries them —
+automatically, as described in the next section.
 
 **"Recovery is set up" is therefore not the same as "recovery protects this
 file."** `participantKeyCoverage` reports, per dataset, whether a key is present
 in the current revision, so an app can show the truth: *"Recovery protects 3 of 4
 shared keyrings — 1 is waiting for its owner to sync."*
+
+### Carrying a viewer's keys automatically
+
+A viewer cannot write the data it views, but a profile's **control dataset** is
+different: its participants are writers even where they only view the data (see
+`docs/sharing-control-datasets.md`). So a viewer applies its own key operations
+to the control dataset directly — adding a recovery key, removing one, or
+replacing a lost key with a recovery rotation.
+
+`replicateParticipantKeys({ sourceDatasetId, datasetIds })` then carries them
+onward. Any writer's or admin's app runs it — for example on every sync, with the
+control dataset as the source — and it replays the source's participant-signed
+operations, in order, into each dataset that app can write:
+
+- Each key goes in as it was first added, so its signatures verify anywhere.
+- Signed removals and recovery rotations follow in their original order, since a
+  later operation may be signed by a key an earlier rotation introduced.
+- Anything already reflected in a dataset is skipped, so it is safe to run
+  repeatedly.
+- A dataset whose owner has not enabled participant keys is left alone — the
+  per-keyring decision stays the owner's.
+
+It needs no new control-ledger event, so readers of the ledger are unaffected.
+Owner or admin removals carry no participant signature and are not carried; an
+owner or admin removes a key in each dataset directly. After a rotation lands in
+the control dataset, the owner's existing `synchronizeMembers` call picks up the
+new key in the ledger's member list.
 
 ## API
 
@@ -198,6 +226,8 @@ The same operations exist on both platforms.
 `SharedBackupController` applies them to a dataset: `setParticipantKeysPolicy`,
 `addParticipantKeys`, `removeParticipantKeys`, `rotateWithAdditionalKey`,
 `openRecoveryKey`, `getDatasetParticipantKeys`, and `participantKeyCoverage`.
+`replicateParticipantKeys` carries operations from one dataset to others, and
+`rotateLocalKey` replaces a key you still hold across your datasets.
 
 ## Recovering
 
@@ -211,27 +241,20 @@ The same operations exist on both platforms.
 5. The recovery key stays in place, now attached to the new key, for next time.
 
 A writer or owner completes all of this alone, passing the replacement and
-recovery identities as `recovery`. A viewer cannot write, so a writer carries the
-viewer's signed rotation into each dataset instead.
+recovery identities as `recovery`. A viewer recovers the control dataset alone —
+it is a writer there — and writers' `replicateParticipantKeys` carries the
+rotation into the data it views.
 
 ## Verified across platforms
 
 `fixtures/sharing-v1/participant-keys.json` is a web-written history — policy
 enabled, a viewer's recovery key carried in by the owner, a recovery-authorized
 rotation, and a removal. Android verifies every revision, opens the recovery key
-from its code, and decrypts. `npm run parity:participant-keys:check` runs the
-reverse: Android writes a history and the web package verifies it and opens the
+from its code, and decrypts. `npm run parity:recovery:check` runs the reverse:
+Android writes a history and the web package verifies it and opens the
 Android-sealed recovery key. Both run in `npm run check`.
 
-## Not included
+## Private snapshots
 
-- **Automatic hand-off of a viewer's operations to a writer.** Everything a
-  writer needs to carry a viewer's operation is in place, but moving the signed
-  operation from the viewer to a writer is left to the app for now. Doing it
-  automatically through the control ledger needs a new ledger event type, and a
-  reader before 0.5.0 would then reject the *entire* ledger — breaking Picker
-  enrollment and migrations for every participant, not just recovery. That needs
-  its own versioning design.
-- **Private v1 snapshots.** The v1 snapshot format is frozen for compatibility. A
-  participant wanting recovery for private data can keep it in a single-participant
-  shared dataset, which gains everything above.
+Private data — one user's own backup, not shared — has its own recovery code,
+through snapshot v2. See `docs/snapshot-recovery.md`.

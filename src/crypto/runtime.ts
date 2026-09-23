@@ -21,11 +21,21 @@ export interface CryptoBackend<K> {
   ): Promise<Uint8Array>;
   gzip(plaintext: Uint8Array): Promise<Uint8Array>;
   gunzip(compressed: Uint8Array): Promise<Uint8Array>;
+  /**
+   * SHA-256. Optional so existing backends keep compiling; recovery codes
+   * need it (their check characters are a SHA-256 prefix).
+   */
+  sha256?(data: Uint8Array): Promise<Uint8Array>;
 }
+
+/** The WebCrypto backend, which always provides SHA-256 for recovery codes. */
+export type WebCryptoBackend = CryptoBackend<CryptoKey> & {
+  sha256(data: Uint8Array): Promise<Uint8Array>;
+};
 
 export function createWebCryptoBackend(
   cryptoImplementation: Crypto = globalThis.crypto,
-): CryptoBackend<CryptoKey> {
+): WebCryptoBackend {
   if (!cryptoImplementation?.subtle) {
     throw new SyncKitError(
       "configuration",
@@ -35,6 +45,11 @@ export function createWebCryptoBackend(
   return {
     randomBytes(length) {
       return cryptoImplementation.getRandomValues(new Uint8Array(length));
+    },
+    async sha256(data) {
+      return new Uint8Array(
+        await cryptoImplementation.subtle.digest("SHA-256", copyBuffer(data)),
+      );
     },
     async deriveAesGcmKey(inputKeyMaterial, salt, info) {
       const material = await cryptoImplementation.subtle.importKey(

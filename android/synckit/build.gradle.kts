@@ -61,6 +61,7 @@ tasks.withType<Test>().configureEach {
     System.getenv("PARITY_OUTPUT")?.let { environment("PARITY_OUTPUT", it) }
     System.getenv("PARITY_PEER_REPORT")?.let { environment("PARITY_PEER_REPORT", it) }
     System.getenv("PARTICIPANT_KEYS_OUTPUT")?.let { environment("PARTICIPANT_KEYS_OUTPUT", it) }
+    System.getenv("SNAPSHOT_RECOVERY_OUTPUT")?.let { environment("SNAPSHOT_RECOVERY_OUTPUT", it) }
 }
 
 afterEvaluate {

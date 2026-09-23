@@ -2,6 +2,7 @@ package com.keyneom.synckit.sharing
 
 import com.keyneom.synckit.core.SyncKitError
 import com.keyneom.synckit.core.SyncKitErrorCode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -102,6 +103,25 @@ data class ParticipantKeyRecovery(
 data class DatasetParticipantKeys(
     val enabled: Boolean,
     val keys: List<SharedBackupAdditionalKeyV1>,
+)
+
+/** Operations `replicateParticipantKeys` applied to one dataset. */
+data class ReplicatedParticipantKeys(
+    val additions: Int = 0,
+    val removals: Int = 0,
+    val rotations: Int = 0,
+)
+
+/**
+ * Per-dataset outcome of `replicateParticipantKeys`. [status] is `updated`,
+ * `unchanged`, `policy-disabled` — the owner has not allowed participant keys
+ * there, which is the owner's per-dataset decision — or `failed`.
+ */
+data class ParticipantKeyReplication(
+    val datasetId: String,
+    val status: String,
+    val applied: ReplicatedParticipantKeys,
+    val error: Throwable? = null,
 )
 
 /** Whether a participant key protects one dataset. See `participantKeyCoverage`. */
@@ -415,6 +435,72 @@ class SharedBackupController<T>(
     }
 
     /**
+     * Replace this identity's own key with [replacementIdentity] in each of
+     * [datasetIds], signed by both keys. Only an owner, admin, or writer can
+     * rotate its own key. Its role, acceptance, Drive permission, and any
+     * additional keys move to the replacement, and an owner's rotation leaves
+     * the dataset's trust root unchanged. Results are per dataset, so one
+     * failure does not stop the rest; retry the failed ones with the same pair.
+     */
+    suspend fun rotateLocalKey(
+        replacementIdentity: SharingIdentity,
+        datasetIds: List<String>,
+    ): List<RotatedDatasetResult> = serialized {
+        val currentIdentity = identity()
+        datasetIds.map { datasetId ->
+            try {
+                val stored = readDatasetById(datasetId)
+                val record = requiredRegistry(datasetId)
+                verifyHead(stored, record)
+                val current = sharedBackupParticipant(stored.envelope, currentIdentity.publicKey.keyId)
+                if (current == null || current.role == SharingRole.VIEWER) {
+                    throw SyncKitError(
+                        SyncKitErrorCode.AUTHORIZATION,
+                        "Only a current owner, admin, or writer can rotate its own key.",
+                    )
+                }
+                val selectedCodec = codecFor(datasetId)
+                val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+                    stored.envelope,
+                    selectedCodec,
+                    currentIdentity,
+                    VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+                )
+                val participants = participantInputs(stored.envelope).map {
+                    if (it.publicKey.keyId == currentIdentity.publicKey.keyId) {
+                        it.copy(publicKey = replacementIdentity.publicKey)
+                    } else {
+                        it
+                    }
+                }
+                val next = SharingCrypto.createSharedBackupEnvelopeV1(
+                    value = value,
+                    codec = selectedCodec,
+                    identity = replacementIdentity,
+                    input = CreateSharedBackupEnvelopeInput(
+                        appId = appId,
+                        backupId = datasetId,
+                        participants = participants,
+                        previous = stored.envelope,
+                        keyRotationPreviousIdentity = currentIdentity,
+                    ),
+                    options = cryptoOptions,
+                )
+                val updated = transport.writeDataset(stored, next)
+                val permissions = record.participantPermissionIds?.mapKeys { (keyId, _) ->
+                    if (keyId == currentIdentity.publicKey.keyId) replacementIdentity.publicKey.keyId else keyId
+                }
+                persistHead(updated, record.trustedOwnerKeyId, record.copy(participantPermissionIds = permissions))
+                RotatedDatasetResult(datasetId, "rotated", updated.envelope.revisionId)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                RotatedDatasetResult(datasetId, "failed", error = error)
+            }
+        }
+    }
+
+    /**
      * Allow — or stop allowing — participants to hold additional keys in this
      * dataset, such as recovery keys. Owner or admin only; off by default.
      * Turning it off removes every additional key in the same revision.
@@ -528,11 +614,183 @@ class SharedBackupController<T>(
                         policyEnabled = sharedBackupParticipantKeysEnabled(stored.envelope),
                         protected = sharedBackupAdditionalKeys(stored.envelope).any { it.keyId == keyId },
                     )
+                } catch (error: CancellationException) {
+                    throw error
                 } catch (error: Exception) {
                     ParticipantKeyCoverage(datasetId, policyEnabled = false, protected = false, error = error)
                 }
             }
         }
+
+    /**
+     * Carry participants' own key operations from [sourceDatasetId] into each
+     * of [datasetIds] this identity can write — additions, signed removals, and
+     * recovery rotations, replayed in the order they happened.
+     *
+     * This is how a viewer's keys reach datasets the viewer cannot write. Use
+     * the profile's control dataset as the source: its participants are writers
+     * even where they only view the data, so a viewer applies its own operations
+     * there, and any writer's or admin's app carries them onward — for example
+     * on every sync. Every operation is signed by the participant it concerns,
+     * so neither the carrier nor the source's other writers can forge one.
+     *
+     * Idempotent: operations already reflected in a dataset are skipped. A
+     * dataset whose owner has not enabled participant keys is left alone. After
+     * a rotation lands in the control dataset, the owner's `synchronizeMembers`
+     * picks up the new key.
+     */
+    suspend fun replicateParticipantKeys(
+        sourceDatasetId: String,
+        datasetIds: List<String>,
+    ): List<ParticipantKeyReplication> = serialized {
+        val current = identity()
+        val source = readDatasetById(sourceDatasetId)
+        verifyHead(source, requiredRegistry(sourceDatasetId))
+        val operations = participantKeyOperations(source.envelope)
+        datasetIds.filter { it != sourceDatasetId }.map { datasetId ->
+            var applied = ReplicatedParticipantKeys()
+            try {
+                val stored = readDatasetById(datasetId)
+                verifyHead(stored, requiredRegistry(datasetId))
+                if (!sharedBackupParticipantKeysEnabled(stored.envelope)) {
+                    return@map ParticipantKeyReplication(datasetId, "policy-disabled", applied)
+                }
+                val batches = planParticipantKeyReplication(stored.envelope, operations)
+                for (changes in batches) {
+                    rewriteParticipantKeys(datasetId, current, current, changes)
+                    applied = ReplicatedParticipantKeys(
+                        additions = applied.additions + changes.add.size,
+                        removals = applied.removals + changes.remove.size,
+                        rotations = applied.rotations + if (changes.rotation != null) 1 else 0,
+                    )
+                }
+                ParticipantKeyReplication(datasetId, if (batches.isEmpty()) "unchanged" else "updated", applied)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                ParticipantKeyReplication(datasetId, "failed", applied, error)
+            }
+        }
+    }
+
+    private sealed interface ParticipantKeyOperation {
+        data class Add(val key: SharedBackupAdditionalKeyV1) : ParticipantKeyOperation
+        data class Remove(val removal: SharedBackupKeyRemovalV1) : ParticipantKeyOperation
+        data class Rotate(val rotation: SharedBackupAuthorizedKeyRotationV1) : ParticipantKeyOperation
+    }
+
+    /**
+     * Participants' own key operations in a dataset's history, in order: each
+     * key as it was first added (so its signatures verify anywhere), every
+     * signed removal, and every recovery rotation. Owner or admin removals carry
+     * no participant signature and are not portable.
+     */
+    private fun participantKeyOperations(envelope: SharedBackupEnvelopeV1): List<ParticipantKeyOperation> {
+        val operations = mutableListOf<ParticipantKeyOperation>()
+        var previousKeyIds = emptySet<String>()
+        for (entry in envelope.accessControl) {
+            entry.removedAdditionalKeys.orEmpty().forEach { operations += ParticipantKeyOperation.Remove(it) }
+            entry.additionalKeys.orEmpty()
+                .filter { it.keyId !in previousKeyIds }
+                .forEach { operations += ParticipantKeyOperation.Add(it) }
+            val rotation = entry.keyRotation
+            val authorizedByKeyId = rotation?.authorizedByKeyId
+            val authorization = rotation?.authorization
+            if (rotation != null && authorizedByKeyId != null && authorization != null) {
+                entry.participants.find { it.keyId == rotation.toKeyId }?.let { to ->
+                    operations += ParticipantKeyOperation.Rotate(
+                        SharedBackupAuthorizedKeyRotationV1(
+                            fromKeyId = rotation.fromKeyId,
+                            to = SharingPublicKeyV1(
+                                keyId = to.keyId,
+                                encryptionAlgorithm = to.encryptionAlgorithm,
+                                encryptionPublicKey = to.encryptionPublicKey,
+                                signatureAlgorithm = to.signatureAlgorithm,
+                                signingPublicKey = to.signingPublicKey,
+                            ),
+                            newKeyProof = rotation.newKeyProof,
+                            authorizedByKeyId = authorizedByKeyId,
+                            authorization = authorization,
+                        ),
+                    )
+                }
+            }
+            previousKeyIds = entry.additionalKeys.orEmpty().map { it.keyId }.toSet()
+        }
+        return operations
+    }
+
+    /**
+     * The writes that bring [target] up to date with [operations], skipping any
+     * already reflected there or not applicable to it. Additions and removals
+     * batch together; each rotation is its own write, in order, because later
+     * operations may be signed by the key it introduces.
+     */
+    private fun planParticipantKeyReplication(
+        target: SharedBackupEnvelopeV1,
+        operations: List<ParticipantKeyOperation>,
+    ): List<SharedBackupParticipantKeyChanges> {
+        val participants = sharedBackupParticipants(target).map { it.keyId }.toMutableSet()
+        val keys = sharedBackupAdditionalKeys(target).associateBy { it.keyId }.toMutableMap()
+        val revoked = mutableSetOf<String>()
+        var previous = emptyList<SharedBackupAdditionalKeyV1>()
+        for (entry in target.accessControl) {
+            val currentIds = entry.additionalKeys.orEmpty().map { it.keyId }.toSet()
+            previous.filter { it.keyId !in currentIds }.forEach { revoked += it.addition }
+            previous = entry.additionalKeys.orEmpty()
+        }
+        val batches = mutableListOf<SharedBackupParticipantKeyChanges>()
+        val additions = mutableListOf<SharedBackupAdditionalKeyV1>()
+        val removals = mutableListOf<ParticipantKeyRemoval>()
+        fun flush() {
+            if (additions.isNotEmpty() || removals.isNotEmpty()) {
+                batches += SharedBackupParticipantKeyChanges(add = additions.toList(), remove = removals.toList())
+            }
+            additions.clear()
+            removals.clear()
+        }
+        for (operation in operations) {
+            when (operation) {
+                is ParticipantKeyOperation.Add -> {
+                    val key = operation.key
+                    if (key.principalKeyId in participants && key.keyId !in participants &&
+                        key.keyId !in keys && key.addition !in revoked
+                    ) {
+                        additions += key
+                        keys[key.keyId] = key
+                    }
+                }
+                is ParticipantKeyOperation.Remove -> {
+                    val key = keys[operation.removal.keyId] ?: continue
+                    // Added and removed within one batch: the net effect is nothing.
+                    if (!additions.removeAll { it.keyId == key.keyId }) {
+                        removals += ParticipantKeyRemoval.Signed(operation.removal)
+                    }
+                    keys.remove(key.keyId)
+                    revoked += key.addition
+                }
+                is ParticipantKeyOperation.Rotate -> {
+                    val rotation = operation.rotation
+                    if (rotation.fromKeyId in participants && rotation.to.keyId !in participants &&
+                        rotation.to.keyId !in keys &&
+                        keys[rotation.authorizedByKeyId]?.principalKeyId == rotation.fromKeyId
+                    ) {
+                        flush()
+                        batches += SharedBackupParticipantKeyChanges(rotation = rotation)
+                        participants -= rotation.fromKeyId
+                        participants += rotation.to.keyId
+                        for ((keyId, key) in keys.toMap()) {
+                            if (key.principalKeyId == rotation.fromKeyId) {
+                                keys[keyId] = key.copy(principalKeyId = rotation.to.keyId)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        flush()
+        return batches
+    }
 
     private suspend fun rewriteParticipantKeys(
         datasetId: String,

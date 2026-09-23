@@ -7,7 +7,15 @@
  * `rotateWithAdditionalKey`.
  */
 import { SyncKitError, asSyncKitError } from "../core/errors.js";
-import { base64UrlToBytes, bytesToBase64Url, canonicalAad } from "../crypto/index.js";
+import {
+  base64UrlToBytes,
+  bytesToBase64Url,
+  canonicalAad,
+  generateRecoveryCode,
+  isRecoveryCodeWellFormed,
+  parseRecoveryCode,
+  type RecoveryCodeCrypto,
+} from "../crypto/index.js";
 import { copyBuffer } from "../crypto/runtime.js";
 import {
   sharedBackupAdditionalKeys,
@@ -154,10 +162,6 @@ export async function createAuthorizedKeyRotationV1(
 
 // --- Recovery codes -------------------------------------------------------
 
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-const SECRET_BYTES = 16;
-const SECRET_CHARACTERS = 26;
-const CHECK_CHARACTERS = 2;
 const RECOVERY_KDF_INFO = "sync-kit participant recovery key v1";
 const SEALED_KEY_KIND = "sync-kit-sealed-participant-key";
 
@@ -169,19 +173,7 @@ const SEALED_KEY_KIND = "sync-kit-sealed-participant-key";
 export async function generateSharingRecoveryCode(
   options: ParticipantKeyOptions = {},
 ): Promise<string> {
-  const cryptoImplementation = webCrypto(options);
-  const secret = cryptoImplementation.getRandomValues(new Uint8Array(SECRET_BYTES));
-  try {
-    const characters =
-      encodeSecret(secret) + (await checkCharacters(secret, cryptoImplementation));
-    const groups: string[] = [];
-    for (let index = 0; index < characters.length; index += 4) {
-      groups.push(characters.slice(index, index + 4));
-    }
-    return groups.join("-");
-  } finally {
-    secret.fill(0);
-  }
+  return generateRecoveryCode(codeCrypto(options));
 }
 
 /**
@@ -192,12 +184,7 @@ export async function isSharingRecoveryCodeWellFormed(
   code: string,
   options: ParticipantKeyOptions = {},
 ): Promise<boolean> {
-  try {
-    (await parseSharingRecoveryCode(code, options)).fill(0);
-    return true;
-  } catch {
-    return false;
-  }
+  return isRecoveryCodeWellFormed(code, codeCrypto(options));
 }
 
 /**
@@ -209,30 +196,7 @@ export async function parseSharingRecoveryCode(
   code: string,
   options: ParticipantKeyOptions = {},
 ): Promise<Uint8Array> {
-  const cryptoImplementation = webCrypto(options);
-  const normalized = code
-    .toUpperCase()
-    .replace(/[\s-]/g, "")
-    .replace(/[IL]/g, "1")
-    .replace(/O/g, "0");
-  if (
-    normalized.length !== SECRET_CHARACTERS + CHECK_CHARACTERS ||
-    !/^[0-9A-HJKMNP-TV-Z]+$/.test(normalized)
-  ) {
-    throw new SyncKitError("key", "This is not a recovery code.");
-  }
-  const secret = decodeSecret(normalized.slice(0, SECRET_CHARACTERS));
-  if (
-    (await checkCharacters(secret, cryptoImplementation)) !==
-    normalized.slice(SECRET_CHARACTERS)
-  ) {
-    secret.fill(0);
-    throw new SyncKitError(
-      "key",
-      "This recovery code has a typo: it does not match its check characters.",
-    );
-  }
-  return secret;
+  return parseRecoveryCode(code, codeCrypto(options));
 }
 
 /**
@@ -401,55 +365,16 @@ async function recoveryWrappingKey(
   );
 }
 
-/** 128 bits → 26 characters; the final 2 bits are zero padding. */
-function encodeSecret(secret: Uint8Array): string {
-  let output = "";
-  let buffer = 0;
-  let bits = 0;
-  for (const byte of secret) {
-    buffer = (buffer << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      output += CROCKFORD.charAt((buffer >>> (bits - 5)) & 31);
-      bits -= 5;
-    }
-    buffer &= (1 << bits) - 1;
-  }
-  if (bits > 0) output += CROCKFORD.charAt((buffer << (5 - bits)) & 31);
-  return output;
-}
 
-function decodeSecret(characters: string): Uint8Array {
-  const secret = new Uint8Array(SECRET_BYTES);
-  let buffer = 0;
-  let bits = 0;
-  let index = 0;
-  for (const character of characters) {
-    buffer = (buffer << 5) | CROCKFORD.indexOf(character);
-    bits += 5;
-    if (bits >= 8) {
-      secret[index++] = (buffer >>> (bits - 8)) & 0xff;
-      bits -= 8;
-    }
-    buffer &= (1 << bits) - 1;
-  }
-  if (index !== SECRET_BYTES || buffer !== 0) {
-    secret.fill(0);
-    throw new SyncKitError("key", "This is not a recovery code.");
-  }
-  return secret;
-}
 
-/** Two characters (10 bits) of SHA-256 over the secret, to catch typos. */
-async function checkCharacters(
-  secret: Uint8Array,
-  cryptoImplementation: Crypto,
-): Promise<string> {
-  const digest = new Uint8Array(
-    await cryptoImplementation.subtle.digest("SHA-256", copyBuffer(secret)),
-  );
-  const check = (((digest[0] ?? 0) << 8) | (digest[1] ?? 0)) >>> 6;
-  return CROCKFORD.charAt((check >>> 5) & 31) + CROCKFORD.charAt(check & 31);
+
+function codeCrypto(options: ParticipantKeyOptions): RecoveryCodeCrypto {
+  const implementation = webCrypto(options);
+  return {
+    randomBytes: (length) => implementation.getRandomValues(new Uint8Array(length)),
+    sha256: async (data) =>
+      new Uint8Array(await implementation.subtle.digest("SHA-256", copyBuffer(data))),
+  };
 }
 
 function webCrypto(options: ParticipantKeyOptions): Crypto {

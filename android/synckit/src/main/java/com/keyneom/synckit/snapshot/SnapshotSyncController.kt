@@ -13,6 +13,7 @@ import com.keyneom.synckit.core.SyncKitErrorCode
 import com.keyneom.synckit.core.SyncOutcome
 import com.keyneom.synckit.core.SyncReason
 import com.keyneom.synckit.core.SyncResult
+import com.keyneom.synckit.crypto.SyncEnvelopeV1
 import com.keyneom.synckit.crypto.V1EnvelopeCrypto
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.sync.Mutex
@@ -93,6 +94,67 @@ class SnapshotSyncController<T>(
             options.cloudStore.delete(options.appId, existing.fileId, authorization)
         }
         lock()
+    }
+
+    /**
+     * Adds or replaces the snapshot's recovery code — or removes it, with null.
+     * Unlocks with the passkey. Upgrades a v1 snapshot to v2, which devices
+     * whose profile does not read v2 cannot open; see docs/snapshot-recovery.md.
+     * Generate codes with `RecoveryCodes.generate`; never accept a chosen one.
+     */
+    suspend fun setRecoveryCode(recoveryCode: String?) = runExclusive {
+        rewriteNow { envelope, key -> options.envelopeCrypto.setRecoveryCode(envelope, key, recoveryCode) }
+    }
+
+    /**
+     * Opens the snapshot with its recovery code when the passkey is lost,
+     * registers a new passkey, merges with local state, and locks the snapshot
+     * under the new passkey. The recovery code keeps working afterwards.
+     */
+    suspend fun recover(recoveryCode: String): SyncResult<T> = runExclusive {
+        val authorization = options.authorizationProvider.authorize()
+        val existing = findRequired(authorization)
+        val remote = options.envelopeCrypto.decryptWithRecoveryCode(existing.envelope, recoveryCode)
+        val merged = options.codec.merge(options.readLocal(), remote)
+        options.keyProvider.clear()
+        val created = options.keyProvider.create(options.activity(), options.appId)
+        try {
+            val envelope = options.envelopeCrypto.relockWithRecoveryCode(
+                existing.envelope,
+                recoveryCode,
+                created,
+                merged,
+            )
+            options.cloudStore.write(options.appId, envelope, authorization, existing.fileId)
+            options.applyMerged(merged)
+            SyncResult(
+                operation = SnapshotOperation.RECOVER,
+                outcome = SyncOutcome.RECOVERED,
+                fileId = existing.fileId,
+                syncedAt = envelope.updatedAt,
+                value = merged,
+            )
+        } finally {
+            created.key.fill(0)
+        }
+    }
+
+    /** Explicit, reversible version change. Moving to 1 removes any recovery code. */
+    suspend fun migrateVersion(version: Int) = runExclusive {
+        rewriteNow { envelope, key -> options.envelopeCrypto.migrate(envelope, key, version) }
+    }
+
+    /** Rewrites the snapshot in place with a passkey-unlocked transform. */
+    private suspend fun rewriteNow(transform: (SyncEnvelopeV1, ByteArray) -> SyncEnvelopeV1) {
+        val authorization = options.authorizationProvider.authorize()
+        val existing = findRequired(authorization)
+        val key = options.keyProvider.unlock(options.activity(), existing.envelope)
+        try {
+            val envelope = transform(existing.envelope, key)
+            options.cloudStore.write(options.appId, envelope, authorization, existing.fileId)
+        } finally {
+            key.fill(0)
+        }
     }
 
     fun lock() {

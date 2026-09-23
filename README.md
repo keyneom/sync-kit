@@ -155,7 +155,9 @@ Available exports:
 - `/sharing/participant-keys` — opt-in additional keys per participant and
   generated recovery codes, so a lost passkey is recoverable — including for data
   other people share. Off for each dataset until an owner or admin enables it;
-  see [participant keys](docs/participant-keys.md)
+  see [participant keys](docs/participant-keys.md). Private snapshots get their
+  own recovery code through the opt-in snapshot v2; see
+  [snapshot recovery](docs/snapshot-recovery.md)
 - `/sharing/account-binding` — backendless Google ID-token and WebAuthn
   challenge binding, signature verification, and account provenance
 - `/keys/web-passkey` — WebAuthn PRF keys with exact credential selection,
@@ -301,8 +303,11 @@ The Drive snapshot wrapper rejects the wrong `appId` before making a request.
 WebAuthn unlock requests include only the envelope's exact credential ID and
 reject the wrong RP ID before opening passkey UI.
 
-Do not change EasyBC's writer to v2 until Android can read v2. V2 envelopes and
-desktop-specific authorization/key adapters remain deferred.
+Snapshot v2 — the format behind private recovery codes — is opt-in per profile
+through `readVersions` and `writeVersion`, and v1 stays exactly as it is. Ship
+`readVersions: [1, 2]` to every device before any device writes v2; see
+[snapshot recovery](docs/snapshot-recovery.md). Desktop-specific
+authorization/key adapters remain deferred.
 
 ## Security boundary
 

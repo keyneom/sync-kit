@@ -3,6 +3,7 @@ import type {
   CloudStore,
   EnvelopeCrypto,
   KeyProvider,
+  SnapshotRecoveryCrypto,
   SyncCodec,
   SyncReason,
   SyncResult,
@@ -27,6 +28,21 @@ export interface SnapshotSyncController<T> {
   sync(reason: SyncReason): Promise<SyncResult<T>>;
   reset(): Promise<SyncResult<T>>;
   delete(): Promise<void>;
+  /**
+   * Adds or replaces the snapshot's recovery code — or removes it, with null.
+   * Unlocks with the passkey. Upgrades a v1 snapshot to v2, which devices
+   * whose profile does not read v2 cannot open; see docs/snapshot-recovery.md.
+   * Generate codes with `generateRecoveryCode`; never accept a chosen one.
+   */
+  setRecoveryCode(recoveryCode: string | null): Promise<void>;
+  /**
+   * Opens the snapshot with its recovery code when the passkey is lost,
+   * registers a new passkey, merges with local state, and locks the snapshot
+   * under the new passkey. The recovery code keeps working afterwards.
+   */
+  recover(recoveryCode: string): Promise<SyncResult<T>>;
+  /** Explicit, reversible version change. Moving to 1 removes any recovery code. */
+  migrateVersion(version: 1 | 2): Promise<void>;
   lock(): void;
   operationInProgress(): boolean;
 }
@@ -170,6 +186,76 @@ export function createSnapshotSync<T, E, K, M, A>(
     };
   }
 
+  function recoveryCrypto(): SnapshotRecoveryCrypto<T, E, K, M> {
+    const crypto = options.envelopeCrypto as Partial<SnapshotRecoveryCrypto<T, E, K, M>>;
+    if (
+      !crypto.setRecoveryCode ||
+      !crypto.decryptWithRecoveryCode ||
+      !crypto.relockWithRecoveryCode ||
+      !crypto.migrate
+    ) {
+      throw new SyncKitError(
+        "configuration",
+        "This envelope crypto does not support recovery codes; use createV1EnvelopeCrypto.",
+      );
+    }
+    return crypto as SnapshotRecoveryCrypto<T, E, K, M>;
+  }
+
+  /** Rewrites the snapshot in place with a passkey-unlocked transform. */
+  async function rewriteNow(
+    transform: (envelope: E, key: K) => Promise<E>,
+  ): Promise<void> {
+    const authorization = await options.authorizationProvider.authorize();
+    const existing = await findRequired(authorization);
+    const key = await options.keyProvider.unlock(existing.envelope);
+    const envelope = await transform(existing.envelope, key);
+    await options.cloudStore.write(options.appId, envelope, authorization, existing.fileId);
+  }
+
+  async function recoverNow(recoveryCode: string): Promise<SyncResult<T>> {
+    const crypto = recoveryCrypto();
+    const authorization = await options.authorizationProvider.authorize();
+    const existing = await findRequired(authorization);
+    const remote = await crypto.decryptWithRecoveryCode(existing.envelope, recoveryCode);
+    const merged = options.codec.merge(await options.readLocal(), remote);
+    options.keyProvider.clear();
+    const created = await options.keyProvider.create({ appId: options.appId });
+    const envelope = await crypto.relockWithRecoveryCode(
+      existing.envelope,
+      recoveryCode,
+      created,
+      merged,
+    );
+    await options.cloudStore.write(options.appId, envelope, authorization, existing.fileId);
+    await options.applyMerged(merged);
+    return {
+      operation: "recover",
+      outcome: "recovered",
+      fileId: existing.fileId,
+      syncedAt: options.envelopeUpdatedAt(envelope),
+      value: merged,
+    };
+  }
+
+  function setRecoveryCode(recoveryCode: string | null): Promise<void> {
+    return runExclusive(() => {
+      const crypto = recoveryCrypto();
+      return rewriteNow((envelope, key) => crypto.setRecoveryCode(envelope, key, recoveryCode));
+    });
+  }
+
+  function recover(recoveryCode: string): Promise<SyncResult<T>> {
+    return runExclusive(() => recoverNow(recoveryCode));
+  }
+
+  function migrateVersion(version: 1 | 2): Promise<void> {
+    return runExclusive(() => {
+      const crypto = recoveryCrypto();
+      return rewriteNow((envelope, key) => crypto.migrate(envelope, key, version));
+    });
+  }
+
   function setup(): Promise<SyncResult<T>> {
     return runExclusive(setupNow);
   }
@@ -239,6 +325,9 @@ export function createSnapshotSync<T, E, K, M, A>(
     sync,
     reset,
     delete: deleteSnapshot,
+    setRecoveryCode,
+    recover,
+    migrateVersion,
     lock,
     operationInProgress,
   };

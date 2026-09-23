@@ -419,7 +419,7 @@ class ParticipantKeysTest {
     // --- Cross-platform: Android writes it, the web package reads it ----------
 
     /**
-     * Writes an Android-built history for scripts/check-participant-keys-parity.sh,
+     * Writes an Android-built history for scripts/check-recovery-parity.sh,
      * which verifies it with the web package and opens the Android-sealed recovery
      * key there. A no-op unless PARTICIPANT_KEYS_OUTPUT is set.
      */

@@ -152,6 +152,19 @@ export type RotatedDatasetResult = {
   error?: unknown;
 };
 
+/** Per-dataset outcome of `replicateParticipantKeys`. */
+export type ParticipantKeyReplication = {
+  datasetId: string;
+  /**
+   * `updated`: operations were applied. `unchanged`: nothing to apply.
+   * `policy-disabled`: the dataset's owner has not allowed participant keys,
+   * so nothing is applied — that is the owner's per-dataset decision.
+   */
+  status: "updated" | "unchanged" | "policy-disabled" | "failed";
+  applied: { additions: number; removals: number; rotations: number };
+  error?: unknown;
+};
+
 /** Whether a participant key protects one dataset. See `participantKeyCoverage`. */
 export type ParticipantKeyCoverage = {
   datasetId: string;
@@ -678,6 +691,63 @@ export class SharedBackupController<T> {
         }
       }
       return coverage;
+    });
+  }
+
+  /**
+   * Carry participants' own key operations from `sourceDatasetId` into each of
+   * `datasetIds` this identity can write — additions, signed removals, and
+   * recovery rotations, replayed in the order they happened.
+   *
+   * This is how a viewer's keys reach datasets the viewer cannot write. Use the
+   * profile's control dataset as the source: its participants are writers even
+   * where they only view the data, so a viewer applies its own operations
+   * there, and any writer's or admin's app carries them onward — for example on
+   * every sync. Every operation is signed by the participant it concerns, so
+   * nothing here can be forged by the carrier or the source's other writers.
+   *
+   * Idempotent: operations already reflected in a dataset are skipped, so it
+   * is safe to run repeatedly. A dataset whose owner has not enabled
+   * participant keys is left alone. After a rotation lands in the control
+   * dataset, the owner's `synchronizeMembers` picks up the new key.
+   */
+  replicateParticipantKeys(input: {
+    sourceDatasetId: string;
+    datasetIds: string[];
+  }): Promise<ParticipantKeyReplication[]> {
+    return this.serialized(async () => {
+      const identity = await this.options.identity();
+      const source = await this.readDatasetById(input.sourceDatasetId);
+      await this.verifyHead(source, await this.requiredRegistry(input.sourceDatasetId));
+      const operations = participantKeyOperations(source.envelope);
+      const results: ParticipantKeyReplication[] = [];
+      for (const datasetId of input.datasetIds) {
+        if (datasetId === input.sourceDatasetId) continue;
+        const applied = { additions: 0, removals: 0, rotations: 0 };
+        try {
+          const stored = await this.readDatasetById(datasetId);
+          await this.verifyHead(stored, await this.requiredRegistry(datasetId));
+          if (!sharedBackupParticipantKeysEnabled(stored.envelope)) {
+            results.push({ datasetId, status: "policy-disabled", applied });
+            continue;
+          }
+          const batches = planParticipantKeyReplication(stored.envelope, operations);
+          for (const changes of batches) {
+            await this.rewriteParticipantKeys(datasetId, identity, identity, changes);
+            applied.additions += changes.add?.length ?? 0;
+            applied.removals += changes.remove?.length ?? 0;
+            applied.rotations += changes.rotation ? 1 : 0;
+          }
+          results.push({
+            datasetId,
+            status: batches.length > 0 ? "updated" : "unchanged",
+            applied,
+          });
+        } catch (error) {
+          results.push({ datasetId, status: "failed", applied, error });
+        }
+      }
+      return results;
     });
   }
 
@@ -2424,6 +2494,132 @@ function participantInputs(
     role: participant.role,
     ...(participant.accepted ? { accepted: participant.accepted } : {}),
   }));
+}
+
+type ParticipantKeyOperation =
+  | { kind: "add"; key: SharedBackupAdditionalKeyV1 }
+  | { kind: "remove"; removal: SharedBackupKeyRemovalV1 }
+  | { kind: "rotate"; rotation: SharedBackupAuthorizedKeyRotationV1 };
+
+/**
+ * Participants' own key operations in a dataset's history, in order: each key
+ * as it was first added (so its signatures verify anywhere), every signed
+ * removal, and every recovery rotation. Owner or admin removals carry no
+ * participant signature and are not portable.
+ */
+function participantKeyOperations(envelope: SharedBackupEnvelopeV1): ParticipantKeyOperation[] {
+  const operations: ParticipantKeyOperation[] = [];
+  let previousKeyIds = new Set<string>();
+  for (const entry of envelope.accessControl) {
+    for (const removal of entry.removedAdditionalKeys ?? []) {
+      operations.push({ kind: "remove", removal });
+    }
+    for (const key of entry.additionalKeys ?? []) {
+      if (!previousKeyIds.has(key.keyId)) operations.push({ kind: "add", key });
+    }
+    const rotation = entry.keyRotation;
+    if (rotation?.authorizedByKeyId && rotation.authorization) {
+      const to = entry.participants.find((participant) => participant.keyId === rotation.toKeyId);
+      if (to) {
+        operations.push({
+          kind: "rotate",
+          rotation: {
+            fromKeyId: rotation.fromKeyId,
+            to: {
+              keyId: to.keyId,
+              encryptionAlgorithm: to.encryptionAlgorithm,
+              encryptionPublicKey: to.encryptionPublicKey,
+              signatureAlgorithm: to.signatureAlgorithm,
+              signingPublicKey: to.signingPublicKey,
+            },
+            newKeyProof: rotation.newKeyProof,
+            authorizedByKeyId: rotation.authorizedByKeyId,
+            authorization: rotation.authorization,
+          },
+        });
+      }
+    }
+    previousKeyIds = new Set((entry.additionalKeys ?? []).map((key) => key.keyId));
+  }
+  return operations;
+}
+
+/**
+ * The writes that bring `target` up to date with `operations`, skipping any
+ * already reflected there or not applicable to it. Additions and removals
+ * batch together; each rotation is its own write, in order, because later
+ * operations may be signed by the key it introduces.
+ */
+function planParticipantKeyReplication(
+  target: SharedBackupEnvelopeV1,
+  operations: ParticipantKeyOperation[],
+): SharedBackupParticipantKeyChanges[] {
+  const participants = new Set(sharedBackupParticipants(target).map((participant) => participant.keyId));
+  const keys = new Map(sharedBackupAdditionalKeys(target).map((key) => [key.keyId, key]));
+  const revoked = new Set<string>();
+  let previous: SharedBackupAdditionalKeyV1[] = [];
+  for (const entry of target.accessControl) {
+    const current = new Set((entry.additionalKeys ?? []).map((key) => key.keyId));
+    for (const key of previous) if (!current.has(key.keyId)) revoked.add(key.addition);
+    previous = entry.additionalKeys ?? [];
+  }
+  const batches: SharedBackupParticipantKeyChanges[] = [];
+  let additions: SharedBackupAdditionalKeyV1[] = [];
+  let removals: SharedBackupKeyRemovalV1[] = [];
+  const flush = (): void => {
+    if (additions.length > 0 || removals.length > 0) {
+      batches.push({
+        ...(additions.length > 0 ? { add: additions } : {}),
+        ...(removals.length > 0 ? { remove: removals } : {}),
+      });
+    }
+    additions = [];
+    removals = [];
+  };
+  for (const operation of operations) {
+    if (operation.kind === "add") {
+      const key = operation.key;
+      if (
+        participants.has(key.principalKeyId) &&
+        !participants.has(key.keyId) &&
+        !keys.has(key.keyId) &&
+        !revoked.has(key.addition)
+      ) {
+        additions.push(key);
+        keys.set(key.keyId, key);
+      }
+    } else if (operation.kind === "remove") {
+      const key = keys.get(operation.removal.keyId);
+      if (!key) continue;
+      const pending = additions.findIndex((candidate) => candidate.keyId === key.keyId);
+      // Added and removed within one batch: the net effect is nothing.
+      if (pending >= 0) additions.splice(pending, 1);
+      else removals.push(operation.removal);
+      keys.delete(key.keyId);
+      revoked.add(key.addition);
+    } else {
+      const { rotation } = operation;
+      const authorizer = keys.get(rotation.authorizedByKeyId);
+      if (
+        participants.has(rotation.fromKeyId) &&
+        !participants.has(rotation.to.keyId) &&
+        !keys.has(rotation.to.keyId) &&
+        authorizer?.principalKeyId === rotation.fromKeyId
+      ) {
+        flush();
+        batches.push({ rotation });
+        participants.delete(rotation.fromKeyId);
+        participants.add(rotation.to.keyId);
+        for (const [keyId, key] of keys) {
+          if (key.principalKeyId === rotation.fromKeyId) {
+            keys.set(keyId, { ...key, principalKeyId: rotation.to.keyId });
+          }
+        }
+      }
+    }
+  }
+  flush();
+  return batches;
 }
 
 function result<T>(

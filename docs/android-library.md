@@ -121,8 +121,9 @@ See [consumer-responsibilities.md](./consumer-responsibilities.md) and
 
 | Type | Role |
 | --- | --- |
-| `V1EnvelopeCrypto` | AES-GCM, HKDF, gzip-if-smaller |
-| `SnapshotSyncController` | setup / enable / sync / reset / delete |
+| `V1EnvelopeCrypto` | AES-GCM, HKDF, gzip-if-smaller; opt-in snapshot v2 |
+| `SnapshotSyncController` | setup / enable / sync / reset / delete; `setRecoveryCode` / `recover` / `migrateVersion` — see [snapshot recovery](./snapshot-recovery.md) |
+| `crypto.RecoveryCodes` | Generate and check recovery codes (shared with participant keys) |
 | `AndroidPasskeyKeyProvider` | Credential Manager PRF |
 | `GoogleDriveAppDataStore` | legacy `appDataFolder` store |
 
@@ -141,6 +142,10 @@ See [consumer-responsibilities.md](./consumer-responsibilities.md) and
 | `sharing.SharingAccountBindings` | TS-compatible challenge, Credential Manager assertion, WebAuthn/JWT verification |
 | `sharing.CachingGoogleJwksProvider` | bounded Google JWKS cache with unknown-`kid` refresh |
 | `sharing.ParticipantKeys` | Opt-in additional keys and recovery codes — see [participant keys](./participant-keys.md) |
+
+`SharedBackupController` also carries participant-key operations between
+datasets (`replicateParticipantKeys`) and replaces a key you still hold across
+your datasets (`rotateLocalKey`, matching the web controller).
 
 ### Application-owned
 

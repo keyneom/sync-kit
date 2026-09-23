@@ -136,7 +136,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run parity:sharing:check && npm run parity:participant-keys:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run parity:sharing:check && npm run parity:recovery:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "fixtures": "node scripts/generate-v1-fixtures.mjs",
     "fixtures:identity": "npm run build && node scripts/generate-protected-identity-fixture.mjs",
     "fixtures:link-exchange": "npm run build && node scripts/generate-link-exchange-fixture.mjs",
@@ -151,7 +151,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "fixtures:participant-keys": "npm run build && node scripts/generate-participant-keys-fixture.mjs",
-    "parity:participant-keys:check": "bash scripts/check-participant-keys-parity.sh"
+    "fixtures:snapshot-recovery": "npm run build && node scripts/generate-snapshot-recovery-fixture.mjs",
+    "parity:recovery:check": "bash scripts/check-recovery-parity.sh"
   },
   "engines": {
     "node": ">=20"

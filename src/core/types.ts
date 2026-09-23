@@ -1,5 +1,5 @@
 export type SyncReason = "startup" | "foreground" | "change" | "manual";
-export type SnapshotOperation = "setup" | "enable" | "sync" | "reset";
+export type SnapshotOperation = "setup" | "enable" | "sync" | "reset" | "recover";
 
 export type Authorization = {
   accessToken: string;
@@ -35,6 +35,27 @@ export type CreatedKey<M, K> = {
   metadata: M;
   key: K;
 };
+
+/**
+ * Snapshot recovery codes and explicit version migration, implemented by
+ * `createV1EnvelopeCrypto`. A snapshot controller exposes `setRecoveryCode`,
+ * `recover`, and `migrateVersion` when its envelope crypto has these. See
+ * docs/snapshot-recovery.md.
+ */
+export interface SnapshotRecoveryCrypto<T, E, K, M> {
+  /** Adds, replaces, or (with null) removes the recovery lock. Upgrades a v1 snapshot to v2. */
+  setRecoveryCode(envelope: E, key: K, recoveryCode: string | null): Promise<E>;
+  decryptWithRecoveryCode(envelope: E, recoveryCode: string): Promise<T>;
+  /** Opens with the recovery code and locks `value` under a new passkey, keeping the recovery lock. */
+  relockWithRecoveryCode(
+    envelope: E,
+    recoveryCode: string,
+    replacement: CreatedKey<M, K>,
+    value: T,
+  ): Promise<E>;
+  /** Explicit, reversible version change. Moving to 1 removes any recovery lock. */
+  migrate(envelope: E, key: K, version: 1 | 2): Promise<E>;
+}
 
 export interface KeyProvider<E, K, M> {
   /**
@@ -76,6 +97,7 @@ export type SyncOutcome =
   | "merged"
   | "unchanged"
   | "reset"
+  | "recovered"
   | "coalesced";
 
 export type SyncResult<T> = {

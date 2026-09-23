@@ -314,9 +314,12 @@ path remain open; the built-in provider flow must not claim Workspace support.
 
 ## Deferred: v2 and desktop adapters
 
-- [ ] Add v2 readers with canonical authenticated headers and explicit `appId`.
-- [ ] Keep v1 readers indefinitely.
-- [ ] Do not auto-rewrite v1 during ordinary sync.
+- [x] Add v2 readers with canonical authenticated headers and explicit `appId`
+      (0.5.0, web and Android; opt-in via `readVersions`/`writeVersion`,
+      `docs/snapshot-recovery.md`).
+- [x] Keep v1 readers indefinitely (v1 parity check unchanged).
+- [x] Do not auto-rewrite v1 during ordinary sync (only `setRecoveryCode` and
+      `migrateVersion` change a snapshot's version).
 - [ ] Change writer versions only after every active consumer can read v2.
 - [ ] Design Keynote system-browser OAuth, desktop keys, and manifest/blob sync
       before implementing desktop provider adapters.
@@ -402,9 +405,14 @@ path remain open; the built-in provider flow must not claim Workspace support.
       per-dataset policy, participant-signed additions, removals, and
       recovery-authorized rotations; recovery keys sealed inside each data file.
       Web-to-Android fixture and Android-to-web parity check in `npm run check`.
-- [ ] Carry a viewer's signed participant-key operations to a writer
-      automatically. Needs its own versioning: a new control-ledger event would
-      make pre-0.5.0 readers reject the whole ledger.
+- [x] Carry a viewer's signed participant-key operations to a writer
+      automatically (0.5.0): the viewer applies them to the control dataset,
+      where it is a writer, and `replicateParticipantKeys` replays them into
+      data datasets. No control-ledger event, so older ledger readers are
+      unaffected.
+- [x] Private snapshot recovery codes through opt-in snapshot v2 (0.5.0), with a
+      web-to-Android fixture and Android-to-web check.
+- [x] Android `SharedBackupController.rotateLocalKey`, matching web (0.5.0).
 - [ ] Add a worked two-platform passkey example: a browser seals an envelope and
       a phone opens the same one, with RP ID, asset link, and PRF input lined up
       (from keyneom/sync-kit#6). EasyBC is that example; it is not written down.

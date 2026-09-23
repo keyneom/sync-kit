@@ -16,6 +16,7 @@ enum class SnapshotOperation {
     ENABLE,
     SYNC,
     RESET,
+    RECOVER,
 }
 
 enum class SyncOutcome {
@@ -23,6 +24,7 @@ enum class SyncOutcome {
     MERGED,
     UNCHANGED,
     RESET,
+    RECOVERED,
     COALESCED,
 }
 
