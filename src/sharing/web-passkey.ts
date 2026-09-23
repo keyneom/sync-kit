@@ -237,6 +237,90 @@ export async function createProtectedSharingIdentityV1(
   const packed = packPrivateKeys(encryptionPrivate, signingPrivate);
   encryptionPrivate.fill(0);
   signingPrivate.fill(0);
+  try {
+    return await sealProtectedSharingIdentity(
+      appId,
+      metadata,
+      wrappingKey,
+      publicKey,
+      packed,
+      cryptoImplementation,
+    );
+  } finally {
+    packed.fill(0);
+  }
+}
+
+/**
+ * Re-wraps the exact existing sharing identity under a replacement passkey.
+ * Web counterpart of Kotlin's
+ * `ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential`.
+ *
+ * The identity — and so its `keyId`, and every dataset and keyring encrypted
+ * to it — is unchanged; only the passkey that protects it is replaced. Use it
+ * to move to a new passkey, or to upgrade a record created before
+ * `credentialPublicKey` was captured (required for account binding): unlock
+ * the old record, register a replacement passkey, then rewrap.
+ *
+ * The private keys are decrypted and re-sealed as bytes and never become
+ * extractable `CryptoKey`s. Persist the returned record atomically; the
+ * original stays valid until that save succeeds, so a failed save loses
+ * nothing.
+ */
+export async function rewrapProtectedSharingIdentityV1(
+  input: unknown,
+  oldWrappingKey: CryptoKey,
+  replacementMetadata: WebPasskeyKeyMetadata,
+  replacementWrappingKey: CryptoKey,
+  cryptoImplementation: Crypto = globalThis.crypto,
+): Promise<{
+  identity: WebCryptoSharingIdentity;
+  record: ProtectedSharingIdentityV1;
+}> {
+  const record = parseProtectedSharingIdentityV1(input);
+  if (!replacementMetadata.credentialPublicKey) {
+    throw new SyncKitError(
+      "state",
+      "The replacement passkey registration did not expose its ES256 public key.",
+    );
+  }
+  const packed = await decryptPrivateKeys(
+    record,
+    oldWrappingKey,
+    cryptoImplementation,
+  );
+  try {
+    const replacement = await sealProtectedSharingIdentity(
+      record.appId,
+      replacementMetadata,
+      replacementWrappingKey,
+      record.publicKey,
+      packed,
+      cryptoImplementation,
+    );
+    if (replacement.record.publicKey.keyId !== record.publicKey.keyId) {
+      throw new SyncKitError(
+        "crypto",
+        "Credential migration changed the protected sharing identity.",
+      );
+    }
+    return replacement;
+  } finally {
+    packed.fill(0);
+  }
+}
+
+async function sealProtectedSharingIdentity(
+  appId: string,
+  metadata: WebPasskeyKeyMetadata,
+  wrappingKey: CryptoKey,
+  publicKey: SharingPublicKeyV1,
+  packed: Uint8Array,
+  cryptoImplementation: Crypto,
+): Promise<{
+  identity: WebCryptoSharingIdentity;
+  record: ProtectedSharingIdentityV1;
+}> {
   const nonce = cryptoImplementation.getRandomValues(new Uint8Array(12));
   const header = {
     schemaVersion: 1 as const,
@@ -252,30 +336,24 @@ export async function createProtectedSharingIdentityV1(
     nonce: bytesToBase64Url(nonce),
     publicKey,
   };
-  try {
-    const encryptedPrivateKeys = await cryptoImplementation.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: copyBuffer(nonce),
-        additionalData: copyBuffer(canonicalAad(header)),
-        tagLength: 128,
-      },
-      wrappingKey,
-      copyBuffer(packed),
-    );
-    const record = {
-      ...header,
-      encryptedPrivateKeys: bytesToBase64Url(
-        new Uint8Array(encryptedPrivateKeys),
-      ),
-    };
-    return {
-      record,
-      identity: await importIdentity(record, packed, cryptoImplementation),
-    };
-  } finally {
-    packed.fill(0);
-  }
+  const encryptedPrivateKeys = await cryptoImplementation.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: copyBuffer(nonce),
+      additionalData: copyBuffer(canonicalAad(header)),
+      tagLength: 128,
+    },
+    wrappingKey,
+    copyBuffer(packed),
+  );
+  const record = {
+    ...header,
+    encryptedPrivateKeys: bytesToBase64Url(new Uint8Array(encryptedPrivateKeys)),
+  };
+  return {
+    record,
+    identity: await importIdentity(record, packed, cryptoImplementation),
+  };
 }
 
 export async function unlockProtectedSharingIdentityV1(
@@ -284,15 +362,30 @@ export async function unlockProtectedSharingIdentityV1(
   cryptoImplementation: Crypto = globalThis.crypto,
 ): Promise<WebCryptoSharingIdentity> {
   const record = parseProtectedSharingIdentityV1(input);
-  const header = protectedIdentityHeader(record);
-  let plaintext: Uint8Array;
+  const plaintext = await decryptPrivateKeys(
+    record,
+    wrappingKey,
+    cryptoImplementation,
+  );
   try {
-    plaintext = new Uint8Array(
+    return await importIdentity(record, plaintext, cryptoImplementation);
+  } finally {
+    plaintext.fill(0);
+  }
+}
+
+async function decryptPrivateKeys(
+  record: ProtectedSharingIdentityV1,
+  wrappingKey: CryptoKey,
+  cryptoImplementation: Crypto,
+): Promise<Uint8Array> {
+  try {
+    return new Uint8Array(
       await cryptoImplementation.subtle.decrypt(
         {
           name: "AES-GCM",
           iv: copyBuffer(base64UrlToBytes(record.nonce)),
-          additionalData: copyBuffer(canonicalAad(header)),
+          additionalData: copyBuffer(canonicalAad(protectedIdentityHeader(record))),
           tagLength: 128,
         },
         wrappingKey,
@@ -305,11 +398,6 @@ export async function unlockProtectedSharingIdentityV1(
       "key",
       "The passkey could not unlock the protected sharing identity.",
     );
-  }
-  try {
-    return await importIdentity(record, plaintext, cryptoImplementation);
-  } finally {
-    plaintext.fill(0);
   }
 }
 

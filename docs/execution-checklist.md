@@ -396,6 +396,17 @@ path remain open; the built-in provider flow must not claim Workspace support.
       rather than equality so a re-merging apply is accepted.
 - [x] Name the Digital Asset Links prerequisite in Android passkey failures and
       document that one passkey-derived envelope serves both platforms (0.4.2).
+- [x] Web parity for re-wrapping a protected sharing identity under a
+      replacement passkey (`rewrapProtectedSharingIdentityV1`, 0.4.5).
+- [ ] Decide the recovery model for a lost passkey: identity-level (several
+      locks on one protected identity record — a persisted format change needing
+      both platforms, fixtures, and migration), per-participant keys, or
+      application-owned. Email-less dataset participants (from keyneom/sync-kit#8)
+      were one proposed mechanism; they cannot reach datasets the recovering user
+      does not administer. Nothing in the library provides recovery today.
+- [ ] Add a worked two-platform passkey example: a browser seals an envelope and
+      a phone opens the same one, with RP ID, asset link, and PRF input lined up
+      (from keyneom/sync-kit#6). EasyBC is that example; it is not written down.
 - [ ] Validate OAuth, Picker, conditional writes, permissions, and account
       attestation against live Google services (`npm run live:drive`).
 - [ ] Integrate the complete flow into an external consumer from a packed

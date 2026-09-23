@@ -418,7 +418,7 @@ sync-kit ships that pattern; consumers do not need to build it:
 | Passkey-protected identity | `PasskeyProtectedSharingIdentityProvider` (`/sharing/web-passkey`) |
 | Account-wide storage | `DriveAppDataProtectedSharingIdentityStore` (`/sharing/appdata-identity-store`) |
 | Adopting an existing local identity | `MigratingProtectedSharingIdentityStore` (`/sharing/migrating-identity-store`) |
-| Re-wrapping under a replacement credential | `ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential` (Android) |
+| Re-wrapping under a replacement passkey | `rewrapProtectedSharingIdentityV1` (`/sharing/web-passkey`); Android: `ProtectedSharingIdentityCrypto.rewrapWithReplacementCredential` |
 
 Each has its own subpath export; none of the three is re-exported from
 `/sharing`:
@@ -431,6 +431,14 @@ import { MigratingProtectedSharingIdentityStore } from "@keyneom/sync-kit/sharin
 
 The ciphertext lives in Drive `appDataFolder`, so it follows the Google account
 rather than the device, and the passkey protects it.
+
+Replacing the passkey keeps the identity: re-wrapping changes which passkey
+protects the record, never the keypair inside it, so its `keyId` and every
+dataset and keyring encrypted to it are unaffected. Unlock the old record,
+register the replacement passkey, re-wrap, then persist the result atomically —
+the original stays valid until that save succeeds. The same path upgrades a
+record created before `credentialPublicKey` was captured, which account binding
+requires.
 
 **Do not wrap the sharing identity in an application-owned secret** — a
 recovery code, a device key, anything the product mints. It strands the

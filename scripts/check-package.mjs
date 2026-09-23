@@ -216,11 +216,11 @@ async function collectDocumentedReferences() {
       references.push({ file, specifier: match[2], names });
     }
     // `Name` (`/subpath`) — the table shape that shipped a wrong subpath in 0.4.3.
-    for (const match of text.matchAll(/`([A-Z][A-Za-z0-9]*)`\s*\(`(\/[a-z][a-z0-9/-]*)`\)/g)) {
+    for (const match of text.matchAll(/`([A-Za-z][A-Za-z0-9]*)`\s*\(`(\/[a-z][a-z0-9/-]*)`\)/g)) {
       references.push({ file, specifier: `${packageJson.name}${match[2]}`, names: [match[1]] });
     }
     // `/subpath` — `Name`, the README export-list shape.
-    for (const match of text.matchAll(/`(\/[a-z][a-z0-9/-]*)`\s*—\s*`([A-Z][A-Za-z0-9]*)`/g)) {
+    for (const match of text.matchAll(/`(\/[a-z][a-z0-9/-]*)`\s*—\s*`([A-Za-z][A-Za-z0-9]*)`/g)) {
       references.push({ file, specifier: `${packageJson.name}${match[1]}`, names: [match[2]] });
     }
   }

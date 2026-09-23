@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.keyneom"
-version = (findProperty("synckitVersion") ?: "0.4.4").toString()
+version = (findProperty("synckitVersion") ?: "0.4.5").toString()
 
 val githubPackagesRepository =
     findProperty("githubPackagesRepository")?.toString() ?: "keyneom/sync-kit"

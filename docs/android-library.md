@@ -80,7 +80,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.4.4")
+implementation("com.keyneom:sync-kit-android:0.4.5")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.
