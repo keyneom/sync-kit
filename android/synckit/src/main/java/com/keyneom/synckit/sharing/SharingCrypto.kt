@@ -393,7 +393,7 @@ object SharingCrypto {
     ): T {
         assertIdentity(identity)
         val verified = verifySharedBackupEnvelopeV1(envelope, options)
-        val participant = sharedBackupParticipant(verified, identity.publicKey.keyId)
+        sharedBackupKeyHolder(verified, identity.publicKey.keyId)
             ?: throw SyncKitError(
                 SyncKitErrorCode.AUTHORIZATION,
                 "This identity is not a participant in the shared backup.",
@@ -777,7 +777,16 @@ object SharingCrypto {
         requireNonEmpty(input.backupId, "backupId")
         assertIdentity(identity)
         input.keyRotationPreviousIdentity?.let { assertIdentity(it) }
-        val participants = normalizedParticipants(input.participants)
+        val authorizedRotation = input.participantKeys?.rotation
+        if (authorizedRotation != null &&
+            (input.keyRotationPreviousIdentity != null || input.ownershipTransfer != null)
+        ) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "An authorized key rotation cannot be combined with another rotation or a transfer.",
+            )
+        }
+        val participants = applyAuthorizedRotation(normalizedParticipants(input.participants), authorizedRotation)
         val author = participants.find { it.keyId == identity.publicKey.keyId }
             ?: throw SyncKitError(
                 SyncKitErrorCode.AUTHORIZATION,
@@ -813,14 +822,32 @@ object SharingCrypto {
                 identity.publicKey.keyId,
             )
         }
-        assertRevisionAuthority(
-            input.appId,
-            input.backupId,
-            participants,
-            identity.publicKey.keyId,
+        if (authorizedRotation != null) {
+            // Its authority comes from the participant's signed operation, not
+            // the revision author; the chain check below enforces all of it.
+            if (previous == null) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFIGURATION,
+                    "An authorized key rotation requires a previous revision.",
+                )
+            }
+        } else {
+            assertRevisionAuthority(
+                input.appId,
+                input.backupId,
+                participants,
+                identity.publicKey.keyId,
+                previous,
+                input.keyRotationPreviousIdentity?.publicKey?.keyId,
+                input.ownershipTransfer,
+            )
+        }
+        val participantKeys = resolveParticipantKeys(
             previous,
-            input.keyRotationPreviousIdentity?.publicKey?.keyId,
-            input.ownershipTransfer,
+            participants,
+            input.participantKeys,
+            input.keyRotationPreviousIdentity?.let { it.publicKey.keyId to identity.publicKey.keyId }
+                ?: authorizedRotation?.let { it.fromKeyId to it.to.keyId },
         )
         val accessControl = createAccessControl(
             input.appId,
@@ -830,12 +857,18 @@ object SharingCrypto {
             previous,
             input.keyRotationPreviousIdentity,
             input.ownershipTransfer,
+            participantKeys,
         )
+        if (accessControl !== previous?.accessControl) {
+            // Refuse to write a revision no reader would accept, with the
+            // reader's exact reason, rather than producing an unreadable file.
+            verifyAccessControl(accessControl, null, input.appId, input.backupId)
+        }
         val revisionId = input.revisionId ?: options.randomUuid()
         val createdAt = input.createdAt ?: options.now().toInstant().toString()
         requireNonEmpty(revisionId, "revisionId")
         val header = buildJsonObject {
-            put("schemaVersion", 1)
+            put("schemaVersion", if (accessControlUsesParticipantKeys(accessControl)) 2 else 1)
             put("kind", SHARED_BACKUP_KIND)
             put("algorithm", SHARING_CONTENT_ALGORITHM)
             put("appId", input.appId)
@@ -875,9 +908,8 @@ object SharingCrypto {
                 SyncKitJson.instance.encodeToString(JsonElement.serializer(), serialized)
                     .toByteArray(Charsets.UTF_8),
             )
-            val keyGrants = participants.map { participant ->
-                createKeyGrant(rawContentKey, header, participant, options)
-            }
+            val keyGrants = (participants.map { publicKeyOf(it) } + participantKeys.keys.map { it.publicKey })
+                .map { recipient -> createKeyGrant(rawContentKey, header, recipient, options) }
             val unsigned = buildJsonObject {
                 header.forEach { (key, value) -> put(key, value) }
                 put(
@@ -962,7 +994,7 @@ object SharingCrypto {
     private fun createKeyGrant(
         rawContentKey: ByteArray,
         header: JsonElement,
-        participant: SharedBackupParticipantV1,
+        participant: SharingPublicKeyV1,
         options: SharingCryptoOptions,
     ): SharedBackupKeyGrantV1 {
         val ephemeral = KeyPairGenerator.getInstance("EC").apply {
@@ -1009,26 +1041,22 @@ object SharingCrypto {
         previous: SharedBackupEnvelopeV1?,
         previousIdentity: SharingIdentity?,
         ownershipTransfer: SharedBackupOwnershipTransferV1?,
+        participantKeys: ResolvedParticipantKeys = ResolvedParticipantKeys(),
     ): List<SharedBackupAccessV1> {
+        val priorAccess = previous?.accessControl?.lastOrNull()
         if (
-            previous != null &&
-            CanonicalJson.encode(
-                SyncKitJson.instance.encodeToJsonElement(
-                    kotlinx.serialization.builtins.ListSerializer(SharedBackupParticipantV1.serializer()),
-                    sharedBackupParticipants(previous),
-                ),
-            ) == CanonicalJson.encode(
-                SyncKitJson.instance.encodeToJsonElement(
-                    kotlinx.serialization.builtins.ListSerializer(SharedBackupParticipantV1.serializer()),
-                    participants,
-                ),
-            )
+            previous != null && priorAccess != null &&
+            participantKeys.rotation == null &&
+            canonicalParticipants(sharedBackupParticipants(previous)) == canonicalParticipants(participants) &&
+            participantKeysPolicy(priorAccess) == participantKeys.policy &&
+            canonicalAdditionalKeys(priorAccess.additionalKeys.orEmpty()) ==
+            canonicalAdditionalKeys(participantKeys.keys) &&
+            participantKeys.removals.isEmpty()
         ) {
             return previous.accessControl
         }
-        val priorEntry = previous?.accessControl?.lastOrNull()
         val sequence = previous?.accessControl?.size ?: 0
-        val previousHash = priorEntry?.let { accessControlHash(it) }
+        val previousHash = priorAccess?.let { accessControlHash(it) }
         val rotationUnsigned = previousIdentity?.let {
             buildJsonObject {
                 put("appId", appId)
@@ -1037,13 +1065,7 @@ object SharingCrypto {
                 previousHash?.let { hash -> put("previousHash", hash) }
                 put("fromKeyId", it.publicKey.keyId)
                 put("toKeyId", identity.publicKey.keyId)
-                put(
-                    "participants",
-                    SyncKitJson.instance.encodeToJsonElement(
-                        kotlinx.serialization.builtins.ListSerializer(SharedBackupParticipantV1.serializer()),
-                        participants,
-                    ),
-                )
+                put("participants", participantsJson(participants))
             }
         }
         val keyRotation = previousIdentity?.let {
@@ -1057,41 +1079,17 @@ object SharingCrypto {
                     ),
                 ),
             )
-        }
-        val accessSigner = previousIdentity ?: identity
-        val unsigned = buildJsonObject {
-            put("appId", appId)
-            put("backupId", backupId)
-            put("sequence", sequence)
-            previousHash?.let { put("previousHash", it) }
-            put("authorKeyId", accessSigner.publicKey.keyId)
-            put(
-                "participants",
-                SyncKitJson.instance.encodeToJsonElement(
-                    kotlinx.serialization.builtins.ListSerializer(SharedBackupParticipantV1.serializer()),
-                    participants,
-                ),
+        } ?: participantKeys.rotation?.let {
+            SharedBackupKeyRotationV1(
+                fromKeyId = it.fromKeyId,
+                toKeyId = it.to.keyId,
+                newKeyProof = it.newKeyProof,
+                authorizedByKeyId = it.authorizedByKeyId,
+                authorization = it.authorization,
             )
-            keyRotation?.let { rotation ->
-                put(
-                    "keyRotation",
-                    SyncKitJson.instance.encodeToJsonElement(
-                        SharedBackupKeyRotationV1.serializer(),
-                        rotation,
-                    ),
-                )
-            }
-            ownershipTransfer?.let { transfer ->
-                put(
-                    "ownershipTransfer",
-                    SyncKitJson.instance.encodeToJsonElement(
-                        SharedBackupOwnershipTransferV1.serializer(),
-                        transfer,
-                    ),
-                )
-            }
         }
-        val entry = SharedBackupAccessV1(
+        val accessSigner = previousIdentity ?: participantKeys.accessAuthor ?: identity
+        val draft = SharedBackupAccessV1(
             appId = appId,
             backupId = backupId,
             sequence = sequence,
@@ -1100,10 +1098,17 @@ object SharingCrypto {
             participants = participants,
             keyRotation = keyRotation,
             ownershipTransfer = ownershipTransfer,
+            signature = "",
+            participantKeysPolicy = if (participantKeys.policy) PARTICIPANT_KEYS_ENABLED else null,
+            additionalKeys = participantKeys.keys.ifEmpty { null },
+            removedAdditionalKeys = participantKeys.removals.ifEmpty { null },
+        )
+        // Signed over exactly what the verifier rebuilds, so the two cannot drift.
+        val entry = draft.copy(
             signature = Base64Url.encode(
                 SharingEcKeys.sign(
                     accessSigner.signingPrivateKey,
-                    CanonicalJson.encodeAad(unsigned),
+                    CanonicalJson.encodeAad(accessEntryJsonWithoutSignature(draft)),
                 ),
             ),
         )
@@ -1118,6 +1123,8 @@ object SharingCrypto {
     ): List<SharedBackupParticipantV1> {
         var previous: SharedBackupAccessV1? = null
         var ownerKeyId: String? = null
+        // An addition that was removed can never be re-added from the same signature.
+        val revokedAdditions = mutableSetOf<String>()
         for (entry in accessControl) {
             if (
                 (entry.appId != null || entry.backupId != null) &&
@@ -1129,6 +1136,7 @@ object SharingCrypto {
                 )
             }
             assertParticipantKeys(entry.participants)
+            assertAdditionalKeys(entry.additionalKeys.orEmpty())
             val owner = entry.participants.find { it.role == SharingRole.OWNER }
                 ?: throw SyncKitError(
                     SyncKitErrorCode.AUTHORIZATION,
@@ -1143,35 +1151,72 @@ object SharingCrypto {
                     )
                 }
             }
-            val author: SharedBackupParticipantV1?
-            val validRotation: Boolean
-            val validOwnershipTransfer: Boolean
-            if (previous != null) {
-                val expectedHash = accessControlHash(previous)
+            // The key that signed this entry, and the participant it acts for.
+            // They differ only when one of a participant's additional keys signed it.
+            val author: SharingPublicKeyV1?
+            val prior = previous
+            if (prior != null) {
+                val expectedHash = accessControlHash(prior)
                 if (entry.previousHash != expectedHash) {
                     throw SyncKitError(
                         SyncKitErrorCode.CRYPTO,
                         "The access-control history hash is invalid.",
                     )
                 }
-                author = previous.participants.find { it.keyId == entry.authorKeyId }
-                validRotation = entry.keyRotation?.let {
-                    verifyAccessKeyRotation(entry, previous)
+                val priorParticipant = prior.participants.find { it.keyId == entry.authorKeyId }
+                val priorAdditional = prior.additionalKeys?.find { it.keyId == entry.authorKeyId }
+                val authorIsAdditional = priorParticipant == null && priorAdditional != null
+                val authorParticipant = priorParticipant
+                    ?: priorAdditional?.let { key -> prior.participants.find { it.keyId == key.principalKeyId } }
+                author = priorParticipant?.let { publicKeyOf(it) } ?: priorAdditional?.publicKey
+                val rotation = entry.keyRotation
+                val validRotation = when {
+                    rotation == null -> false
+                    rotation.authorizedByKeyId != null -> verifyAuthorizedKeyRotation(entry, prior, appId)
+                    else -> verifyAccessKeyRotation(entry, prior)
+                }
+                val validOwnershipTransfer = entry.ownershipTransfer?.let {
+                    verifyOwnershipTransferEntry(entry, prior)
                 } ?: false
-                validOwnershipTransfer = entry.ownershipTransfer?.let {
-                    verifyOwnershipTransferEntry(entry, previous)
-                } ?: false
-                if (author == null ||
-                    (!canAdministerSharedBackup(author.role) &&
-                        !validRotation && !validOwnershipTransfer)
+                // A recovery rotation is an auditable claim about who replaced whose
+                // key, so it must verify even when an admin — who could change the
+                // participants anyway — carries it.
+                if (rotation?.authorizedByKeyId != null && !validRotation) {
+                    throw SyncKitError(
+                        SyncKitErrorCode.AUTHORIZATION,
+                        "An authorized key rotation is not valid.",
+                    )
+                }
+                // An additional key never carries its participant's admin authority.
+                val authorIsAdmin = !authorIsAdditional && authorParticipant != null &&
+                    canAdministerSharedBackup(authorParticipant.role)
+                val authorCanWrite = authorParticipant != null && canWriteSharedBackup(authorParticipant.role)
+                // An entry that only carries participant-signed key operations may be
+                // written by anyone who can write the file; the operations prove themselves.
+                val carriesOnlyKeyOperations = rotation == null && entry.ownershipTransfer == null &&
+                    canonicalParticipants(prior.participants) == canonicalParticipants(entry.participants) &&
+                    participantKeysPolicy(prior) == participantKeysPolicy(entry) &&
+                    additionalKeysChanged(prior, entry)
+                if (author == null || authorParticipant == null ||
+                    !(authorIsAdmin || validRotation || validOwnershipTransfer ||
+                        (carriesOnlyKeyOperations && authorCanWrite))
                 ) {
                     throw SyncKitError(
                         SyncKitErrorCode.AUTHORIZATION,
                         "An access-control change was not signed by a prior owner or admin.",
                     )
                 }
+                if (rotation?.authorizedByKeyId != null) {
+                    // Written by the authorizing key itself, or carried by a writer.
+                    val selfAuthored = authorIsAdditional && entry.authorKeyId == rotation.authorizedByKeyId
+                    if (!authorCanWrite || (authorIsAdditional && !selfAuthored)) {
+                        throw SyncKitError(
+                            SyncKitErrorCode.AUTHORIZATION,
+                            "An authorized key rotation must be written by its authorizing key or a writer.",
+                        )
+                    }
+                }
                 if (owner.keyId != ownerKeyId) {
-                    val rotation = entry.keyRotation
                     val transfer = entry.ownershipTransfer
                     val validOwnerChange =
                         (validRotation && rotation?.fromKeyId == ownerKeyId &&
@@ -1186,25 +1231,55 @@ object SharingCrypto {
                     }
                     ownerKeyId = owner.keyId
                 }
+                verifyAdditionalKeyChanges(
+                    entry = entry,
+                    previous = prior,
+                    appId = appId,
+                    authorIsAdmin = authorIsAdmin,
+                    additionalAuthorPrincipal = if (authorIsAdditional) authorParticipant.keyId else null,
+                    rotation = if (validRotation && rotation != null) rotation.fromKeyId to rotation.toKeyId else null,
+                    revokedAdditions = revokedAdditions,
+                )
             } else {
-                validOwnershipTransfer = false
                 if (entry.keyRotation != null || entry.ownershipTransfer != null) {
                     throw SyncKitError(
                         SyncKitErrorCode.AUTHORIZATION,
                         "A genesis access entry cannot rotate a key or transfer ownership.",
                     )
                 }
-                author = entry.participants.find { it.keyId == entry.authorKeyId }
-                if (author?.role != SharingRole.OWNER) {
+                if (entry.removedAdditionalKeys != null) {
+                    throw SyncKitError(
+                        SyncKitErrorCode.AUTHORIZATION,
+                        "A genesis access entry cannot remove additional keys.",
+                    )
+                }
+                val genesisAuthor = entry.participants.find { it.keyId == entry.authorKeyId }
+                if (genesisAuthor?.role != SharingRole.OWNER) {
                     throw SyncKitError(
                         SyncKitErrorCode.AUTHORIZATION,
                         "The first access-control entry was not signed by its owner.",
                     )
                 }
+                author = publicKeyOf(genesisAuthor)
+                verifyAdditionalKeyChanges(
+                    entry = entry,
+                    previous = null,
+                    appId = appId,
+                    authorIsAdmin = true,
+                    additionalAuthorPrincipal = null,
+                    rotation = null,
+                    revokedAdditions = revokedAdditions,
+                )
+            }
+            if (author == null) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "An access-control entry has no authorized author.",
+                )
             }
             val unsigned = accessEntryJsonWithoutSignature(entry)
             if (!SharingEcKeys.verify(
-                    SharingEcKeys.signingPublicKey(author!!),
+                    SharingEcKeys.signingPublicKey(author),
                     CanonicalJson.encodeAad(unsigned),
                     Base64Url.decode(entry.signature),
                 )
@@ -1222,6 +1297,184 @@ object SharingCrypto {
                 "Access-control history is empty.",
             )
     }
+
+    private fun participantKeysPolicy(entry: SharedBackupAccessV1): Boolean =
+        entry.participantKeysPolicy == PARTICIPANT_KEYS_ENABLED
+
+    private fun additionalKeysChanged(previous: SharedBackupAccessV1, entry: SharedBackupAccessV1): Boolean =
+        canonicalAdditionalKeys(previous.additionalKeys.orEmpty()) !=
+            canonicalAdditionalKeys(entry.additionalKeys.orEmpty()) ||
+            entry.removedAdditionalKeys != null
+
+    /** Enforces the participant-key rules for one entry. See docs/participant-keys.md, "Rules". */
+    private fun verifyAdditionalKeyChanges(
+        entry: SharedBackupAccessV1,
+        previous: SharedBackupAccessV1?,
+        appId: String,
+        authorIsAdmin: Boolean,
+        additionalAuthorPrincipal: String?,
+        rotation: Pair<String, String>?,
+        revokedAdditions: MutableSet<String>,
+    ) {
+        val priorPolicy = previous?.let { participantKeysPolicy(it) } ?: false
+        if (priorPolicy != participantKeysPolicy(entry) && !authorIsAdmin) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "Only an owner or admin can change a dataset's participant-keys policy.",
+            )
+        }
+        val previousKeys = previous?.additionalKeys.orEmpty().associateBy { it.keyId }
+        val currentKeys = entry.additionalKeys.orEmpty().associateBy { it.keyId }
+        val removals = entry.removedAdditionalKeys.orEmpty().associateBy { it.keyId }
+        if (previousKeys.isEmpty() && currentKeys.isEmpty() && removals.isEmpty()) return
+        val added = currentKeys.keys.any { it !in previousKeys }
+        val removed = previousKeys.keys.any { it !in currentKeys }
+        if ((rotation != null || entry.ownershipTransfer != null) && (added || removed || removals.isNotEmpty())) {
+            throw SyncKitError(
+                SyncKitErrorCode.AUTHORIZATION,
+                "A key rotation or ownership transfer cannot also add or remove additional keys.",
+            )
+        }
+        fun assertOwn(principalKeyId: String) {
+            if (additionalAuthorPrincipal != null && principalKeyId != additionalAuthorPrincipal) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "An additional key may only change its own participant's keys.",
+                )
+            }
+        }
+        fun repoint(principalKeyId: String): String =
+            if (rotation != null && principalKeyId == rotation.first) rotation.second else principalKeyId
+
+        for ((keyId, prior) in previousKeys) {
+            val current = currentKeys[keyId]
+            if (current != null) {
+                // Kept keys are unchanged, except that a rotation moves them to the
+                // participant's new primary key.
+                if (canonicalAdditionalKeys(listOf(prior.copy(principalKeyId = repoint(prior.principalKeyId)))) !=
+                    canonicalAdditionalKeys(listOf(current))
+                ) {
+                    throw SyncKitError(
+                        SyncKitErrorCode.AUTHORIZATION,
+                        "An additional key changed without authorization.",
+                    )
+                }
+                continue
+            }
+            assertOwn(prior.principalKeyId)
+            val removal = removals[keyId]
+            if (removal != null) {
+                val remover = if (removal.removedByKeyId == prior.principalKeyId) {
+                    previous?.participants?.find { it.keyId == prior.principalKeyId }?.let { publicKeyOf(it) }
+                } else {
+                    previousKeys.values.find {
+                        it.keyId == removal.removedByKeyId && it.principalKeyId == prior.principalKeyId
+                    }?.publicKey
+                }
+                val statement = ParticipantKeys.removalStatement(appId, keyId, prior.addition)
+                if (remover == null || !ParticipantKeys.verifyStatement(remover, statement, removal.removal)) {
+                    throw SyncKitError(
+                        SyncKitErrorCode.AUTHORIZATION,
+                        "An additional-key removal is not signed by its participant.",
+                    )
+                }
+            } else if (!authorIsAdmin) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "Only an owner, an admin, or the key's own participant can remove an additional key.",
+                )
+            }
+            revokedAdditions.add(prior.addition)
+        }
+        for (keyId in removals.keys) {
+            if (keyId !in previousKeys || keyId in currentKeys) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "An additional-key removal does not match a removed key.",
+                )
+            }
+        }
+        for ((keyId, key) in currentKeys) {
+            if (keyId in previousKeys) continue
+            assertOwn(key.principalKeyId)
+            if (key.addition in revokedAdditions) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "A removed additional key cannot be re-added from its old authorization.",
+                )
+            }
+            val principal = entry.participants.find { it.keyId == key.principalKeyId }
+            val priorKey = previousKeys[key.addedByKeyId]
+            val authorizer: SharingPublicKeyV1? = when {
+                key.addedByKeyId == key.principalKeyId -> principal?.let { publicKeyOf(it) }
+                priorKey?.principalKeyId == key.principalKeyId -> priorKey.publicKey
+                else -> null
+            }
+            val statement = ParticipantKeys.additionStatementForKey(appId, key)
+            if (principal == null || authorizer == null ||
+                !ParticipantKeys.verifyStatement(authorizer, statement, key.addition) ||
+                !ParticipantKeys.verifyStatement(key.publicKey, statement, key.possession)
+            ) {
+                throw SyncKitError(
+                    SyncKitErrorCode.AUTHORIZATION,
+                    "An additional key is not authorized by its participant or its holder.",
+                )
+            }
+        }
+    }
+
+    private fun verifyAuthorizedKeyRotation(
+        entry: SharedBackupAccessV1,
+        previous: SharedBackupAccessV1,
+        appId: String,
+    ): Boolean {
+        val rotation = entry.keyRotation ?: return false
+        val authorizedByKeyId = rotation.authorizedByKeyId ?: return false
+        val authorization = rotation.authorization ?: return false
+        val authorizer = previous.additionalKeys?.find { it.keyId == authorizedByKeyId } ?: return false
+        if (authorizer.principalKeyId != rotation.fromKeyId) return false
+        val from = previous.participants.find { it.keyId == rotation.fromKeyId } ?: return false
+        val to = entry.participants.find { it.keyId == rotation.toKeyId } ?: return false
+        val alreadyPresent = previous.participants.any { it.keyId == rotation.toKeyId } ||
+            previous.additionalKeys.orEmpty().any { it.keyId == rotation.toKeyId }
+        if (alreadyPresent || from.role != to.role ||
+            CanonicalJson.encode(acceptanceJson(from.accepted)) != CanonicalJson.encode(acceptanceJson(to.accepted))
+        ) {
+            return false
+        }
+        val expectedParticipants = previous.participants
+            .map { if (it.keyId == from.keyId) to else it }
+            .sortedWith { left, right -> CanonicalJson.compareUtf16CodeUnits(left.keyId, right.keyId) }
+        if (canonicalParticipants(expectedParticipants) != canonicalParticipants(entry.participants)) return false
+        val statement = ParticipantKeys.rotationStatement(appId, from.keyId, publicKeyOf(to))
+        return ParticipantKeys.verifyStatement(authorizer.publicKey, statement, authorization) &&
+            ParticipantKeys.verifyStatement(publicKeyOf(to), statement, rotation.newKeyProof)
+    }
+
+    private fun publicKeyOf(participant: SharedBackupParticipantV1): SharingPublicKeyV1 = SharingPublicKeyV1(
+        keyId = participant.keyId,
+        encryptionAlgorithm = participant.encryptionAlgorithm,
+        encryptionPublicKey = participant.encryptionPublicKey,
+        signatureAlgorithm = participant.signatureAlgorithm,
+        signingPublicKey = participant.signingPublicKey,
+    )
+
+    private fun participantsJson(participants: List<SharedBackupParticipantV1>): JsonElement =
+        SyncKitJson.instance.encodeToJsonElement(
+            kotlinx.serialization.builtins.ListSerializer(SharedBackupParticipantV1.serializer()),
+            participants,
+        )
+
+    private fun canonicalParticipants(participants: List<SharedBackupParticipantV1>): String =
+        CanonicalJson.encode(participantsJson(participants))
+
+    private fun canonicalAdditionalKeys(keys: List<SharedBackupAdditionalKeyV1>): String =
+        CanonicalJson.encode(
+            SyncKitJson.instance.encodeToJsonElement(
+                kotlinx.serialization.builtins.ListSerializer(SharedBackupAdditionalKeyV1.serializer()),
+                keys,
+            ),
+        )
 
     private fun verifyAccessKeyRotation(
         entry: SharedBackupAccessV1,
@@ -1530,6 +1783,88 @@ object SharingCrypto {
                 )
             }
         }
+    }
+
+    private fun assertAdditionalKeys(keys: List<SharedBackupAdditionalKeyV1>) {
+        for (key in keys) {
+            val expected = SharingEcKeys.createSharingPublicKeyV1(key.encryptionPublicKey, key.signingPublicKey)
+            if (expected.keyId != key.keyId) {
+                throw SyncKitError(SyncKitErrorCode.KEY, "Participant fingerprint ${key.keyId} is invalid.")
+            }
+        }
+    }
+
+    private fun applyAuthorizedRotation(
+        participants: List<SharedBackupParticipantV1>,
+        rotation: SharedBackupAuthorizedKeyRotationV1?,
+    ): List<SharedBackupParticipantV1> {
+        if (rotation == null) return participants
+        val from = participants.find { it.keyId == rotation.fromKeyId }
+            ?: throw SyncKitError(SyncKitErrorCode.CONFIGURATION, "The key being replaced is not a participant.")
+        return participants
+            .map {
+                if (it.keyId != from.keyId) {
+                    it
+                } else {
+                    SharedBackupParticipantV1(
+                        keyId = rotation.to.keyId,
+                        encryptionAlgorithm = rotation.to.encryptionAlgorithm,
+                        encryptionPublicKey = rotation.to.encryptionPublicKey,
+                        signatureAlgorithm = rotation.to.signatureAlgorithm,
+                        signingPublicKey = rotation.to.signingPublicKey,
+                        role = from.role,
+                        accepted = from.accepted,
+                    )
+                }
+            }
+            .sortedWith { left, right -> CanonicalJson.compareUtf16CodeUnits(left.keyId, right.keyId) }
+    }
+
+    /**
+     * The additional keys a revision will carry: the previous revision's, moved
+     * to a rotated participant's new key, without keys whose participant was
+     * removed, then with the requested changes applied.
+     */
+    private fun resolveParticipantKeys(
+        previous: SharedBackupEnvelopeV1?,
+        participants: List<SharedBackupParticipantV1>,
+        changes: SharedBackupParticipantKeyChanges?,
+        rotation: Pair<String, String>?,
+    ): ResolvedParticipantKeys {
+        val prior = previous?.accessControl?.lastOrNull()
+        val policy = changes?.policy ?: (prior?.let { participantKeysPolicy(it) } ?: false)
+        val participantIds = participants.map { it.keyId }.toSet()
+        var keys = prior?.additionalKeys.orEmpty()
+            .map { if (rotation != null && it.principalKeyId == rotation.first) it.copy(principalKeyId = rotation.second) else it }
+            .filter { it.principalKeyId in participantIds }
+        val removals = mutableListOf<SharedBackupKeyRemovalV1>()
+        for (removal in changes?.remove.orEmpty()) {
+            if (keys.none { it.keyId == removal.keyId }) {
+                throw SyncKitError(SyncKitErrorCode.CONFIGURATION, "Additional key ${removal.keyId} is not present.")
+            }
+            keys = keys.filter { it.keyId != removal.keyId }
+            if (removal is ParticipantKeyRemoval.Signed) removals += removal.removal
+        }
+        for (addition in changes?.add.orEmpty()) {
+            if (!policy) {
+                throw SyncKitError(SyncKitErrorCode.STATE, "This dataset does not allow additional participant keys.")
+            }
+            if (addition.keyId in participantIds || keys.any { it.keyId == addition.keyId }) {
+                throw SyncKitError(
+                    SyncKitErrorCode.CONFIGURATION,
+                    "Participant key ${addition.keyId} is already present.",
+                )
+            }
+            keys = keys + addition
+        }
+        if (!policy) keys = emptyList()
+        return ResolvedParticipantKeys(
+            policy = policy,
+            keys = keys.sortedWith { left, right -> CanonicalJson.compareUtf16CodeUnits(left.keyId, right.keyId) },
+            removals = removals,
+            rotation = changes?.rotation,
+            accessAuthor = changes?.accessAuthor,
+        )
     }
 
     private fun assertRevisionAuthority(
@@ -1849,6 +2184,25 @@ object SharingCrypto {
                     ),
                 )
             }
+            entry.participantKeysPolicy?.let { put("participantKeysPolicy", it) }
+            entry.additionalKeys?.let { keys ->
+                put(
+                    "additionalKeys",
+                    SyncKitJson.instance.encodeToJsonElement(
+                        kotlinx.serialization.builtins.ListSerializer(SharedBackupAdditionalKeyV1.serializer()),
+                        keys,
+                    ),
+                )
+            }
+            entry.removedAdditionalKeys?.let { removals ->
+                put(
+                    "removedAdditionalKeys",
+                    SyncKitJson.instance.encodeToJsonElement(
+                        kotlinx.serialization.builtins.ListSerializer(SharedBackupKeyRemovalV1.serializer()),
+                        removals,
+                    ),
+                )
+            }
         }
 
     private fun ownershipTransferUnsignedJson(
@@ -1933,6 +2287,46 @@ data class CreateSharedBackupEnvelopeInput(
     val ownershipTransfer: SharedBackupOwnershipTransferV1? = null,
     val revisionId: String? = null,
     val createdAt: String? = null,
+    /**
+     * Participant-key changes for this revision. Null carries every existing
+     * additional key forward, granted access, unchanged. See docs/participant-keys.md.
+     */
+    val participantKeys: SharedBackupParticipantKeyChanges? = null,
+)
+
+/** Participant-key changes a writer applies to one revision. */
+data class SharedBackupParticipantKeyChanges(
+    /** Owner or admin only. `false` also removes every additional key. */
+    val policy: Boolean? = null,
+    /** Participant-signed additions, from [ParticipantKeys.createAddition]. */
+    val add: List<SharedBackupAdditionalKeyV1> = emptyList(),
+    val remove: List<ParticipantKeyRemoval> = emptyList(),
+    /** Replaces a participant's primary key, authorized by one of its additional keys. */
+    val rotation: SharedBackupAuthorizedKeyRotationV1? = null,
+    /**
+     * Signs the access-control entry instead of the revision author — for
+     * example the recovery key authorizing its own participant's rotation.
+     */
+    val accessAuthor: SharingIdentity? = null,
+)
+
+/** A removal: participant-signed, or by an owner or admin, who needs no proof. */
+sealed interface ParticipantKeyRemoval {
+    val keyId: String
+
+    data class Signed(val removal: SharedBackupKeyRemovalV1) : ParticipantKeyRemoval {
+        override val keyId: String get() = removal.keyId
+    }
+
+    data class ByAdministrator(override val keyId: String) : ParticipantKeyRemoval
+}
+
+internal data class ResolvedParticipantKeys(
+    val policy: Boolean = false,
+    val keys: List<SharedBackupAdditionalKeyV1> = emptyList(),
+    val removals: List<SharedBackupKeyRemovalV1> = emptyList(),
+    val rotation: SharedBackupAuthorizedKeyRotationV1? = null,
+    val accessAuthor: SharingIdentity? = null,
 )
 
 data class SharedBackupOwnershipTransferInput(

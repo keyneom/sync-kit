@@ -1094,6 +1094,165 @@ class SharedBackupControllerTest {
         assertEquals(listOf("owner", "remote"), store.value.items.sorted())
     }
 
+    // --- Participant keys ------------------------------------------------------
+
+    private class KeyVault(
+        val owner: SharingIdentity,
+        val viewer: SharingIdentity,
+        val writer: SharingIdentity,
+        val transport: MemorySharingTransport,
+        val ownerController: SharedBackupController<Payload>,
+        val viewerController: SharedBackupController<Payload>,
+        val writerController: SharedBackupController<Payload>,
+    )
+
+    private suspend fun keyVault(): KeyVault {
+        val owner = SharingCrypto.generateIdentity()
+        val viewer = SharingCrypto.generateIdentity()
+        val writer = SharingCrypto.generateIdentity()
+        val transport = MemorySharingTransport()
+        val ownerController = controller(owner, transport, MemorySharedBackupRegistry())
+        ownerController.createDataset("vault", Payload(listOf("owner")))
+        ownerController.addDatasetParticipant("vault", viewer.publicKey, SharingRole.VIEWER, "viewer@example.com")
+        ownerController.addDatasetParticipant("vault", writer.publicKey, SharingRole.WRITER, "writer@example.com")
+        val viewerController = controller(viewer, transport, MemorySharedBackupRegistry())
+        val writerController = controller(writer, transport, MemorySharedBackupRegistry())
+        viewerController.adoptDataset("vault")
+        writerController.adoptDataset("vault")
+        return KeyVault(owner, viewer, writer, transport, ownerController, viewerController, writerController)
+    }
+
+    private class KeyRecovery(val code: String, val addition: SharedBackupAdditionalKeyV1)
+
+    private fun keyRecoveryFor(principal: SharingIdentity): KeyRecovery {
+        val code = ParticipantKeys.generateRecoveryCode()
+        val recovery = ParticipantKeys.createRecoveryKey("controller-test", code)
+        return KeyRecovery(
+            code,
+            ParticipantKeys.createAddition(
+                appId = "controller-test",
+                principalKeyId = principal.publicKey.keyId,
+                authorizer = principal,
+                key = recovery.identity,
+                purpose = "recovery",
+                sealedPrivateKeys = recovery.sealedPrivateKeys,
+            ),
+        )
+    }
+
+    private suspend fun expectError(code: SyncKitErrorCode, block: suspend () -> Unit) {
+        val error = try {
+            block()
+            null
+        } catch (error: SyncKitError) {
+            error
+        }
+        assertEquals(code, error?.code)
+    }
+
+    @Test
+    fun participantKeysAreOffUntilAnOwnerOrAdminTurnsThemOn() = runBlocking {
+        val vault = keyVault()
+        val recovery = keyRecoveryFor(vault.viewer)
+        expectError(SyncKitErrorCode.STATE) {
+            vault.writerController.addParticipantKeys("vault", listOf(recovery.addition))
+        }
+        expectError(SyncKitErrorCode.AUTHORIZATION) {
+            vault.writerController.setParticipantKeysPolicy("vault", enabled = true)
+        }
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = true)
+        assertEquals(DatasetParticipantKeys(true, emptyList()), vault.ownerController.getDatasetParticipantKeys("vault"))
+    }
+
+    @Test
+    fun recoversAViewerOnAFreshDeviceWithAWriterCarryingEachStep() = runBlocking {
+        val vault = keyVault()
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = true)
+        val recovery = keyRecoveryFor(vault.viewer)
+        // A viewer cannot write, even to add its own key; a writer carries it.
+        expectError(SyncKitErrorCode.AUTHORIZATION) {
+            vault.viewerController.addParticipantKeys("vault", listOf(recovery.addition))
+        }
+        vault.writerController.addParticipantKeys("vault", listOf(recovery.addition))
+        assertEquals(
+            listOf(ParticipantKeyCoverage("vault", policyEnabled = true, protected = true)),
+            vault.viewerController.participantKeyCoverage(recovery.addition.keyId, listOf("vault")),
+        )
+
+        val replacement = SharingCrypto.generateIdentity()
+        val freshDevice = controller(replacement, vault.transport, MemorySharedBackupRegistry())
+        val opened = freshDevice.openRecoveryKey("vault", recovery.code)
+        val rotation = ParticipantKeys.createAuthorizedRotation(
+            "controller-test",
+            vault.viewer.publicKey.keyId,
+            opened.identity,
+            replacement,
+        )
+        expectError(SyncKitErrorCode.AUTHORIZATION) {
+            freshDevice.rotateWithAdditionalKey("vault", rotation, ParticipantKeyRecovery(replacement, opened.identity))
+        }
+        vault.writerController.rotateWithAdditionalKey("vault", rotation)
+
+        freshDevice.adoptDataset("vault")
+        assertEquals(listOf("owner"), freshDevice.loadDataset("vault").value.items)
+        assertTrue(
+            vault.ownerController.getDatasetParticipants("vault").participants
+                .none { it.keyId == vault.viewer.publicKey.keyId },
+        )
+    }
+
+    @Test
+    fun recoversAWriterAloneOnAFreshDevice() = runBlocking {
+        val vault = keyVault()
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = true)
+        val recovery = keyRecoveryFor(vault.writer)
+        vault.writerController.addParticipantKeys("vault", listOf(recovery.addition))
+
+        val replacement = SharingCrypto.generateIdentity()
+        val freshDevice = controller(replacement, vault.transport, MemorySharedBackupRegistry())
+        val opened = freshDevice.openRecoveryKey("vault", recovery.code)
+        freshDevice.rotateWithAdditionalKey(
+            "vault",
+            ParticipantKeys.createAuthorizedRotation("controller-test", vault.writer.publicKey.keyId, opened.identity, replacement),
+            ParticipantKeyRecovery(replacement, opened.identity),
+        )
+        val synced = freshDevice.syncDataset(
+            "vault",
+            sharedDatasetMutator({ Payload(listOf("owner", "recovered")) }, { merged -> merged }),
+        )
+        assertEquals("updated", synced.outcome)
+        val keys = vault.ownerController.getDatasetParticipantKeys("vault").keys
+        assertEquals(recovery.addition.keyId, keys.single().keyId)
+        assertEquals(replacement.publicKey.keyId, keys.single().principalKeyId)
+    }
+
+    @Test
+    fun removesOwnKeysAndEveryKeyWhenTurnedOff() = runBlocking {
+        val vault = keyVault()
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = true)
+        val viewerRecovery = keyRecoveryFor(vault.viewer)
+        val writerRecovery = keyRecoveryFor(vault.writer)
+        vault.writerController.addParticipantKeys("vault", listOf(viewerRecovery.addition, writerRecovery.addition))
+        val removal = ParticipantKeys.createRemoval("controller-test", vault.viewer, viewerRecovery.addition)
+        vault.writerController.removeParticipantKeys("vault", listOf(ParticipantKeyRemoval.Signed(removal)))
+        assertEquals(
+            listOf(writerRecovery.addition.keyId),
+            vault.ownerController.getDatasetParticipantKeys("vault").keys.map { it.keyId },
+        )
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = false)
+        assertEquals(DatasetParticipantKeys(false, emptyList()), vault.ownerController.getDatasetParticipantKeys("vault"))
+    }
+
+    @Test
+    fun dropsAParticipantsKeysWhenTheParticipantIsRevoked() = runBlocking {
+        val vault = keyVault()
+        vault.ownerController.setParticipantKeysPolicy("vault", enabled = true)
+        val recovery = keyRecoveryFor(vault.viewer)
+        vault.writerController.addParticipantKeys("vault", listOf(recovery.addition))
+        vault.ownerController.revokeDatasetKey("vault", vault.viewer.publicKey.keyId, "viewer@example.com")
+        assertEquals(DatasetParticipantKeys(true, emptyList()), vault.ownerController.getDatasetParticipantKeys("vault"))
+    }
+
     private fun controller(
         identity: SharingIdentity,
         transport: SharedBackupTransport,

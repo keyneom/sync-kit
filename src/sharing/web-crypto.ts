@@ -15,16 +15,21 @@ import {
   SHARING_KEY_KIND,
   SHARING_OWNERSHIP_TRANSFER_KIND,
   SHARING_SIGNATURE_ALGORITHM,
+  accessControlUsesParticipantKeys,
   canAdministerSharedBackup,
   canWriteSharedBackup,
   parseSharedBackupEnvelopeV1,
   parseSharedBackupOwnershipTransferV1,
   parseSharingInvitationV1,
   parseSharingPublicKeyResponseV1,
+  sharedBackupKeyHolder,
   sharedBackupParticipant,
   sharedBackupParticipants,
+  type SharedBackupAdditionalKeyV1,
+  type SharedBackupAuthorizedKeyRotationV1,
   type SharedBackupCodec,
   type SharedBackupAccessV1,
+  type SharedBackupKeyRemovalV1,
   type SharedBackupEnvelopeV1,
   type SharedBackupParticipantV1,
   type SharedBackupOwnershipTransferV1,
@@ -36,6 +41,14 @@ import {
   type SharingInvitationV1,
   type SharingRole,
 } from "./index.js";
+
+import {
+  additionStatementForKey,
+  publicKeyFields,
+  removalStatement,
+  rotationStatement,
+  verifyStatement,
+} from "./participant-key-statements.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -485,6 +498,12 @@ export async function createSharedBackupEnvelopeV1<T>(
       previousIdentity: WebCryptoSharingIdentity;
     };
     ownershipTransfer?: SharedBackupOwnershipTransferV1;
+    /**
+     * Participant-key changes for this revision. Omit it and every existing
+     * additional key is carried forward and granted access unchanged. See
+     * docs/participant-keys.md.
+     */
+    participantKeys?: SharedBackupParticipantKeyChanges;
     revisionId?: string;
     createdAt?: string;
   },
@@ -501,7 +520,17 @@ export async function createSharedBackupEnvelopeV1<T>(
       cryptoImplementation,
     );
   }
-  const participants = normalizedParticipants(input.participants);
+  const authorizedRotation = input.participantKeys?.rotation;
+  if (authorizedRotation && (input.keyRotation || input.ownershipTransfer)) {
+    throw new SyncKitError(
+      "configuration",
+      "An authorized key rotation cannot be combined with another rotation or a transfer.",
+    );
+  }
+  const participants = applyAuthorizedRotation(
+    normalizedParticipants(input.participants),
+    authorizedRotation,
+  );
   const author = participants.find(
     (participant) => participant.keyId === identity.publicKey.keyId,
   );
@@ -541,14 +570,38 @@ export async function createSharedBackupEnvelopeV1<T>(
       cryptoImplementation,
     );
   }
-  assertRevisionAuthority(
-    input.appId,
-    input.backupId,
-    participants,
-    identity.publicKey.keyId,
+  if (authorizedRotation) {
+    // Its authority comes from the participant's signed operation, not from
+    // the revision author; the chain check below enforces all of it.
+    if (!previous) {
+      throw new SyncKitError(
+        "configuration",
+        "An authorized key rotation requires a previous revision.",
+      );
+    }
+  } else {
+    assertRevisionAuthority(
+      input.appId,
+      input.backupId,
+      participants,
+      identity.publicKey.keyId,
+      previous,
+      input.keyRotation?.previousIdentity.publicKey.keyId,
+      input.ownershipTransfer,
+    );
+  }
+  const participantKeys = resolveParticipantKeys(
     previous,
-    input.keyRotation?.previousIdentity.publicKey.keyId,
-    input.ownershipTransfer,
+    participants,
+    input.participantKeys,
+    input.keyRotation
+      ? {
+          fromKeyId: input.keyRotation.previousIdentity.publicKey.keyId,
+          toKeyId: identity.publicKey.keyId,
+        }
+      : authorizedRotation
+        ? { fromKeyId: authorizedRotation.fromKeyId, toKeyId: authorizedRotation.to.keyId }
+        : undefined,
   );
   const accessControl = await createAccessControl(
     input.appId,
@@ -559,13 +612,27 @@ export async function createSharedBackupEnvelopeV1<T>(
     cryptoImplementation,
     input.keyRotation?.previousIdentity,
     input.ownershipTransfer,
+    participantKeys,
   );
+  if (accessControl !== previous?.accessControl) {
+    // Refuse to write a revision no reader would accept, with the reader's
+    // exact reason, rather than producing an unreadable file.
+    await verifyAccessControl(
+      accessControl,
+      cryptoImplementation,
+      undefined,
+      input.appId,
+      input.backupId,
+    );
+  }
 
   const revisionId = input.revisionId ?? randomUUID(options);
   const createdAt = input.createdAt ?? now(options).toISOString();
   requireNonEmpty(revisionId, "revisionId");
   const header = {
-    schemaVersion: 1 as const,
+    schemaVersion: accessControlUsesParticipantKeys(accessControl)
+      ? (2 as const)
+      : (1 as const),
     kind: SHARED_BACKUP_KIND,
     algorithm: SHARING_CONTENT_ALGORITHM,
     appId: input.appId,
@@ -612,7 +679,7 @@ export async function createSharedBackupEnvelopeV1<T>(
       ),
     );
     const keyGrants = await Promise.all(
-      participants.map((participant) =>
+      [...participants, ...participantKeys.keys].map((participant) =>
         createKeyGrant(
           rawContentKey,
           header,
@@ -702,11 +769,9 @@ export async function decryptSharedBackupEnvelopeV1<T>(
     cryptoImplementation,
     options,
   );
-  const participant = sharedBackupParticipant(
-    envelope,
-    identity.publicKey.keyId,
-  );
-  if (!participant) {
+  // A participant's primary key or one of their additional keys.
+  const holder = sharedBackupKeyHolder(envelope, identity.publicKey.keyId);
+  if (!holder) {
     throw new SyncKitError(
       "authorization",
       "This identity is not a participant in the shared backup.",
@@ -783,7 +848,7 @@ export function sharingKeyFingerprint(keyId: string): string {
 async function createKeyGrant(
   rawContentKey: Uint8Array,
   header: ReturnType<typeof sharedBackupHeader>,
-  participant: SharedBackupParticipantV1,
+  participant: Pick<SharingPublicKeyV1, "keyId" | "encryptionPublicKey">,
   cryptoImplementation: Crypto,
 ) {
   const ephemeral = await cryptoImplementation.subtle.generateKey(
@@ -942,8 +1007,127 @@ async function assertIdentity(
   }
 }
 
-async function assertParticipantKeys(
+/** Participant-key changes a writer applies to one revision. */
+export type SharedBackupParticipantKeyChanges = {
+  /** Owner or admin only. `false` also removes every additional key. */
+  policy?: boolean;
+  /** Participant-signed additions, from `createParticipantKeyAdditionV1`. */
+  add?: SharedBackupAdditionalKeyV1[];
+  /** A participant-signed removal, or a bare key ID when an owner or admin removes it. */
+  remove?: (SharedBackupKeyRemovalV1 | { keyId: string })[];
+  /** Replaces a participant's primary key, authorized by one of their additional keys. */
+  rotation?: SharedBackupAuthorizedKeyRotationV1;
+  /**
+   * Signs the access-control entry instead of the revision author — for
+   * example the recovery key authorizing its own participant's rotation.
+   */
+  accessAuthor?: WebCryptoSharingIdentity;
+};
+
+type ResolvedParticipantKeys = {
+  policy: boolean;
+  keys: SharedBackupAdditionalKeyV1[];
+  removals: SharedBackupKeyRemovalV1[];
+  rotation?: SharedBackupAuthorizedKeyRotationV1;
+  accessAuthor?: WebCryptoSharingIdentity;
+};
+
+const EMPTY_PARTICIPANT_KEYS: ResolvedParticipantKeys = {
+  policy: false,
+  keys: [],
+  removals: [],
+};
+
+function applyAuthorizedRotation(
   participants: SharedBackupParticipantV1[],
+  rotation: SharedBackupAuthorizedKeyRotationV1 | undefined,
+): SharedBackupParticipantV1[] {
+  if (!rotation) return participants;
+  const from = participants.find(
+    (participant) => participant.keyId === rotation.fromKeyId,
+  );
+  if (!from) {
+    throw new SyncKitError(
+      "configuration",
+      "The key being replaced is not a participant.",
+    );
+  }
+  return participants
+    .map((participant) =>
+      participant.keyId === from.keyId
+        ? {
+            ...publicKeyFields(rotation.to),
+            role: from.role,
+            ...(from.accepted ? { accepted: from.accepted } : {}),
+          }
+        : participant,
+    )
+    .sort((left, right) => compareUtf16CodeUnits(left.keyId, right.keyId));
+}
+
+/**
+ * The additional keys a revision will carry: the previous revision's, moved to
+ * a rotated participant's new key, without keys whose participant was removed,
+ * then with the requested changes applied.
+ */
+function resolveParticipantKeys(
+  previous: SharedBackupEnvelopeV1 | undefined,
+  participants: SharedBackupParticipantV1[],
+  changes: SharedBackupParticipantKeyChanges | undefined,
+  rotation: { fromKeyId: string; toKeyId: string } | undefined,
+): ResolvedParticipantKeys {
+  const prior = previous?.accessControl.at(-1);
+  const policy = changes?.policy ?? (prior ? participantKeysPolicy(prior) : false);
+  const participantIds = new Set(participants.map((participant) => participant.keyId));
+  let keys = (prior?.additionalKeys ?? [])
+    .map((key) =>
+      key.principalKeyId === rotation?.fromKeyId
+        ? { ...key, principalKeyId: rotation.toKeyId }
+        : key,
+    )
+    .filter((key) => participantIds.has(key.principalKeyId));
+  const removals: SharedBackupKeyRemovalV1[] = [];
+  for (const removal of changes?.remove ?? []) {
+    if (!keys.some((key) => key.keyId === removal.keyId)) {
+      throw new SyncKitError(
+        "configuration",
+        `Additional key ${removal.keyId} is not present.`,
+      );
+    }
+    keys = keys.filter((key) => key.keyId !== removal.keyId);
+    if ("removal" in removal) removals.push(removal);
+  }
+  for (const addition of changes?.add ?? []) {
+    if (!policy) {
+      throw new SyncKitError(
+        "state",
+        "This dataset does not allow additional participant keys.",
+      );
+    }
+    if (
+      participantIds.has(addition.keyId) ||
+      keys.some((key) => key.keyId === addition.keyId)
+    ) {
+      throw new SyncKitError(
+        "configuration",
+        `Participant key ${addition.keyId} is already present.`,
+      );
+    }
+    keys.push(addition);
+  }
+  if (!policy) keys = [];
+  keys.sort((left, right) => compareUtf16CodeUnits(left.keyId, right.keyId));
+  return {
+    policy,
+    keys,
+    removals,
+    ...(changes?.rotation ? { rotation: changes.rotation } : {}),
+    ...(changes?.accessAuthor ? { accessAuthor: changes.accessAuthor } : {}),
+  };
+}
+
+async function assertParticipantKeys(
+  participants: Pick<SharingPublicKeyV1, "keyId" | "encryptionPublicKey" | "signingPublicKey">[],
   cryptoImplementation: Crypto,
 ): Promise<void> {
   for (const participant of participants) {
@@ -970,11 +1154,19 @@ async function createAccessControl(
   cryptoImplementation: Crypto,
   previousIdentity?: WebCryptoSharingIdentity,
   ownershipTransfer?: SharedBackupOwnershipTransferV1,
+  participantKeys: ResolvedParticipantKeys = EMPTY_PARTICIPANT_KEYS,
 ): Promise<SharedBackupAccessV1[]> {
+  const priorAccess = previous?.accessControl.at(-1);
   if (
     previous &&
+    priorAccess &&
+    !participantKeys.rotation &&
     canonicalJson(sharedBackupParticipants(previous)) ===
-      canonicalJson(participants)
+      canonicalJson(participants) &&
+    participantKeysPolicy(priorAccess) === participantKeys.policy &&
+    canonicalJson(priorAccess.additionalKeys ?? []) ===
+      canonicalJson(participantKeys.keys) &&
+    participantKeys.removals.length === 0
   ) {
     return previous.accessControl;
   }
@@ -1010,7 +1202,17 @@ async function createAccessControl(
           ),
         }
       : undefined;
-  const accessSigner = previousIdentity ?? identity;
+  const accessSigner =
+    previousIdentity ?? participantKeys.accessAuthor ?? identity;
+  const authorizedRotation = participantKeys.rotation
+    ? {
+        fromKeyId: participantKeys.rotation.fromKeyId,
+        toKeyId: participantKeys.rotation.to.keyId,
+        newKeyProof: participantKeys.rotation.newKeyProof,
+        authorizedByKeyId: participantKeys.rotation.authorizedByKeyId,
+        authorization: participantKeys.rotation.authorization,
+      }
+    : undefined;
   const unsigned = {
     appId,
     backupId,
@@ -1019,7 +1221,15 @@ async function createAccessControl(
     authorKeyId: accessSigner.publicKey.keyId,
     participants,
     ...(keyRotation ? { keyRotation } : {}),
+    ...(authorizedRotation ? { keyRotation: authorizedRotation } : {}),
     ...(ownershipTransfer ? { ownershipTransfer } : {}),
+    ...(participantKeys.policy ? { participantKeysPolicy: "enabled" as const } : {}),
+    ...(participantKeys.keys.length > 0
+      ? { additionalKeys: participantKeys.keys }
+      : {}),
+    ...(participantKeys.removals.length > 0
+      ? { removedAdditionalKeys: participantKeys.removals }
+      : {}),
   };
   const entry: SharedBackupAccessV1 = {
     ...unsigned,
@@ -1045,6 +1255,8 @@ async function verifyAccessControl(
 ): Promise<SharedBackupParticipantV1[]> {
   let previous: SharedBackupAccessV1 | undefined;
   let ownerKeyId: string | undefined;
+  // An addition that was removed can never be re-added from the same signature.
+  const revokedAdditions = new Set<string>();
   for (const entry of accessControl) {
     if (
       (entry.appId !== undefined || entry.backupId !== undefined) &&
@@ -1056,6 +1268,7 @@ async function verifyAccessControl(
       );
     }
     await assertParticipantKeys(entry.participants, cryptoImplementation);
+    await assertParticipantKeys(entry.additionalKeys ?? [], cryptoImplementation);
     const owner = entry.participants.find(
       (participant) => participant.role === "owner",
     );
@@ -1075,7 +1288,11 @@ async function verifyAccessControl(
       }
     }
 
-    let author: SharedBackupParticipantV1 | undefined;
+    // The key that signed this entry, and the participant it acts for. They
+    // differ only when one of a participant's additional keys signed it.
+    let author: SharingPublicKeyV1 | undefined;
+    let authorParticipant: SharedBackupParticipantV1 | undefined;
+    let authorIsAdditional = false;
     let validRotation = false;
     let validOwnershipTransfer = false;
     if (previous) {
@@ -1089,15 +1306,26 @@ async function verifyAccessControl(
           "The access-control history hash is invalid.",
         );
       }
-      author = previous.participants.find(
+      const priorParticipant = previous.participants.find(
         (participant) => participant.keyId === entry.authorKeyId,
       );
+      const priorAdditional = previous.additionalKeys?.find(
+        (key) => key.keyId === entry.authorKeyId,
+      );
+      if (priorParticipant) {
+        author = priorParticipant;
+        authorParticipant = priorParticipant;
+      } else if (priorAdditional) {
+        author = priorAdditional;
+        authorIsAdditional = true;
+        authorParticipant = previous.participants.find(
+          (participant) => participant.keyId === priorAdditional.principalKeyId,
+        );
+      }
       validRotation = entry.keyRotation
-        ? await verifyAccessKeyRotation(
-            entry,
-            previous,
-            cryptoImplementation,
-          )
+        ? entry.keyRotation.authorizedByKeyId !== undefined
+          ? await verifyAuthorizedKeyRotation(entry, previous, appId, cryptoImplementation)
+          : await verifyAccessKeyRotation(entry, previous, cryptoImplementation)
         : false;
       validOwnershipTransfer = entry.ownershipTransfer
         ? await verifyOwnershipTransferEntry(
@@ -1106,16 +1334,59 @@ async function verifyAccessControl(
             cryptoImplementation,
           )
         : false;
+      // A recovery rotation is an auditable claim about who replaced whose
+      // key, so it must verify even when an admin — who could change the
+      // participants anyway — carries it. Otherwise the history would record a
+      // recovery that never happened.
+      if (entry.keyRotation?.authorizedByKeyId !== undefined && !validRotation) {
+        throw new SyncKitError(
+          "authorization",
+          "An authorized key rotation is not valid.",
+        );
+      }
+      // An additional key never carries its participant's admin authority.
+      const authorIsAdmin =
+        !authorIsAdditional &&
+        authorParticipant !== undefined &&
+        canAdministerSharedBackup(authorParticipant.role);
+      const authorCanWrite =
+        authorParticipant !== undefined &&
+        canWriteSharedBackup(authorParticipant.role);
+      // An entry that only carries participant-signed key operations may be
+      // written by anyone who can write the file: the operations prove
+      // themselves, whoever carries them.
+      const carriesOnlyKeyOperations =
+        !entry.keyRotation &&
+        !entry.ownershipTransfer &&
+        canonicalJson(previous.participants) === canonicalJson(entry.participants) &&
+        participantKeysPolicy(previous) === participantKeysPolicy(entry) &&
+        additionalKeysChanged(previous, entry);
       if (
         !author ||
-        (!canAdministerSharedBackup(author.role) &&
-          !validRotation &&
-          !validOwnershipTransfer)
+        !authorParticipant ||
+        !(
+          authorIsAdmin ||
+          validRotation ||
+          validOwnershipTransfer ||
+          (carriesOnlyKeyOperations && authorCanWrite)
+        )
       ) {
         throw new SyncKitError(
           "authorization",
           "An access-control change was not signed by a prior owner or admin.",
         );
+      }
+      if (entry.keyRotation?.authorizedByKeyId !== undefined) {
+        // Written by the authorizing key itself, or carried by a writer.
+        const selfAuthored =
+          authorIsAdditional &&
+          entry.authorKeyId === entry.keyRotation.authorizedByKeyId;
+        if (!authorCanWrite || (authorIsAdditional && !selfAuthored)) {
+          throw new SyncKitError(
+            "authorization",
+            "An authorized key rotation must be written by its authorizing key or a writer.",
+          );
+        }
       }
       if (owner.keyId !== ownerKeyId) {
         const validOwnerChange =
@@ -1133,6 +1404,27 @@ async function verifyAccessControl(
         }
         ownerKeyId = owner.keyId;
       }
+      await verifyAdditionalKeyChanges(
+        entry,
+        previous,
+        {
+          appId,
+          authorIsAdmin,
+          ...(authorIsAdditional && authorParticipant
+            ? { additionalAuthorPrincipal: authorParticipant.keyId }
+            : {}),
+          ...(validRotation && entry.keyRotation
+            ? {
+                rotation: {
+                  fromKeyId: entry.keyRotation.fromKeyId,
+                  toKeyId: entry.keyRotation.toKeyId,
+                },
+              }
+            : {}),
+          revokedAdditions,
+        },
+        cryptoImplementation,
+      );
     } else {
       if (entry.keyRotation || entry.ownershipTransfer) {
         throw new SyncKitError(
@@ -1140,15 +1432,34 @@ async function verifyAccessControl(
           "A genesis access entry cannot rotate a key or transfer ownership.",
         );
       }
+      if (entry.removedAdditionalKeys !== undefined) {
+        throw new SyncKitError(
+          "authorization",
+          "A genesis access entry cannot remove additional keys.",
+        );
+      }
       author = entry.participants.find(
         (participant) => participant.keyId === entry.authorKeyId,
       );
-      if (author?.role !== "owner") {
+      authorParticipant = author as SharedBackupParticipantV1 | undefined;
+      if (authorParticipant?.role !== "owner") {
         throw new SyncKitError(
           "authorization",
           "The first access-control entry was not signed by its owner.",
         );
       }
+      await verifyAdditionalKeyChanges(
+        entry,
+        undefined,
+        { appId, authorIsAdmin: true, revokedAdditions },
+        cryptoImplementation,
+      );
+    }
+    if (!author) {
+      throw new SyncKitError(
+        "authorization",
+        "An access-control entry has no authorized author.",
+      );
     }
     const { signature, ...unsigned } = entry;
     const valid = await cryptoImplementation.subtle.verify(
@@ -1170,6 +1481,222 @@ async function verifyAccessControl(
     throw new SyncKitError("compatibility", "Access-control history is empty.");
   }
   return participants;
+}
+
+function participantKeysPolicy(entry: SharedBackupAccessV1): boolean {
+  return entry.participantKeysPolicy === "enabled";
+}
+
+function additionalKeysChanged(
+  previous: SharedBackupAccessV1,
+  entry: SharedBackupAccessV1,
+): boolean {
+  return (
+    canonicalJson(previous.additionalKeys ?? []) !==
+      canonicalJson(entry.additionalKeys ?? []) ||
+    entry.removedAdditionalKeys !== undefined
+  );
+}
+
+/**
+ * Enforces the participant-key rules for one access-control entry against the
+ * one before it. See docs/participant-keys.md, "Rules".
+ */
+async function verifyAdditionalKeyChanges(
+  entry: SharedBackupAccessV1,
+  previous: SharedBackupAccessV1 | undefined,
+  context: {
+    appId: string | undefined;
+    authorIsAdmin: boolean;
+    /** Set when one of a participant's additional keys signed the entry. */
+    additionalAuthorPrincipal?: string;
+    rotation?: { fromKeyId: string; toKeyId: string };
+    revokedAdditions: Set<string>;
+  },
+  cryptoImplementation: Crypto,
+): Promise<void> {
+  const priorPolicy = previous ? participantKeysPolicy(previous) : false;
+  if (priorPolicy !== participantKeysPolicy(entry) && !context.authorIsAdmin) {
+    throw new SyncKitError(
+      "authorization",
+      "Only an owner or admin can change a dataset's participant-keys policy.",
+    );
+  }
+  const previousKeys = new Map(
+    (previous?.additionalKeys ?? []).map((key) => [key.keyId, key]),
+  );
+  const currentKeys = new Map(
+    (entry.additionalKeys ?? []).map((key) => [key.keyId, key]),
+  );
+  const removals = new Map(
+    (entry.removedAdditionalKeys ?? []).map((removal) => [removal.keyId, removal]),
+  );
+  if (previousKeys.size === 0 && currentKeys.size === 0 && removals.size === 0) {
+    return;
+  }
+  if (!context.appId) {
+    throw new SyncKitError(
+      "compatibility",
+      "Participant keys require an app-scoped shared backup.",
+    );
+  }
+  const appId = context.appId;
+  const added = [...currentKeys.keys()].some((keyId) => !previousKeys.has(keyId));
+  const removed = [...previousKeys.keys()].some((keyId) => !currentKeys.has(keyId));
+  if ((context.rotation || entry.ownershipTransfer) && (added || removed || removals.size > 0)) {
+    throw new SyncKitError(
+      "authorization",
+      "A key rotation or ownership transfer cannot also add or remove additional keys.",
+    );
+  }
+  const assertOwn = (principalKeyId: string): void => {
+    if (
+      context.additionalAuthorPrincipal !== undefined &&
+      principalKeyId !== context.additionalAuthorPrincipal
+    ) {
+      throw new SyncKitError(
+        "authorization",
+        "An additional key may only change its own participant's keys.",
+      );
+    }
+  };
+  const repoint = (principalKeyId: string): string =>
+    principalKeyId === context.rotation?.fromKeyId
+      ? context.rotation.toKeyId
+      : principalKeyId;
+
+  for (const [keyId, prior] of previousKeys) {
+    const current = currentKeys.get(keyId);
+    if (current) {
+      // Kept keys are unchanged, except that a rotation moves them to the
+      // participant's new primary key.
+      const expected = { ...prior, principalKeyId: repoint(prior.principalKeyId) };
+      if (canonicalJson(expected) !== canonicalJson(current)) {
+        throw new SyncKitError(
+          "authorization",
+          "An additional key changed without authorization.",
+        );
+      }
+      continue;
+    }
+    assertOwn(prior.principalKeyId);
+    const removal = removals.get(keyId);
+    if (removal) {
+      const remover =
+        removal.removedByKeyId === prior.principalKeyId
+          ? previous?.participants.find(
+              (participant) => participant.keyId === prior.principalKeyId,
+            )
+          : [...previousKeys.values()].find(
+              (key) =>
+                key.keyId === removal.removedByKeyId &&
+                key.principalKeyId === prior.principalKeyId,
+            );
+      const statement = removalStatement({ appId, keyId, addition: prior.addition });
+      if (
+        !remover ||
+        !(await verifyStatement(remover, statement, removal.removal, cryptoImplementation))
+      ) {
+        throw new SyncKitError(
+          "authorization",
+          "An additional-key removal is not signed by its participant.",
+        );
+      }
+    } else if (!context.authorIsAdmin) {
+      throw new SyncKitError(
+        "authorization",
+        "Only an owner, an admin, or the key's own participant can remove an additional key.",
+      );
+    }
+    context.revokedAdditions.add(prior.addition);
+  }
+  for (const keyId of removals.keys()) {
+    if (!previousKeys.has(keyId) || currentKeys.has(keyId)) {
+      throw new SyncKitError(
+        "authorization",
+        "An additional-key removal does not match a removed key.",
+      );
+    }
+  }
+  for (const [keyId, key] of currentKeys) {
+    if (previousKeys.has(keyId)) continue;
+    assertOwn(key.principalKeyId);
+    if (context.revokedAdditions.has(key.addition)) {
+      throw new SyncKitError(
+        "authorization",
+        "A removed additional key cannot be re-added from its old authorization.",
+      );
+    }
+    const principal = entry.participants.find(
+      (participant) => participant.keyId === key.principalKeyId,
+    );
+    const priorKey = previousKeys.get(key.addedByKeyId);
+    const authorizer: SharingPublicKeyV1 | undefined =
+      key.addedByKeyId === key.principalKeyId
+        ? principal
+        : priorKey?.principalKeyId === key.principalKeyId
+          ? priorKey
+          : undefined;
+    const statement = additionStatementForKey(appId, key);
+    if (
+      !principal ||
+      !authorizer ||
+      !(await verifyStatement(authorizer, statement, key.addition, cryptoImplementation)) ||
+      !(await verifyStatement(key, statement, key.possession, cryptoImplementation))
+    ) {
+      throw new SyncKitError(
+        "authorization",
+        "An additional key is not authorized by its participant or its holder.",
+      );
+    }
+  }
+}
+
+async function verifyAuthorizedKeyRotation(
+  entry: SharedBackupAccessV1,
+  previous: SharedBackupAccessV1,
+  appId: string | undefined,
+  cryptoImplementation: Crypto,
+): Promise<boolean> {
+  const rotation = entry.keyRotation;
+  if (!rotation?.authorizedByKeyId || !rotation.authorization || !appId) {
+    return false;
+  }
+  const authorizer = previous.additionalKeys?.find(
+    (key) => key.keyId === rotation.authorizedByKeyId,
+  );
+  if (authorizer?.principalKeyId !== rotation.fromKeyId) {
+    return false;
+  }
+  const from = previous.participants.find(
+    (participant) => participant.keyId === rotation.fromKeyId,
+  );
+  const to = entry.participants.find(
+    (participant) => participant.keyId === rotation.toKeyId,
+  );
+  const alreadyPresent =
+    previous.participants.some((participant) => participant.keyId === rotation.toKeyId) ||
+    (previous.additionalKeys ?? []).some((key) => key.keyId === rotation.toKeyId);
+  if (
+    !from ||
+    !to ||
+    alreadyPresent ||
+    from.role !== to.role ||
+    canonicalJson(from.accepted ?? null) !== canonicalJson(to.accepted ?? null)
+  ) {
+    return false;
+  }
+  const expectedParticipants = previous.participants
+    .map((participant) => (participant.keyId === from.keyId ? to : participant))
+    .sort((left, right) => compareUtf16CodeUnits(left.keyId, right.keyId));
+  if (canonicalJson(expectedParticipants) !== canonicalJson(entry.participants)) {
+    return false;
+  }
+  const statement = rotationStatement({ appId, fromKeyId: from.keyId, to });
+  return (
+    (await verifyStatement(authorizer, statement, rotation.authorization, cryptoImplementation)) &&
+    (await verifyStatement(to, statement, rotation.newKeyProof, cryptoImplementation))
+  );
 }
 
 async function verifyAccessKeyRotation(

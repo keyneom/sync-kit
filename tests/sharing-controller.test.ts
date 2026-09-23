@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { SyncKitError } from "../src/core/errors.js";
 import { readFileSync } from "node:fs";
 import {
+  createAuthorizedKeyRotationV1,
+  createParticipantKeyAdditionV1,
+  createParticipantKeyRemovalV1,
+  createSharingRecoveryKeyV1,
+  generateSharingRecoveryCode,
+} from "../src/sharing/participant-keys.js";
+import {
   createSharedBackupController,
   MemorySharedBackupRegistry,
   type SharedBackupControllerCodec,
@@ -1717,6 +1724,190 @@ function routedController(
     ...(resolveFork ? { resolveFork } : {}),
   });
 }
+
+describe("shared-backup controller participant keys", () => {
+  async function vault() {
+    const owner = await createWebCryptoSharingIdentity();
+    const viewer = await createWebCryptoSharingIdentity();
+    const writer = await createWebCryptoSharingIdentity();
+    const transport = new MemorySharingTransport();
+    const ownerController = controller(owner, transport, new MemorySharedBackupRegistry());
+    await ownerController.createDataset("vault", { items: ["owner"] });
+    for (const [identity, role, email] of [
+      [viewer, "viewer", "viewer@example.com"],
+      [writer, "writer", "writer@example.com"],
+    ] as const) {
+      await ownerController.addDatasetParticipant({
+        datasetId: "vault",
+        participant: { publicKey: identity.publicKey, role },
+        emailAddress: email,
+      });
+    }
+    const viewerController = controller(viewer, transport, new MemorySharedBackupRegistry());
+    const writerController = controller(writer, transport, new MemorySharedBackupRegistry());
+    await viewerController.adoptDataset("vault");
+    await writerController.adoptDataset("vault");
+    return { owner, viewer, writer, transport, ownerController, viewerController, writerController };
+  }
+
+  async function recoveryFor(principal: WebCryptoSharingIdentity) {
+    const code = await generateSharingRecoveryCode();
+    const recovery = await createSharingRecoveryKeyV1({ appId: "fixture-app", code });
+    const addition = await createParticipantKeyAdditionV1({
+      appId: "fixture-app",
+      principalKeyId: principal.publicKey.keyId,
+      authorizer: principal,
+      key: recovery.identity,
+      purpose: "recovery",
+      sealedPrivateKeys: recovery.sealedPrivateKeys,
+    });
+    return { code, identity: recovery.identity, addition };
+  }
+
+  it("is off until an owner or admin turns it on", async () => {
+    const { ownerController, writerController, viewer } = await vault();
+    const recovery = await recoveryFor(viewer);
+    await expect(
+      writerController.addParticipantKeys({ datasetId: "vault", additions: [recovery.addition] }),
+    ).rejects.toMatchObject({ code: "state" });
+    await expect(
+      writerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: true }),
+    ).rejects.toMatchObject({ code: "authorization" });
+    await ownerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: true });
+    await expect(ownerController.getDatasetParticipantKeys("vault")).resolves.toEqual({
+      enabled: true,
+      keys: [],
+    });
+  });
+
+  it("recovers a viewer on a fresh device, with a writer carrying each step", async () => {
+    const { ownerController, viewerController, writerController, viewer, transport } =
+      await vault();
+    await ownerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: true });
+    const recovery = await recoveryFor(viewer);
+    // A viewer cannot write, even to add its own key; a writer carries it.
+    await expect(
+      viewerController.addParticipantKeys({ datasetId: "vault", additions: [recovery.addition] }),
+    ).rejects.toMatchObject({ code: "authorization" });
+    await writerController.addParticipantKeys({
+      datasetId: "vault",
+      additions: [recovery.addition],
+    });
+    await expect(
+      viewerController.participantKeyCoverage({
+        keyId: recovery.addition.keyId,
+        datasetIds: ["vault"],
+      }),
+    ).resolves.toEqual([{ datasetId: "vault", policyEnabled: true, protected: true }]);
+
+    // Passkey lost. A fresh device has nothing registered, only the code.
+    const replacement = await createWebCryptoSharingIdentity();
+    const freshDevice = controller(replacement, transport, new MemorySharedBackupRegistry());
+    const opened = await freshDevice.openRecoveryKey({ datasetId: "vault", code: recovery.code });
+    const rotation = await createAuthorizedKeyRotationV1({
+      appId: "fixture-app",
+      fromKeyId: viewer.publicKey.keyId,
+      authorizer: opened.identity,
+      replacement,
+    });
+    // A viewer's recovery key cannot write either; the writer carries the rotation.
+    await expect(
+      freshDevice.rotateWithAdditionalKey({
+        datasetId: "vault",
+        rotation,
+        recovery: { replacement, key: opened.identity },
+      }),
+    ).rejects.toMatchObject({ code: "authorization" });
+    await writerController.rotateWithAdditionalKey({ datasetId: "vault", rotation });
+
+    await freshDevice.adoptDataset("vault");
+    await expect(freshDevice.loadDataset("vault")).resolves.toMatchObject({
+      value: { items: ["owner"] },
+    });
+    const participants = await ownerController.getDatasetParticipants("vault");
+    expect(participants.participants.some((p) => p.keyId === viewer.publicKey.keyId)).toBe(false);
+  });
+
+  it("recovers a writer alone on a fresh device", async () => {
+    const { ownerController, writerController, writer, transport } = await vault();
+    await ownerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: true });
+    const recovery = await recoveryFor(writer);
+    await writerController.addParticipantKeys({
+      datasetId: "vault",
+      additions: [recovery.addition],
+    });
+
+    const replacement = await createWebCryptoSharingIdentity();
+    const freshDevice = controller(replacement, transport, new MemorySharedBackupRegistry());
+    const opened = await freshDevice.openRecoveryKey({ datasetId: "vault", code: recovery.code });
+    const rotation = await createAuthorizedKeyRotationV1({
+      appId: "fixture-app",
+      fromKeyId: writer.publicKey.keyId,
+      authorizer: opened.identity,
+      replacement,
+    });
+    await freshDevice.rotateWithAdditionalKey({
+      datasetId: "vault",
+      rotation,
+      recovery: { replacement, key: opened.identity },
+    });
+    // Registered by the rotation, and writable as the replacement key.
+    await expect(
+      freshDevice.syncDataset("vault", {
+        read: () => ({ items: ["owner", "recovered"] }),
+        apply: (merged) => merged,
+      }),
+    ).resolves.toMatchObject({ outcome: "updated" });
+    // The recovery key moved to the new primary and still protects the dataset.
+    await expect(ownerController.getDatasetParticipantKeys("vault")).resolves.toMatchObject({
+      keys: [{ keyId: recovery.addition.keyId, principalKeyId: replacement.publicKey.keyId }],
+    });
+  });
+
+  it("removes a participant's own key, and removes every key when turned off", async () => {
+    const { ownerController, writerController, viewer, writer } = await vault();
+    await ownerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: true });
+    const viewerRecovery = await recoveryFor(viewer);
+    const writerRecovery = await recoveryFor(writer);
+    await writerController.addParticipantKeys({
+      datasetId: "vault",
+      additions: [viewerRecovery.addition, writerRecovery.addition],
+    });
+    const removal = await createParticipantKeyRemovalV1({
+      appId: "fixture-app",
+      authorizer: viewer,
+      key: viewerRecovery.addition,
+    });
+    await writerController.removeParticipantKeys({ datasetId: "vault", removals: [removal] });
+    await expect(ownerController.getDatasetParticipantKeys("vault")).resolves.toMatchObject({
+      keys: [{ keyId: writerRecovery.addition.keyId }],
+    });
+    await ownerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: false });
+    await expect(ownerController.getDatasetParticipantKeys("vault")).resolves.toEqual({
+      enabled: false,
+      keys: [],
+    });
+  });
+
+  it("drops a participant's keys when the participant is revoked", async () => {
+    const { ownerController, writerController, viewer } = await vault();
+    await ownerController.setParticipantKeysPolicy({ datasetId: "vault", enabled: true });
+    const recovery = await recoveryFor(viewer);
+    await writerController.addParticipantKeys({
+      datasetId: "vault",
+      additions: [recovery.addition],
+    });
+    await ownerController.revokeDatasetKey({
+      datasetId: "vault",
+      keyId: viewer.publicKey.keyId,
+      emailAddress: "viewer@example.com",
+    });
+    await expect(ownerController.getDatasetParticipantKeys("vault")).resolves.toEqual({
+      enabled: true,
+      keys: [],
+    });
+  });
+});
 
 function controller(
   identity: WebCryptoSharingIdentity,

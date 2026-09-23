@@ -3,10 +3,15 @@ import {
   canAdministerSharedBackup,
   parseSharedBackupEnvelopeV1,
   parseSharedBackupOwnershipTransferV1,
+  sharedBackupAdditionalKeys,
   sharedBackupParticipant,
+  sharedBackupParticipantKeysEnabled,
   sharedBackupParticipants,
+  type SharedBackupAdditionalKeyV1,
+  type SharedBackupAuthorizedKeyRotationV1,
   type SharedBackupCodec,
   type SharedBackupEnvelopeV1,
+  type SharedBackupKeyRemovalV1,
   type SharingAccountBindingV1,
   type SharingDatasetGrantV1,
   type SharingInvitationV1,
@@ -39,9 +44,11 @@ import {
   verifySharedBackupEnvelopeV1,
   verifySharingInvitationV1,
   type SharedBackupParticipantInput,
+  type SharedBackupParticipantKeyChanges,
   type WebCryptoSharingIdentity,
   type WebCryptoSharingOptions,
 } from "./web-crypto.js";
+import { openSharingRecoveryKeyFromEnvelopeV1 } from "./participant-keys.js";
 import { formatSharingInviteEmailMessage, appendSharingJoinParams } from "./join.js";
 export { IndexedDbSharedBackupRegistry } from "./registry-indexeddb.js";
 
@@ -142,6 +149,16 @@ export type RotatedDatasetResult = {
   datasetId: string;
   status: "rotated" | "failed";
   revisionId?: string;
+  error?: unknown;
+};
+
+/** Whether a participant key protects one dataset. See `participantKeyCoverage`. */
+export type ParticipantKeyCoverage = {
+  datasetId: string;
+  /** The dataset lets participants hold additional keys. */
+  policyEnabled: boolean;
+  /** The key is in the current revision, so it can read the latest data. */
+  protected: boolean;
   error?: unknown;
 };
 
@@ -492,6 +509,235 @@ export class SharedBackupController<T> {
         "updated",
       );
     });
+  }
+
+  /**
+   * Allow — or stop allowing — participants to hold additional keys in this
+   * dataset, such as recovery keys. Owner or admin only; off by default.
+   * Turning it off removes every additional key in the same revision.
+   *
+   * Enabling it moves the dataset to schemaVersion 2, which participants on
+   * sync-kit before 0.5.0 cannot read. Enable it only once every participant
+   * runs a version that supports it. See docs/participant-keys.md.
+   */
+  setParticipantKeysPolicy(input: {
+    datasetId: string;
+    enabled: boolean;
+  }): Promise<SharedDatasetResult<T>> {
+    return this.serialized(async () => {
+      const identity = await this.options.identity();
+      return await this.rewriteParticipantKeys(input.datasetId, identity, identity, {
+        policy: input.enabled,
+      });
+    });
+  }
+
+  /**
+   * Apply participant-signed key additions (`createParticipantKeyAdditionV1`).
+   * Any writer may carry them, including on behalf of a viewer, who cannot
+   * write; each addition proves itself.
+   */
+  addParticipantKeys(input: {
+    datasetId: string;
+    additions: SharedBackupAdditionalKeyV1[];
+  }): Promise<SharedDatasetResult<T>> {
+    return this.serialized(async () => {
+      const identity = await this.options.identity();
+      return await this.rewriteParticipantKeys(input.datasetId, identity, identity, {
+        add: input.additions,
+      });
+    });
+  }
+
+  /**
+   * Apply key removals: participant-signed (`createParticipantKeyRemovalV1`),
+   * or bare key IDs when this identity is an owner or admin. Remove a lost or
+   * compromised key from every dataset; until then it still grants access.
+   */
+  removeParticipantKeys(input: {
+    datasetId: string;
+    removals: (SharedBackupKeyRemovalV1 | { keyId: string })[];
+  }): Promise<SharedDatasetResult<T>> {
+    return this.serialized(async () => {
+      const identity = await this.options.identity();
+      return await this.rewriteParticipantKeys(input.datasetId, identity, identity, {
+        remove: input.removals,
+      });
+    });
+  }
+
+  /**
+   * Replace a participant's lost primary key with `rotation.to`, authorized by
+   * one of their additional keys (`createAuthorizedKeyRotationV1`).
+   *
+   * To recover yourself, pass `recovery`: the replacement identity writes the
+   * revision, and the recovery key signs the access change and reads the
+   * current data. This works on a fresh device before the dataset is
+   * registered — its first owner is pinned as the trust root, as in
+   * `adoptDataset`. Omit `recovery` to carry someone else's rotation with this
+   * controller's identity, which must be able to write the dataset.
+   */
+  rotateWithAdditionalKey(input: {
+    datasetId: string;
+    rotation: SharedBackupAuthorizedKeyRotationV1;
+    recovery?: {
+      replacement: WebCryptoSharingIdentity;
+      key: WebCryptoSharingIdentity;
+    };
+  }): Promise<SharedDatasetResult<T>> {
+    return this.serialized(async () => {
+      if (
+        input.recovery &&
+        input.recovery.replacement.publicKey.keyId !== input.rotation.to.keyId
+      ) {
+        throw new SyncKitError(
+          "configuration",
+          "The replacement identity does not match the rotation.",
+        );
+      }
+      const author = input.recovery?.replacement ?? (await this.options.identity());
+      const reader = input.recovery?.key ?? author;
+      return await this.rewriteParticipantKeys(
+        input.datasetId,
+        author,
+        reader,
+        {
+          rotation: input.rotation,
+          ...(input.recovery ? { accessAuthor: input.recovery.key } : {}),
+        },
+        { allowUnregistered: input.recovery !== undefined },
+      );
+    });
+  }
+
+  /**
+   * Unseal the recovery key `code` opens in this dataset. Reads the dataset
+   * file directly, so it works on a fresh device before anything is adopted.
+   */
+  openRecoveryKey(input: {
+    datasetId: string;
+    code: string;
+  }): Promise<{ identity: WebCryptoSharingIdentity; key: SharedBackupAdditionalKeyV1 }> {
+    return this.serialized(async () => {
+      const stored = await this.readDatasetById(input.datasetId);
+      const record =
+        (await this.options.registry.get(input.datasetId)) ??
+        this.initialOwnerRecord(stored);
+      await verifySharedBackupEnvelopeV1(stored.envelope, this.crypto(), {
+        trustedOwnerKeyId: record.trustedOwnerKeyId,
+      });
+      return await openSharingRecoveryKeyFromEnvelopeV1(
+        { code: input.code, envelope: stored.envelope },
+        this.cryptoOptions(),
+      );
+    });
+  }
+
+  /** The dataset's participant-keys policy and current additional keys. */
+  getDatasetParticipantKeys(datasetId: string): Promise<{
+    enabled: boolean;
+    keys: SharedBackupAdditionalKeyV1[];
+  }> {
+    return this.serialized(async () => {
+      const stored = await this.readDatasetById(datasetId);
+      const record = await this.requiredRegistry(datasetId);
+      await this.verifyHead(stored, record);
+      return {
+        enabled: sharedBackupParticipantKeysEnabled(stored.envelope),
+        keys: sharedBackupAdditionalKeys(stored.envelope),
+      };
+    });
+  }
+
+  /**
+   * Whether `keyId` protects each dataset — present in its current revision.
+   * A key only takes effect from a dataset's next write onward, and a viewer's
+   * keys wait until a writer carries them, so "set up" and "protected" differ;
+   * report this rather than assuming it.
+   */
+  participantKeyCoverage(input: {
+    keyId: string;
+    datasetIds: string[];
+  }): Promise<ParticipantKeyCoverage[]> {
+    return this.serialized(async () => {
+      const coverage: ParticipantKeyCoverage[] = [];
+      for (const datasetId of input.datasetIds) {
+        try {
+          const stored = await this.readDatasetById(datasetId);
+          const record = await this.requiredRegistry(datasetId);
+          await this.verifyHead(stored, record);
+          coverage.push({
+            datasetId,
+            policyEnabled: sharedBackupParticipantKeysEnabled(stored.envelope),
+            protected: sharedBackupAdditionalKeys(stored.envelope).some(
+              (key) => key.keyId === input.keyId,
+            ),
+          });
+        } catch (error) {
+          coverage.push({ datasetId, policyEnabled: false, protected: false, error });
+        }
+      }
+      return coverage;
+    });
+  }
+
+  private async rewriteParticipantKeys(
+    datasetId: string,
+    author: WebCryptoSharingIdentity,
+    reader: WebCryptoSharingIdentity,
+    changes: SharedBackupParticipantKeyChanges,
+    options: { allowUnregistered?: boolean } = {},
+  ): Promise<SharedDatasetResult<T>> {
+    requireNonEmpty(datasetId, "datasetId");
+    const stored = await this.readDatasetById(datasetId);
+    const registered = await this.options.registry.get(datasetId);
+    if (!registered && !options.allowUnregistered) {
+      await this.requiredRegistry(datasetId);
+    }
+    const record = registered ?? this.initialOwnerRecord(stored);
+    if (registered) {
+      await this.verifyHead(stored, registered);
+    } else {
+      await verifySharedBackupEnvelopeV1(stored.envelope, this.crypto(), {
+        trustedOwnerKeyId: record.trustedOwnerKeyId,
+      });
+    }
+    const codec = this.codecForDataset(datasetId);
+    const value = await decryptSharedBackupEnvelopeV1(
+      stored.envelope,
+      codec,
+      reader,
+      this.crypto(),
+      { trustedOwnerKeyId: record.trustedOwnerKeyId },
+    );
+    const next = await createSharedBackupEnvelopeV1(
+      value,
+      codec,
+      author,
+      {
+        appId: this.options.appId,
+        backupId: datasetId,
+        participants: participantInputs(stored.envelope),
+        previous: stored.envelope,
+        participantKeys: changes,
+      },
+      this.cryptoOptions(),
+    );
+    const updated = await this.options.transport.writeDataset(stored, next);
+    // A rotation keeps a participant's Drive permission under their new key.
+    const fromKeyId = changes.rotation?.fromKeyId;
+    const toKeyId = changes.rotation?.to.keyId;
+    const permissions = Object.fromEntries(
+      Object.entries(record.participantPermissionIds ?? {}).map(([keyId, permissionId]) => [
+        keyId === fromKeyId && toKeyId ? toKeyId : keyId,
+        permissionId,
+      ]),
+    );
+    await this.persistHead(updated, record.trustedOwnerKeyId, {
+      ...record,
+      ...(record.participantPermissionIds ? { participantPermissionIds: permissions } : {}),
+    });
+    return result(updated, value, "updated");
   }
 
   inviteParticipant(input: {

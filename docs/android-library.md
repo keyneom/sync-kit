@@ -80,7 +80,7 @@ dependencyResolutionManagement {
 }
 
 // app/build.gradle.kts
-implementation("com.keyneom:sync-kit-android:0.4.5")
+implementation("com.keyneom:sync-kit-android:0.5.0")
 ```
 
 In CI, set `GITHUB_ACTOR` and `GITHUB_TOKEN` instead of `gpr.*` properties.
@@ -140,6 +140,7 @@ See [consumer-responsibilities.md](./consumer-responsibilities.md) and
 | `sharing.work.SharingSyncWorker` | WorkManager skeleton (detect only) |
 | `sharing.SharingAccountBindings` | TS-compatible challenge, Credential Manager assertion, WebAuthn/JWT verification |
 | `sharing.CachingGoogleJwksProvider` | bounded Google JWKS cache with unknown-`kid` refresh |
+| `sharing.ParticipantKeys` | Opt-in additional keys and recovery codes — see [participant keys](./participant-keys.md) |
 
 ### Application-owned
 

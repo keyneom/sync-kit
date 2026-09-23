@@ -152,6 +152,10 @@ Available exports:
   wrap the sharing identity in an app-owned secret, which strands it on the
   device holding that secret. See
   [consumer-responsibilities.md](docs/consumer-responsibilities.md#one-sharing-identity-across-a-users-devices).
+- `/sharing/participant-keys` — opt-in additional keys per participant and
+  generated recovery codes, so a lost passkey is recoverable — including for data
+  other people share. Off for each dataset until an owner or admin enables it;
+  see [participant keys](docs/participant-keys.md)
 - `/sharing/account-binding` — backendless Google ID-token and WebAuthn
   challenge binding, signature verification, and account provenance
 - `/keys/web-passkey` — WebAuthn PRF keys with exact credential selection,

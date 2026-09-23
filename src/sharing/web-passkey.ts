@@ -11,9 +11,10 @@ import {
 } from "../keys/web-passkey/index.js";
 import type { SharingPublicKeyV1 } from "./index.js";
 import {
-  createSharingPublicKeyV1,
-  type WebCryptoSharingIdentity,
-} from "./web-crypto.js";
+  generateSharingIdentityMaterial,
+  importSharingIdentity,
+} from "./identity-material.js";
+import type { WebCryptoSharingIdentity } from "./web-crypto.js";
 
 export const PROTECTED_SHARING_IDENTITY_KIND =
   "sync-kit-protected-sharing-identity" as const;
@@ -203,40 +204,9 @@ export async function createProtectedSharingIdentityV1(
   record: ProtectedSharingIdentityV1;
 }> {
   if (!appId.trim()) throw new TypeError("appId must not be empty.");
-  const encryption = await cryptoImplementation.subtle.generateKey(
-    { name: "ECDH", namedCurve: "P-256" },
-    true,
-    ["deriveBits"],
-  );
-  const signing = await cryptoImplementation.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"],
-  );
-  const encryptionPublicKey = bytesToBase64Url(
-    new Uint8Array(
-      await cryptoImplementation.subtle.exportKey("raw", encryption.publicKey),
-    ),
-  );
-  const signingPublicKey = bytesToBase64Url(
-    new Uint8Array(
-      await cryptoImplementation.subtle.exportKey("raw", signing.publicKey),
-    ),
-  );
-  const publicKey = await createSharingPublicKeyV1(
-    encryptionPublicKey,
-    signingPublicKey,
+  const { publicKey, packed } = await generateSharingIdentityMaterial(
     cryptoImplementation,
   );
-  const encryptionPrivate = new Uint8Array(
-    await cryptoImplementation.subtle.exportKey("pkcs8", encryption.privateKey),
-  );
-  const signingPrivate = new Uint8Array(
-    await cryptoImplementation.subtle.exportKey("pkcs8", signing.privateKey),
-  );
-  const packed = packPrivateKeys(encryptionPrivate, signingPrivate);
-  encryptionPrivate.fill(0);
-  signingPrivate.fill(0);
   try {
     return await sealProtectedSharingIdentity(
       appId,
@@ -352,7 +322,7 @@ async function sealProtectedSharingIdentity(
   };
   return {
     record,
-    identity: await importIdentity(record, packed, cryptoImplementation),
+    identity: await importSharingIdentity(record.publicKey, packed, cryptoImplementation),
   };
 }
 
@@ -368,7 +338,7 @@ export async function unlockProtectedSharingIdentityV1(
     cryptoImplementation,
   );
   try {
-    return await importIdentity(record, plaintext, cryptoImplementation);
+    return await importSharingIdentity(record.publicKey, plaintext, cryptoImplementation);
   } finally {
     plaintext.fill(0);
   }
@@ -567,48 +537,6 @@ export class IndexedDbProtectedSharingIdentityStore
   }
 }
 
-async function importIdentity(
-  record: ProtectedSharingIdentityV1,
-  packed: Uint8Array,
-  cryptoImplementation: Crypto,
-): Promise<WebCryptoSharingIdentity> {
-  const [encryptionPrivate, signingPrivate] = unpackPrivateKeys(packed);
-  try {
-    const identity = {
-      publicKey: record.publicKey,
-      encryptionPrivateKey: await cryptoImplementation.subtle.importKey(
-        "pkcs8",
-        copyBuffer(encryptionPrivate),
-        { name: "ECDH", namedCurve: "P-256" },
-        false,
-        ["deriveBits"],
-      ),
-      signingPrivateKey: await cryptoImplementation.subtle.importKey(
-        "pkcs8",
-        copyBuffer(signingPrivate),
-        { name: "ECDSA", namedCurve: "P-256" },
-        false,
-        ["sign"],
-      ),
-    };
-    const expected = await createSharingPublicKeyV1(
-      record.publicKey.encryptionPublicKey,
-      record.publicKey.signingPublicKey,
-      cryptoImplementation,
-    );
-    if (expected.keyId !== record.publicKey.keyId) {
-      throw new SyncKitError(
-        "key",
-        "The protected sharing identity public-key fingerprint is invalid.",
-      );
-    }
-    return identity;
-  } finally {
-    encryptionPrivate.fill(0);
-    signingPrivate.fill(0);
-  }
-}
-
 function metadataFromRecord(
   record: ProtectedSharingIdentityV1,
 ): WebPasskeyKeyMetadata {
@@ -640,37 +568,3 @@ function protectedIdentityHeader(record: ProtectedSharingIdentityV1) {
   };
 }
 
-function packPrivateKeys(
-  encryptionPrivate: Uint8Array,
-  signingPrivate: Uint8Array,
-): Uint8Array {
-  const packed = new Uint8Array(4 + encryptionPrivate.length + signingPrivate.length);
-  new DataView(packed.buffer).setUint32(0, encryptionPrivate.length);
-  packed.set(encryptionPrivate, 4);
-  packed.set(signingPrivate, 4 + encryptionPrivate.length);
-  return packed;
-}
-
-function unpackPrivateKeys(packed: Uint8Array): [Uint8Array, Uint8Array] {
-  if (packed.length < 5) {
-    throw new SyncKitError(
-      "compatibility",
-      "Protected sharing private-key material is malformed.",
-    );
-  }
-  const encryptionLength = new DataView(
-    packed.buffer,
-    packed.byteOffset,
-    packed.byteLength,
-  ).getUint32(0);
-  if (encryptionLength === 0 || 4 + encryptionLength >= packed.length) {
-    throw new SyncKitError(
-      "compatibility",
-      "Protected sharing private-key material is malformed.",
-    );
-  }
-  return [
-    packed.slice(4, 4 + encryptionLength),
-    packed.slice(4 + encryptionLength),
-  ];
-}

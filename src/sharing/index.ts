@@ -13,6 +13,17 @@ export const SHARING_SIGNATURE_ALGORITHM =
 export const SHARING_CONTENT_ALGORITHM =
   "AES-256-GCM+ECDH-P256+HKDF-SHA256" as const;
 export const SHARED_BACKUP_MAX_REVISION_ANCESTORS = 256;
+/**
+ * Upper bound on additional keys one participant may hold in a dataset. Bounds
+ * envelope growth: every key receives a content-key grant on every revision.
+ */
+export const SHARED_BACKUP_MAX_ADDITIONAL_KEYS_PER_PARTICIPANT = 8;
+export const PARTICIPANT_KEY_ADDITION_KIND =
+  "sync-kit-participant-key-addition" as const;
+export const PARTICIPANT_KEY_REMOVAL_KIND =
+  "sync-kit-participant-key-removal" as const;
+export const PARTICIPANT_KEY_ROTATION_KIND =
+  "sync-kit-participant-key-rotation" as const;
 
 export type SharingRole = "owner" | "admin" | "writer" | "viewer";
 
@@ -117,6 +128,57 @@ export type SharedBackupOwnershipTransferV1 = {
   newOwnerProof?: string;
 };
 
+/** Why a participant holds an additional key. Informational; rules are identical. */
+export type SharedBackupAdditionalKeyPurpose = "recovery" | "device";
+
+/**
+ * A recovery key's private keys, sealed under a key derived from a generated
+ * recovery code and stored in the dataset itself, so a single data file plus
+ * the code is enough to recover. See docs/participant-keys.md.
+ */
+export type SharedBackupSealedKeyV1 = {
+  kdf: "HKDF-SHA256";
+  kdfSalt: string;
+  nonce: string;
+  encryptedPrivateKeys: string;
+};
+
+/**
+ * A key a participant (its principal) holds in addition to their primary key.
+ * It receives the content key on every revision and acts only for its
+ * principal, never with a role of its own. See docs/participant-keys.md.
+ */
+export type SharedBackupAdditionalKeyV1 = SharingPublicKeyV1 & {
+  principalKeyId: string;
+  purpose: SharedBackupAdditionalKeyPurpose;
+  addedByKeyId: string;
+  /** Signature by `addedByKeyId`, a key of the principal, over the addition. */
+  addition: string;
+  /** Signature by this key over the addition: proves the holder has it. */
+  possession: string;
+  sealedPrivateKeys?: SharedBackupSealedKeyV1;
+};
+
+/**
+ * A participant's signed request to replace their primary key, authorized by
+ * one of their additional keys. `to` carries the replacement's public key so
+ * any writer can apply it.
+ */
+export type SharedBackupAuthorizedKeyRotationV1 = {
+  fromKeyId: string;
+  to: SharingPublicKeyV1;
+  newKeyProof: string;
+  authorizedByKeyId: string;
+  authorization: string;
+};
+
+/** Proof that a principal removed one of its own additional keys. */
+export type SharedBackupKeyRemovalV1 = {
+  keyId: string;
+  removedByKeyId: string;
+  removal: string;
+};
+
 export type SharedBackupAccessV1 = {
   sequence: number;
   appId?: string;
@@ -128,8 +190,19 @@ export type SharedBackupAccessV1 = {
     fromKeyId: string;
     toKeyId: string;
     newKeyProof: string;
+    /**
+     * Present when an additional key of `fromKeyId`'s principal authorized the
+     * rotation — replacing a lost primary key. `newKeyProof` then signs the
+     * app-scoped rotation statement instead of this entry.
+     */
+    authorizedByKeyId?: string;
+    authorization?: string;
   };
   ownershipTransfer?: SharedBackupOwnershipTransferV1;
+  /** Opt-in per dataset. Absent means no participant may hold additional keys. */
+  participantKeysPolicy?: "enabled";
+  additionalKeys?: SharedBackupAdditionalKeyV1[];
+  removedAdditionalKeys?: SharedBackupKeyRemovalV1[];
   signature: string;
 };
 
@@ -142,7 +215,12 @@ export type SharedBackupKeyGrantV1 = {
 };
 
 export type SharedBackupEnvelopeV1 = {
-  schemaVersion: 1;
+  /**
+   * 2 once the access-control history has ever used participant keys, so
+   * readers without support fail closed; 1 otherwise. The format is otherwise
+   * identical.
+   */
+  schemaVersion: 1 | 2;
   kind: typeof SHARED_BACKUP_KIND;
   algorithm: typeof SHARING_CONTENT_ALGORITHM;
   appId: string;
@@ -283,7 +361,11 @@ export function parseSharedBackupEnvelopeV1(
   value: unknown,
 ): SharedBackupEnvelopeV1 {
   const parsed = parseObject(value, "shared-backup envelope");
-  assertExact(parsed.schemaVersion, 1, "schemaVersion");
+  if (parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) {
+    throw compatibility(
+      "Unsupported shared-backup schemaVersion; this dataset may need a newer sync-kit.",
+    );
+  }
   assertExact(parsed.kind, SHARED_BACKUP_KIND, "kind");
   assertExact(parsed.algorithm, SHARING_CONTENT_ALGORITHM, "algorithm");
   assertNonEmptyStrings(parsed, [
@@ -344,11 +426,23 @@ export function parseSharedBackupEnvelopeV1(
     parseAccessEntry(input, index);
   }
   const accessControl = parsed.accessControl as SharedBackupAccessV1[];
+  const usesParticipantKeys = accessControlUsesParticipantKeys(accessControl);
+  if (usesParticipantKeys !== (parsed.schemaVersion === 2)) {
+    throw compatibility(
+      usesParticipantKeys
+        ? "A shared backup that uses participant keys must declare schemaVersion 2."
+        : "schemaVersion 2 is reserved for shared backups that use participant keys.",
+    );
+  }
   const participants = accessControl.at(-1)?.participants;
   if (!participants) throw compatibility("accessControl must not be empty.");
   const participantIds = new Set(
     participants.map((participant) => participant.keyId),
   );
+  const recipientIds = new Set([
+    ...participantIds,
+    ...(accessControl.at(-1)?.additionalKeys ?? []).map((key) => key.keyId),
+  ]);
   if (!participantIds.has(parsed.authorKeyId as string)) {
     throw compatibility("The revision author is not a participant.");
   }
@@ -364,7 +458,7 @@ export function parseSharedBackupEnvelopeV1(
       "wrappedContentKey",
     ]);
     const recipientKeyId = grant.recipientKeyId as string;
-    if (!participantIds.has(recipientKeyId)) {
+    if (!recipientIds.has(recipientKeyId)) {
       throw compatibility("A key grant references a non-participant.");
     }
     if (grantIds.has(recipientKeyId)) {
@@ -379,8 +473,8 @@ export function parseSharedBackupEnvelopeV1(
     validateBytes(grant.nonce as string, 12, "key-grant nonce");
     base64UrlToBytes(grant.wrappedContentKey as string);
   }
-  if (grantIds.size !== participantIds.size) {
-    throw compatibility("Every participant must have exactly one key grant.");
+  if (grantIds.size !== recipientIds.size) {
+    throw compatibility("Every participant key must have exactly one key grant.");
   }
   validateBytes(parsed.payloadNonce as string, 12, "payload nonce");
   base64UrlToBytes(parsed.ciphertext as string);
@@ -406,6 +500,57 @@ export function sharedBackupParticipant(
   return sharedBackupParticipants(envelope).find(
     (participant) => participant.keyId === keyId,
   ) ?? null;
+}
+
+/** Additional keys in the current revision. Empty unless the dataset opted in. */
+export function sharedBackupAdditionalKeys(
+  envelope: SharedBackupEnvelopeV1,
+): SharedBackupAdditionalKeyV1[] {
+  return envelope.accessControl.at(-1)?.additionalKeys ?? [];
+}
+
+/** Whether the dataset currently lets participants hold additional keys. */
+export function sharedBackupParticipantKeysEnabled(
+  envelope: SharedBackupEnvelopeV1,
+): boolean {
+  return envelope.accessControl.at(-1)?.participantKeysPolicy === "enabled";
+}
+
+/**
+ * Resolves any key that can read the current revision to the participant it
+ * acts for: a participant's own primary key, or one of their additional keys.
+ */
+export function sharedBackupKeyHolder(
+  envelope: SharedBackupEnvelopeV1,
+  keyId: string,
+): {
+  participant: SharedBackupParticipantV1;
+  additionalKey: SharedBackupAdditionalKeyV1 | null;
+} | null {
+  const participant = sharedBackupParticipant(envelope, keyId);
+  if (participant) return { participant, additionalKey: null };
+  const additionalKey = sharedBackupAdditionalKeys(envelope).find(
+    (candidate) => candidate.keyId === keyId,
+  );
+  if (!additionalKey) return null;
+  const principal = sharedBackupParticipant(envelope, additionalKey.principalKeyId);
+  return principal ? { participant: principal, additionalKey } : null;
+}
+
+/** Whether an access-control history has ever used participant keys (schemaVersion 2). */
+export function accessControlUsesParticipantKeys(
+  accessControl: SharedBackupAccessV1[],
+): boolean {
+  return accessControl.some(usesParticipantKeyFields);
+}
+
+function usesParticipantKeyFields(entry: SharedBackupAccessV1): boolean {
+  return (
+    entry.participantKeysPolicy !== undefined ||
+    entry.additionalKeys !== undefined ||
+    entry.removedAdditionalKeys !== undefined ||
+    entry.keyRotation?.authorizedByKeyId !== undefined
+  );
 }
 
 function parseAccessEntry(input: unknown, index: number): void {
@@ -490,13 +635,121 @@ function parseAccessEntry(input: unknown, index: number): void {
     if (rotation.fromKeyId === rotation.toKeyId) {
       throw compatibility("A key rotation must change the key ID.");
     }
+    if (
+      (rotation.authorizedByKeyId === undefined) !==
+      (rotation.authorization === undefined)
+    ) {
+      throw compatibility(
+        "An authorized key rotation needs both authorizedByKeyId and authorization.",
+      );
+    }
+    if (rotation.authorizedByKeyId !== undefined) {
+      assertNonEmptyStrings(rotation, ["authorizedByKeyId", "authorization"]);
+      validateBytes(rotation.authorizedByKeyId as string, 32, "rotation authorizedByKeyId");
+      validateBytes(rotation.authorization as string, 64, "rotation authorization");
+    }
   }
+  parseParticipantKeyFields(entry, participantIds);
   if (entry.ownershipTransfer !== undefined) {
     parseSharedBackupOwnershipTransferV1(entry.ownershipTransfer, true);
     if (entry.keyRotation !== undefined) {
       throw compatibility(
         "An access-control entry cannot rotate a key and transfer ownership.",
       );
+    }
+  }
+}
+
+function parseParticipantKeyFields(
+  entry: Record<string, unknown>,
+  participantIds: Set<string>,
+): void {
+  if (entry.participantKeysPolicy !== undefined) {
+    assertExact(entry.participantKeysPolicy, "enabled", "participantKeysPolicy");
+  }
+  const additionalIds = new Set<string>();
+  if (entry.additionalKeys !== undefined) {
+    if (entry.participantKeysPolicy !== "enabled") {
+      throw compatibility(
+        "Additional participant keys require the dataset's participant-keys policy.",
+      );
+    }
+    if (!Array.isArray(entry.additionalKeys) || entry.additionalKeys.length === 0) {
+      throw compatibility("additionalKeys must be omitted when empty.");
+    }
+    const perPrincipal = new Map<string, number>();
+    let priorKeyId: string | undefined;
+    for (const input of entry.additionalKeys) {
+      const key = parseObject(input, "additional key");
+      assertNonEmptyStrings(key, [
+        "keyId",
+        "encryptionPublicKey",
+        "signingPublicKey",
+        "principalKeyId",
+        "purpose",
+        "addedByKeyId",
+        "addition",
+        "possession",
+      ]);
+      assertExact(key.encryptionAlgorithm, SHARING_ENCRYPTION_ALGORITHM, "encryptionAlgorithm");
+      assertExact(key.signatureAlgorithm, SHARING_SIGNATURE_ALGORITHM, "signatureAlgorithm");
+      validatePublicKey(key.encryptionPublicKey as string, "encryptionPublicKey");
+      validatePublicKey(key.signingPublicKey as string, "signingPublicKey");
+      const keyId = key.keyId as string;
+      validateBytes(keyId, 32, "additional keyId");
+      validateBytes(key.principalKeyId as string, 32, "additional principalKeyId");
+      validateBytes(key.addedByKeyId as string, 32, "additional addedByKeyId");
+      validateBytes(key.addition as string, 64, "additional-key addition");
+      validateBytes(key.possession as string, 64, "additional-key possession");
+      if (key.purpose !== "recovery" && key.purpose !== "device") {
+        throw compatibility("An additional key has an unsupported purpose.");
+      }
+      if (participantIds.has(keyId) || additionalIds.has(keyId)) {
+        throw compatibility(`Duplicate participant key ${keyId}.`);
+      }
+      if (priorKeyId !== undefined && compareUtf16CodeUnits(priorKeyId, keyId) >= 0) {
+        throw compatibility("additionalKeys must be ordered by keyId.");
+      }
+      priorKeyId = keyId;
+      if (!participantIds.has(key.principalKeyId as string)) {
+        throw compatibility("An additional key belongs to a non-participant.");
+      }
+      const count = (perPrincipal.get(key.principalKeyId as string) ?? 0) + 1;
+      if (count > SHARED_BACKUP_MAX_ADDITIONAL_KEYS_PER_PARTICIPANT) {
+        throw compatibility(
+          `A participant may hold at most ${SHARED_BACKUP_MAX_ADDITIONAL_KEYS_PER_PARTICIPANT} additional keys.`,
+        );
+      }
+      perPrincipal.set(key.principalKeyId as string, count);
+      if (key.sealedPrivateKeys !== undefined) {
+        const sealed = parseObject(key.sealedPrivateKeys, "sealed private keys");
+        assertExact(sealed.kdf, "HKDF-SHA256", "sealed kdf");
+        assertNonEmptyStrings(sealed, ["kdfSalt", "nonce", "encryptedPrivateKeys"]);
+        validateBytes(sealed.kdfSalt as string, 32, "sealed kdfSalt");
+        validateBytes(sealed.nonce as string, 12, "sealed nonce");
+        base64UrlToBytes(sealed.encryptedPrivateKeys as string);
+      }
+      additionalIds.add(keyId);
+    }
+  }
+  if (entry.removedAdditionalKeys !== undefined) {
+    if (
+      !Array.isArray(entry.removedAdditionalKeys) ||
+      entry.removedAdditionalKeys.length === 0
+    ) {
+      throw compatibility("removedAdditionalKeys must be omitted when empty.");
+    }
+    const removedIds = new Set<string>();
+    for (const input of entry.removedAdditionalKeys) {
+      const removal = parseObject(input, "additional-key removal");
+      assertNonEmptyStrings(removal, ["keyId", "removedByKeyId", "removal"]);
+      validateBytes(removal.keyId as string, 32, "removed keyId");
+      validateBytes(removal.removedByKeyId as string, 32, "removedByKeyId");
+      validateBytes(removal.removal as string, 64, "additional-key removal");
+      if (removedIds.has(removal.keyId as string) || additionalIds.has(removal.keyId as string)) {
+        throw compatibility("An additional-key removal is duplicated or still present.");
+      }
+      removedIds.add(removal.keyId as string);
     }
   }
 }

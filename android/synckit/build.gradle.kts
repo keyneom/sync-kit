@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.keyneom"
-version = (findProperty("synckitVersion") ?: "0.4.5").toString()
+version = (findProperty("synckitVersion") ?: "0.5.0").toString()
 
 val githubPackagesRepository =
     findProperty("githubPackagesRepository")?.toString() ?: "keyneom/sync-kit"
@@ -60,6 +60,7 @@ tasks.withType<Test>().configureEach {
     // Forward parity script paths into the unit-test JVM.
     System.getenv("PARITY_OUTPUT")?.let { environment("PARITY_OUTPUT", it) }
     System.getenv("PARITY_PEER_REPORT")?.let { environment("PARITY_PEER_REPORT", it) }
+    System.getenv("PARTICIPANT_KEYS_OUTPUT")?.let { environment("PARTICIPANT_KEYS_OUTPUT", it) }
 }
 
 afterEvaluate {

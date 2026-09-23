@@ -1,6 +1,7 @@
 package com.keyneom.synckit.sharing
 
 import com.keyneom.synckit.crypto.Base64Url
+import com.keyneom.synckit.crypto.CanonicalJson
 import com.keyneom.synckit.core.SyncKitError
 import com.keyneom.synckit.core.SyncKitErrorCode
 
@@ -60,7 +61,11 @@ internal object SharingParsing {
     }
 
     fun parseSharedBackupEnvelopeV1(value: SharedBackupEnvelopeV1): SharedBackupEnvelopeV1 {
-        assertExact(value.schemaVersion, 1, "schemaVersion")
+        if (value.schemaVersion != 1 && value.schemaVersion != 2) {
+            throw compatibility(
+                "Unsupported shared-backup schemaVersion; this dataset may need a newer sync-kit.",
+            )
+        }
         assertExact(value.kind, SHARED_BACKUP_KIND, "kind")
         assertExact(value.algorithm, SHARING_CONTENT_ALGORITHM, "algorithm")
         assertNonEmpty(value.appId, "appId")
@@ -96,8 +101,20 @@ internal object SharingParsing {
         if (value.accessControl.isEmpty()) throw compatibility("accessControl must not be empty.")
         if (value.keyGrants.isEmpty()) throw compatibility("keyGrants must not be empty.")
         value.accessControl.forEachIndexed { index, entry -> parseAccessEntry(entry, index) }
+        val usesParticipantKeys = accessControlUsesParticipantKeys(value.accessControl)
+        if (usesParticipantKeys != (value.schemaVersion == 2)) {
+            throw compatibility(
+                if (usesParticipantKeys) {
+                    "A shared backup that uses participant keys must declare schemaVersion 2."
+                } else {
+                    "schemaVersion 2 is reserved for shared backups that use participant keys."
+                },
+            )
+        }
         val participants = value.accessControl.last().participants
         val participantIds = participants.map { it.keyId }.toSet()
+        val recipientIds = participantIds +
+            value.accessControl.last().additionalKeys.orEmpty().map { it.keyId }
         if (!participantIds.contains(value.authorKeyId)) {
             throw compatibility("The revision author is not a participant.")
         }
@@ -108,7 +125,7 @@ internal object SharingParsing {
             assertNonEmpty(grant.kdfSalt, "kdfSalt")
             assertNonEmpty(grant.nonce, "nonce")
             assertNonEmpty(grant.wrappedContentKey, "wrappedContentKey")
-            if (!participantIds.contains(grant.recipientKeyId)) {
+            if (!recipientIds.contains(grant.recipientKeyId)) {
                 throw compatibility("A key grant references a non-participant.")
             }
             if (!grantIds.add(grant.recipientKeyId)) {
@@ -119,8 +136,8 @@ internal object SharingParsing {
             validateBytes(grant.nonce, 12, "key-grant nonce")
             Base64Url.decode(grant.wrappedContentKey)
         }
-        if (grantIds.size != participantIds.size) {
-            throw compatibility("Every participant must have exactly one key grant.")
+        if (grantIds.size != recipientIds.size) {
+            throw compatibility("Every participant key must have exactly one key grant.")
         }
         validateBytes(value.payloadNonce, 12, "payload nonce")
         Base64Url.decode(value.ciphertext)
@@ -179,13 +196,105 @@ internal object SharingParsing {
             validateBytes(rotation.fromKeyId, 32, "fromKeyId")
             validateBytes(rotation.toKeyId, 32, "toKeyId")
             validateBytes(rotation.newKeyProof, 64, "newKeyProof")
+            if (rotation.fromKeyId == rotation.toKeyId) {
+                throw compatibility("A key rotation must change the key ID.")
+            }
+            if ((rotation.authorizedByKeyId == null) != (rotation.authorization == null)) {
+                throw compatibility(
+                    "An authorized key rotation needs both authorizedByKeyId and authorization.",
+                )
+            }
+            rotation.authorizedByKeyId?.let { validateBytes(it, 32, "rotation authorizedByKeyId") }
+            rotation.authorization?.let { validateBytes(it, 64, "rotation authorization") }
         }
+        parseParticipantKeyFields(entry, participantIds)
         entry.ownershipTransfer?.let { transfer ->
             parseSharedBackupOwnershipTransferV1(transfer, requireAccepted = true)
             if (entry.keyRotation != null) {
                 throw compatibility(
                     "An access-control entry cannot rotate a key and transfer ownership.",
                 )
+            }
+        }
+    }
+
+    private fun parseParticipantKeyFields(entry: SharedBackupAccessV1, participantIds: Set<String>) {
+        entry.participantKeysPolicy?.let {
+            assertExact(it, PARTICIPANT_KEYS_ENABLED, "participantKeysPolicy")
+        }
+        val additionalIds = mutableSetOf<String>()
+        entry.additionalKeys?.let { keys ->
+            if (entry.participantKeysPolicy != PARTICIPANT_KEYS_ENABLED) {
+                throw compatibility(
+                    "Additional participant keys require the dataset's participant-keys policy.",
+                )
+            }
+            if (keys.isEmpty()) throw compatibility("additionalKeys must be omitted when empty.")
+            val perPrincipal = mutableMapOf<String, Int>()
+            var priorKeyId: String? = null
+            for (key in keys) {
+                assertNonEmpty(key.keyId, "keyId")
+                assertNonEmpty(key.encryptionPublicKey, "encryptionPublicKey")
+                assertNonEmpty(key.signingPublicKey, "signingPublicKey")
+                assertNonEmpty(key.principalKeyId, "principalKeyId")
+                assertNonEmpty(key.purpose, "purpose")
+                assertNonEmpty(key.addedByKeyId, "addedByKeyId")
+                assertNonEmpty(key.addition, "addition")
+                assertNonEmpty(key.possession, "possession")
+                assertExact(key.encryptionAlgorithm, SHARING_ENCRYPTION_ALGORITHM, "encryptionAlgorithm")
+                assertExact(key.signatureAlgorithm, SHARING_SIGNATURE_ALGORITHM, "signatureAlgorithm")
+                validatePublicKey(key.encryptionPublicKey, "encryptionPublicKey")
+                validatePublicKey(key.signingPublicKey, "signingPublicKey")
+                validateBytes(key.keyId, 32, "additional keyId")
+                validateBytes(key.principalKeyId, 32, "additional principalKeyId")
+                validateBytes(key.addedByKeyId, 32, "additional addedByKeyId")
+                validateBytes(key.addition, 64, "additional-key addition")
+                validateBytes(key.possession, 64, "additional-key possession")
+                if (key.purpose != "recovery" && key.purpose != "device") {
+                    throw compatibility("An additional key has an unsupported purpose.")
+                }
+                if (participantIds.contains(key.keyId) || additionalIds.contains(key.keyId)) {
+                    throw compatibility("Duplicate participant key ${key.keyId}.")
+                }
+                if (priorKeyId != null && CanonicalJson.compareUtf16CodeUnits(priorKeyId, key.keyId) >= 0) {
+                    throw compatibility("additionalKeys must be ordered by keyId.")
+                }
+                priorKeyId = key.keyId
+                if (!participantIds.contains(key.principalKeyId)) {
+                    throw compatibility("An additional key belongs to a non-participant.")
+                }
+                val count = (perPrincipal[key.principalKeyId] ?: 0) + 1
+                if (count > SHARED_BACKUP_MAX_ADDITIONAL_KEYS_PER_PARTICIPANT) {
+                    throw compatibility(
+                        "A participant may hold at most $SHARED_BACKUP_MAX_ADDITIONAL_KEYS_PER_PARTICIPANT additional keys.",
+                    )
+                }
+                perPrincipal[key.principalKeyId] = count
+                key.sealedPrivateKeys?.let { sealed ->
+                    assertExact(sealed.kdf, "HKDF-SHA256", "sealed kdf")
+                    assertNonEmpty(sealed.kdfSalt, "kdfSalt")
+                    assertNonEmpty(sealed.nonce, "nonce")
+                    assertNonEmpty(sealed.encryptedPrivateKeys, "encryptedPrivateKeys")
+                    validateBytes(sealed.kdfSalt, 32, "sealed kdfSalt")
+                    validateBytes(sealed.nonce, 12, "sealed nonce")
+                    Base64Url.decode(sealed.encryptedPrivateKeys)
+                }
+                additionalIds.add(key.keyId)
+            }
+        }
+        entry.removedAdditionalKeys?.let { removals ->
+            if (removals.isEmpty()) throw compatibility("removedAdditionalKeys must be omitted when empty.")
+            val removedIds = mutableSetOf<String>()
+            for (removal in removals) {
+                assertNonEmpty(removal.keyId, "keyId")
+                assertNonEmpty(removal.removedByKeyId, "removedByKeyId")
+                assertNonEmpty(removal.removal, "removal")
+                validateBytes(removal.keyId, 32, "removed keyId")
+                validateBytes(removal.removedByKeyId, 32, "removedByKeyId")
+                validateBytes(removal.removal, 64, "additional-key removal")
+                if (!removedIds.add(removal.keyId) || additionalIds.contains(removal.keyId)) {
+                    throw compatibility("An additional-key removal is duplicated or still present.")
+                }
             }
         }
     }

@@ -398,12 +398,13 @@ path remain open; the built-in provider flow must not claim Workspace support.
       document that one passkey-derived envelope serves both platforms (0.4.2).
 - [x] Web parity for re-wrapping a protected sharing identity under a
       replacement passkey (`rewrapProtectedSharingIdentityV1`, 0.4.5).
-- [ ] Decide the recovery model for a lost passkey: identity-level (several
-      locks on one protected identity record — a persisted format change needing
-      both platforms, fixtures, and migration), per-participant keys, or
-      application-owned. Email-less dataset participants (from keyneom/sync-kit#8)
-      were one proposed mechanism; they cannot reach datasets the recovering user
-      does not administer. Nothing in the library provides recovery today.
+- [x] Opt-in participant keys and recovery codes on web and Android (0.5.0):
+      per-dataset policy, participant-signed additions, removals, and
+      recovery-authorized rotations; recovery keys sealed inside each data file.
+      Web-to-Android fixture and Android-to-web parity check in `npm run check`.
+- [ ] Carry a viewer's signed participant-key operations to a writer
+      automatically. Needs its own versioning: a new control-ledger event would
+      make pre-0.5.0 readers reject the whole ledger.
 - [ ] Add a worked two-platform passkey example: a browser seals an envelope and
       a phone opens the same one, with RP ID, asset link, and PRF input lined up
       (from keyneom/sync-kit#6). EasyBC is that example; it is not written down.

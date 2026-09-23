@@ -92,6 +92,28 @@ data class AcceptedDatasetResult(
     val error: Throwable? = null,
 )
 
+/** Self-recovery: the replacement identity writes; the recovery key authorizes and reads. */
+data class ParticipantKeyRecovery(
+    val replacement: SharingIdentity,
+    val key: SharingIdentity,
+)
+
+/** A dataset's participant-keys policy and current additional keys. */
+data class DatasetParticipantKeys(
+    val enabled: Boolean,
+    val keys: List<SharedBackupAdditionalKeyV1>,
+)
+
+/** Whether a participant key protects one dataset. See `participantKeyCoverage`. */
+data class ParticipantKeyCoverage(
+    val datasetId: String,
+    /** The dataset lets participants hold additional keys. */
+    val policyEnabled: Boolean,
+    /** The key is in the current revision, so it can read the latest data. */
+    val protected: Boolean,
+    val error: Throwable? = null,
+)
+
 data class RotatedDatasetResult(
     val datasetId: String,
     val status: String,
@@ -390,6 +412,176 @@ class SharedBackupController<T>(
             )
         }
         return committed
+    }
+
+    /**
+     * Allow — or stop allowing — participants to hold additional keys in this
+     * dataset, such as recovery keys. Owner or admin only; off by default.
+     * Turning it off removes every additional key in the same revision.
+     *
+     * Enabling it moves the dataset to schemaVersion 2, which participants on
+     * sync-kit before 0.5.0 cannot read. Enable it only once every participant
+     * runs a version that supports it. See docs/participant-keys.md.
+     */
+    suspend fun setParticipantKeysPolicy(datasetId: String, enabled: Boolean): SharedDatasetResult<T> = serialized {
+        val current = identity()
+        rewriteParticipantKeys(datasetId, current, current, SharedBackupParticipantKeyChanges(policy = enabled))
+    }
+
+    /**
+     * Apply participant-signed key additions ([ParticipantKeys.createAddition]).
+     * Any writer may carry them, including on behalf of a viewer, who cannot
+     * write; each addition proves itself.
+     */
+    suspend fun addParticipantKeys(
+        datasetId: String,
+        additions: List<SharedBackupAdditionalKeyV1>,
+    ): SharedDatasetResult<T> = serialized {
+        val current = identity()
+        rewriteParticipantKeys(datasetId, current, current, SharedBackupParticipantKeyChanges(add = additions))
+    }
+
+    /**
+     * Apply key removals: participant-signed ([ParticipantKeys.createRemoval]),
+     * or [ParticipantKeyRemoval.ByAdministrator] when this identity is an owner
+     * or admin. Remove a lost or compromised key from every dataset; until then
+     * it still grants access.
+     */
+    suspend fun removeParticipantKeys(
+        datasetId: String,
+        removals: List<ParticipantKeyRemoval>,
+    ): SharedDatasetResult<T> = serialized {
+        val current = identity()
+        rewriteParticipantKeys(datasetId, current, current, SharedBackupParticipantKeyChanges(remove = removals))
+    }
+
+    /**
+     * Replace a participant's lost primary key with `rotation.to`, authorized by
+     * one of its additional keys ([ParticipantKeys.createAuthorizedRotation]).
+     *
+     * To recover yourself, pass [recovery]: the replacement identity writes the
+     * revision, and the recovery key signs the access change and reads the
+     * current data. This works on a fresh device before the dataset is
+     * registered — its first owner is pinned as the trust root, as in
+     * [adoptDataset]. Omit [recovery] to carry someone else's rotation with this
+     * controller's identity, which must be able to write the dataset.
+     */
+    suspend fun rotateWithAdditionalKey(
+        datasetId: String,
+        rotation: SharedBackupAuthorizedKeyRotationV1,
+        recovery: ParticipantKeyRecovery? = null,
+    ): SharedDatasetResult<T> = serialized {
+        if (recovery != null && recovery.replacement.publicKey.keyId != rotation.to.keyId) {
+            throw SyncKitError(
+                SyncKitErrorCode.CONFIGURATION,
+                "The replacement identity does not match the rotation.",
+            )
+        }
+        val author = recovery?.replacement ?: identity()
+        rewriteParticipantKeys(
+            datasetId = datasetId,
+            author = author,
+            reader = recovery?.key ?: author,
+            changes = SharedBackupParticipantKeyChanges(rotation = rotation, accessAuthor = recovery?.key),
+            allowUnregistered = recovery != null,
+        )
+    }
+
+    /**
+     * Unseal the recovery key [code] opens in this dataset. Reads the dataset
+     * file directly, so it works on a fresh device before anything is adopted.
+     */
+    suspend fun openRecoveryKey(datasetId: String, code: String): OpenedRecoveryKey = serialized {
+        val stored = readDatasetById(datasetId)
+        val record = registry.get(datasetId) ?: initialOwnerRecord(stored)
+        SharingCrypto.verifySharedBackupEnvelopeV1(
+            stored.envelope,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        ParticipantKeys.openRecoveryKeyFromEnvelope(code, stored.envelope)
+    }
+
+    /** The dataset's participant-keys policy and current additional keys. */
+    suspend fun getDatasetParticipantKeys(datasetId: String): DatasetParticipantKeys = serialized {
+        val stored = readDatasetById(datasetId)
+        verifyHead(stored, requiredRegistry(datasetId))
+        DatasetParticipantKeys(
+            enabled = sharedBackupParticipantKeysEnabled(stored.envelope),
+            keys = sharedBackupAdditionalKeys(stored.envelope),
+        )
+    }
+
+    /**
+     * Whether [keyId] protects each dataset — present in its current revision.
+     * A key only takes effect from a dataset's next write onward, and a viewer's
+     * keys wait until a writer carries them, so "set up" and "protected" differ;
+     * report this rather than assuming it.
+     */
+    suspend fun participantKeyCoverage(keyId: String, datasetIds: List<String>): List<ParticipantKeyCoverage> =
+        serialized {
+            datasetIds.map { datasetId ->
+                try {
+                    val stored = readDatasetById(datasetId)
+                    verifyHead(stored, requiredRegistry(datasetId))
+                    ParticipantKeyCoverage(
+                        datasetId = datasetId,
+                        policyEnabled = sharedBackupParticipantKeysEnabled(stored.envelope),
+                        protected = sharedBackupAdditionalKeys(stored.envelope).any { it.keyId == keyId },
+                    )
+                } catch (error: Exception) {
+                    ParticipantKeyCoverage(datasetId, policyEnabled = false, protected = false, error = error)
+                }
+            }
+        }
+
+    private suspend fun rewriteParticipantKeys(
+        datasetId: String,
+        author: SharingIdentity,
+        reader: SharingIdentity,
+        changes: SharedBackupParticipantKeyChanges,
+        allowUnregistered: Boolean = false,
+    ): SharedDatasetResult<T> {
+        val stored = readDatasetById(datasetId)
+        val registered = registry.get(datasetId)
+        if (registered == null && !allowUnregistered) requiredRegistry(datasetId)
+        val record = registered ?: initialOwnerRecord(stored)
+        if (registered != null) {
+            verifyHead(stored, registered)
+        } else {
+            SharingCrypto.verifySharedBackupEnvelopeV1(
+                stored.envelope,
+                VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+            )
+        }
+        val selectedCodec = codecFor(datasetId)
+        val value = SharingCrypto.decryptSharedBackupEnvelopeV1(
+            stored.envelope,
+            selectedCodec,
+            reader,
+            VerifySharedBackupOptions(trustedOwnerKeyId = record.trustedOwnerKeyId),
+        )
+        val next = SharingCrypto.createSharedBackupEnvelopeV1(
+            value = value,
+            codec = selectedCodec,
+            identity = author,
+            input = CreateSharedBackupEnvelopeInput(
+                appId = appId,
+                backupId = datasetId,
+                participants = participantInputs(stored.envelope),
+                previous = stored.envelope,
+                participantKeys = changes,
+            ),
+            options = cryptoOptions,
+        )
+        val updated = transport.writeDataset(stored, next)
+        // A rotation keeps a participant's Drive permission under its new key.
+        val fromKeyId = changes.rotation?.fromKeyId
+        val toKeyId = changes.rotation?.to?.keyId
+        val permissions = record.participantPermissionIds?.mapKeys { (keyId, _) ->
+            if (keyId == fromKeyId && toKeyId != null) toKeyId else keyId
+        }
+        persistHead(updated, record.trustedOwnerKeyId, record.copy(participantPermissionIds = permissions))
+        return result(updated, value, "updated")
     }
 
     suspend fun inviteParticipant(input: InviteParticipantInput): SharingInvitationResult = serialized {

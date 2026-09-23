@@ -1,6 +1,6 @@
 {
   "name": "@keyneom/sync-kit",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "private": false,
   "description": "Provider-neutral encrypted application-data synchronization with opt-in browser adapters.",
   "repository": {
@@ -88,6 +88,11 @@
       "import": "./dist/sharing/migrating-identity-store.js",
       "default": "./dist/sharing/migrating-identity-store.js"
     },
+    "./sharing/participant-keys": {
+      "types": "./dist/sharing/participant-keys.d.ts",
+      "import": "./dist/sharing/participant-keys.js",
+      "default": "./dist/sharing/participant-keys.js"
+    },
     "./sharing/lifecycle": {
       "types": "./dist/sharing/lifecycle.d.ts",
       "import": "./dist/sharing/lifecycle.js",
@@ -131,7 +136,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run parity:sharing:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
+    "check": "npm run fixtures:check && npm run native:check && npm run parity:check && npm run parity:sharing:check && npm run parity:participant-keys:check && npm run lint && npm run typecheck && npm test && npm run build && npm run pack:check",
     "fixtures": "node scripts/generate-v1-fixtures.mjs",
     "fixtures:identity": "npm run build && node scripts/generate-protected-identity-fixture.mjs",
     "fixtures:link-exchange": "npm run build && node scripts/generate-link-exchange-fixture.mjs",
@@ -144,7 +149,9 @@
     "pack:check": "node scripts/check-package.mjs",
     "prepack": "npm run build",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "fixtures:participant-keys": "npm run build && node scripts/generate-participant-keys-fixture.mjs",
+    "parity:participant-keys:check": "bash scripts/check-participant-keys-parity.sh"
   },
   "engines": {
     "node": ">=20"
