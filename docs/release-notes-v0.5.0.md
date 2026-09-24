@@ -20,6 +20,38 @@ The full design, rules, and security analysis are in
 - **Per user.** The app decides who sees the toggle — for example, an owner
   choosing per keyring whether it accepts recovery codes.
 
+Behavior and stored formats are unchanged unless you opt in. The exported
+**types** are not — see below.
+
+## Type changes that can break a build
+
+0.5.0 widens some exported types. Runtime behavior is unaffected — an app that
+never opts in never sees the new values — but code that assumes the old, closed
+set fails to compile. Note that `vite build` does not typecheck, so a green build
+can hide this until a later `tsc` step (for example a deploy that runs
+`npm run typecheck`).
+
+Web:
+
+- `SnapshotOperation` gains `"recover"` and `SyncOutcome` gains `"recovered"`. An
+  exhaustive `switch` over either reports "lacks ending return statement" (or
+  fails an exhaustiveness check). Add the case, or type the parameter with your
+  own narrower union so future additions cannot reach you.
+- `SyncEnvelopeV1.schemaVersion` and the shared-backup envelope's
+  `schemaVersion` are `1 | 2` instead of `1`.
+- `V1CompatibilityProfile` has `readVersions: readonly (1 | 2)[]` and a new
+  required `writeVersion`. Profiles built with `defineV1CompatibilityProfile`
+  are unaffected; an object literal typed as the profile needs `writeVersion: 1`.
+- `SnapshotSyncController` gains `setRecoveryCode`, `recover`, and
+  `migrateVersion`, and `SharedBackupController` gains the participant-key
+  methods. A hand-written implementation or test double of either interface
+  needs them, or should be typed with `Pick` or `Partial`.
+
+Android:
+
+- `SnapshotOperation.RECOVER` and `SyncOutcome.RECOVERED` are new enum entries. A
+  `when` expression over either without an `else` no longer compiles.
+
 ## Compatibility
 
 A dataset whose history has ever enabled participant keys is written as
